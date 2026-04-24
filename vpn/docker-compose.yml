@@ -1,0 +1,28 @@
+services:
+  spotiflac:
+    build:
+      context: ..           # repo root (so Dockerfile can COPY ../app.py)
+      dockerfile: vpn/Dockerfile
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      # Uncomment if WireGuard module is not loaded on the host kernel:
+      # - SYS_MODULE
+    devices:
+      - /dev/net/tun
+    network_mode: bridge
+    restart: "no"           # kill-switch exits are intentional — do not restart
+
+    env_file: .env
+
+    ports:
+      - "5000:5000"     # Web UI
+
+    volumes:
+      - ./downloads:/downloads
+
+      # OpenVPN — mount your .ovpn file (if using VPN_CONFIG_FILE):
+      # - ./client.ovpn:/vpn/client.ovpn:ro
+
+      # WireGuard — mount your wg0.conf (if using WG_CONFIG_FILE):
+      # - ./wg0.conf:/vpn/wg0.conf:ro

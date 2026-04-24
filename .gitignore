@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.venv/
+env/
+pip-wheel-metadata/
+
+# Environment / Secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Caches
+.cache/
+*.cache
+
+# IDE / Editor
+.vscode/
+.vscode-server/
+.vscode-insiders-server/
+.vscodium-server/
+.windsurf-server/
+.cursor-server/
+.idea/
+*.swp
+*.swo
+
+# code-server
+.local/share/code-server/
+.config/code-server/
+
+# Claude / AI tools
+.claude/
+.claude.json
+
+# Logs
+*.log
+logs/
+.local/share/code-server/logs/
+
+# Docker
+.docker/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Downloads / Temp
+downloads/
+*.tar.gz
+*.zip
