@@ -158,6 +158,11 @@ apply_killswitch() {
     log "Aktiviere Kill-Switch (IPv4 + IPv6)..."
     IFACE_PATTERN="${VPN_IFACE%%[0-9]*}+"
 
+    # Docker-Bridge-Interface ermitteln (eth0 in den meisten Containern)
+    DOCKER_IFACE=$(ip route show default 2>/dev/null | awk '{print $5}' | head -1)
+    DOCKER_IFACE="${DOCKER_IFACE:-eth0}"
+    WEB_PORT="${PORT:-5000}"
+
     # IPv4 Regeln
     iptables -F INPUT 2>/dev/null || true
     iptables -F OUTPUT 2>/dev/null || true
@@ -170,6 +175,12 @@ apply_killswitch() {
     iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
     iptables -A INPUT  -i "$IFACE_PATTERN" -j ACCEPT
     iptables -A OUTPUT -o "$IFACE_PATTERN" -j ACCEPT
+
+    # Web-UI: eingehende Verbindungen auf dem Docker-Bridge-Interface erlauben.
+    # Download-Traffic läuft trotzdem ausschließlich durch den VPN-Tunnel,
+    # weil SpotiFLAC ausgehende Verbindungen initiiert (OUTPUT DROP + nur tun/wg erlaubt).
+    iptables -A INPUT -i "$DOCKER_IFACE" -p tcp --dport "$WEB_PORT" -j ACCEPT
+    log "Web-UI erlaubt auf $DOCKER_IFACE:$WEB_PORT (ausgehender Traffic bleibt VPN-only)"
 
     for target in $VPN_SERVERS; do
         iptables -A OUTPUT -d "$target" -j ACCEPT
