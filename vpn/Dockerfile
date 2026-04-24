@@ -21,6 +21,11 @@ RUN mkdir -p /vpn /downloads /app/templates && \
 
 WORKDIR /app
 
+# Python-Output ungepuffert → docker logs zeigt alles sofort
+ENV PYTHONUNBUFFERED=1
+# nc (netcat) für Port-Selbsttest in entrypoint.sh
+RUN apk add --no-cache netcat-openbsd
+
 COPY vpn/entrypoint.sh /entrypoint.sh
 COPY app.py config.py worker.py vpn.py routes.py /app/
 COPY templates/ /app/templates/

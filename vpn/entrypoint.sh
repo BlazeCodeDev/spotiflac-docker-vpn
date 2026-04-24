@@ -200,9 +200,10 @@ apply_killswitch() {
     iptables -A INPUT  -i "$IFACE_PATTERN" -j ACCEPT
     iptables -A OUTPUT -o "$IFACE_PATTERN" -j ACCEPT
 
-    # Web-UI auf Docker-Bridge erlauben (eingehend, Antworten via ESTABLISHED)
-    iptables -A INPUT -i "$DOCKER_IFACE" -p tcp --dport "$WEB_PORT" -j ACCEPT
-    log "Web-UI erlaubt: $DOCKER_IFACE:$WEB_PORT → INPUT ACCEPT"
+    # Web-UI: Port auf allen Interfaces freigeben — kein Interface-Filter.
+    # OUTPUT bleibt VPN-only, daher kein Leak-Risiko durch diese Regel.
+    iptables -A INPUT -p tcp --dport "$WEB_PORT" -j ACCEPT
+    log "Web-UI Port $WEB_PORT: INPUT ACCEPT (alle Interfaces, detected: $DOCKER_IFACE)"
 
     for target in $VPN_SERVERS; do
         iptables -A OUTPUT -d "$target" -j ACCEPT
@@ -308,29 +309,40 @@ wait_for_tunnel() {
 # App starten und überwachen
 # ─────────────────────────────────────────────────────────────────────────────
 start_app() {
-    if [ -z "$APP_CMD" ]; then
-        log "APP_CMD nicht gesetzt — kein App-Prozess wird gestartet"
-        return
-    fi
+    # Default falls APP_CMD nicht in der .env gesetzt ist
+    APP_CMD="${APP_CMD:-python /app/app.py}"
+    WEB_PORT="${PORT:-5000}"
 
     log "Starte App: $APP_CMD"
+
+    # Python-Output ungepuffert damit Logs sofort in docker logs erscheinen
+    export PYTHONUNBUFFERED=1
+
     sh -c "$APP_CMD" 2>&1 &
     APP_PID=$!
-    debug "App PID: $APP_PID"
+    log "App PID: $APP_PID"
 
-    # Kurz warten und prüfen ob der Prozess noch läuft
-    sleep 2
-    if ! kill -0 "$APP_PID" 2>/dev/null; then
-        err "APP_CMD ($APP_CMD) ist sofort abgestürzt (PID $APP_PID)"
-        die "App-Start fehlgeschlagen"
-    fi
-    log "App läuft (PID $APP_PID)"
+    # Warten bis Flask hochgefahren ist (max 15s)
+    i=0
+    while [ "$i" -lt 15 ]; do
+        sleep 1
+        # Prozess noch am Leben?
+        if ! kill -0 "$APP_PID" 2>/dev/null; then
+            err "App-Prozess (PID $APP_PID) ist sofort abgestürzt"
+            err "Mögliche Ursachen: fehlendes Modul, falscher APP_CMD, Permission-Error"
+            die "App-Start fehlgeschlagen — prüfe docker logs"
+        fi
+        # Port erreichbar?
+        if nc -z 127.0.0.1 "$WEB_PORT" 2>/dev/null; then
+            log "App antwortet auf Port $WEB_PORT nach ${i}s ✓"
+            return 0
+        fi
+        i=$((i + 1))
+    done
 
-    if [ "$LOG_LEVEL" = "debug" ]; then
-        debug "Offene Ports nach App-Start:"
-        ss -tlnp 2>/dev/null | sed 's/^/[vpn]   /' || \
-            netstat -tlnp 2>/dev/null | sed 's/^/[vpn]   /' || \
-            echo "[vpn]   (ss/netstat nicht verfügbar)"
+    # Prozess läuft, aber Port noch nicht offen — trotzdem weitermachen
+    if kill -0 "$APP_PID" 2>/dev/null; then
+        log "WARN: App (PID $APP_PID) läuft, Port $WEB_PORT noch nicht offen nach 15s"
     fi
 }
 
