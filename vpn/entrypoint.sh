@@ -195,15 +195,13 @@ apply_killswitch() {
 
     iptables -A INPUT  -i lo -j ACCEPT
     iptables -A OUTPUT -o lo -j ACCEPT
-    iptables -A INPUT  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-    iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    # VPN tunnel: alle Pakete auf dem Tunnel-Interface erlauben (kein conntrack nötig)
     iptables -A INPUT  -i "$IFACE_PATTERN" -j ACCEPT
     iptables -A OUTPUT -o "$IFACE_PATTERN" -j ACCEPT
-
-    # Web-UI: Port auf allen Interfaces freigeben — kein Interface-Filter.
-    # OUTPUT bleibt VPN-only, daher kein Leak-Risiko durch diese Regel.
-    iptables -A INPUT -p tcp --dport "$WEB_PORT" -j ACCEPT
-    log "Web-UI Port $WEB_PORT: INPUT ACCEPT (alle Interfaces, detected: $DOCKER_IFACE)"
+    # Web-UI: eingehende Anfragen + ausgehende Antworten (stateless, kein conntrack)
+    iptables -A INPUT  -p tcp --dport "$WEB_PORT" -j ACCEPT
+    iptables -A OUTPUT -p tcp --sport "$WEB_PORT" -j ACCEPT
+    log "Web-UI Port $WEB_PORT: INPUT+OUTPUT ACCEPT (stateless, kein conntrack)"
 
     for target in $VPN_SERVERS; do
         iptables -A OUTPUT -d "$target" -j ACCEPT
@@ -228,8 +226,6 @@ apply_killswitch() {
         ip6tables -P OUTPUT DROP
         ip6tables -A INPUT  -i lo -j ACCEPT
         ip6tables -A OUTPUT -o lo -j ACCEPT
-        ip6tables -A INPUT  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-        ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
         ip6tables -A INPUT  -i "$IFACE_PATTERN" -j ACCEPT
         ip6tables -A OUTPUT -o "$IFACE_PATTERN" -j ACCEPT
         log "IPv6 Kill-Switch aktiv"
