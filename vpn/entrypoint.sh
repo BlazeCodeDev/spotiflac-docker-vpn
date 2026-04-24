@@ -1,27 +1,45 @@
 #!/bin/sh
 set -e
 
-# Hilfsfunktionen für schöneres Logging
-log()  { echo "[vpn] $*"; }
-err()  { echo "[vpn] ERROR: $*" >&2; }
-die()  { err "$*"; exit 1; }
+# ── Log-Level ─────────────────────────────────────────────────────────────────
+# LOG_LEVEL=info  (default) — normales Logging
+# LOG_LEVEL=debug           — iptables, Netzwerk, Env-Vars, App-Status
+LOG_LEVEL="${LOG_LEVEL:-info}"
 
-# Arbeitsverzeichnis für VPN-Konfigurationen
+log()   { echo "[vpn] $(date '+%H:%M:%S') INFO  $*"; }
+err()   { echo "[vpn] $(date '+%H:%M:%S') ERROR $*" >&2; }
+die()   { err "$*"; exit 1; }
+debug() {
+    [ "$LOG_LEVEL" = "debug" ] && echo "[vpn] $(date '+%H:%M:%S') DEBUG $*" || true
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 CREDS_DIR=/vpn
 mkdir -p "$CREDS_DIR"
-
-# Sicherstellen, dass das Verzeichnis beschreibbar ist (wichtig für auth.txt)
 if ! chmod 700 "$CREDS_DIR" 2>/dev/null; then
-    log "WARNING: Could not change permissions on $CREDS_DIR. Ensure the volume is not read-only."
+    log "WARN: chmod 700 auf $CREDS_DIR fehlgeschlagen — Volume evtl. read-only"
 fi
 
-# ── Protokoll-Auswahl ────────────────────────────────────────────────────────
+# ── Debug: Env-Vars und System-Info beim Start ────────────────────────────────
+if [ "$LOG_LEVEL" = "debug" ]; then
+    echo "[vpn] ══════════════════ DEBUG START ══════════════════"
+    echo "[vpn] Kernel : $(uname -r)"
+    echo "[vpn] Env-Vars (ohne Secrets):"
+    env | grep -v -i 'PASS\|KEY\|TOKEN\|SECRET\|BASE64' | sort | sed 's/^/[vpn]   /'
+    echo "[vpn] Netzwerk-Interfaces:"
+    ip addr 2>/dev/null | sed 's/^/[vpn]   /' || echo "[vpn]   (ip nicht verfügbar)"
+    echo "[vpn] Routing-Tabelle:"
+    ip route 2>/dev/null | sed 's/^/[vpn]   /' || true
+    echo "[vpn] ═══════════════════════════════════════════════"
+fi
+
+# ── Protokoll-Auswahl ─────────────────────────────────────────────────────────
 VPN_PROTOCOL="${VPN_PROTOCOL:-openvpn}"
 case "$VPN_PROTOCOL" in
     openvpn|wireguard) ;;
     *) die "VPN_PROTOCOL muss 'openvpn' oder 'wireguard' sein, erhalten: $VPN_PROTOCOL" ;;
 esac
-log "Protocol: $VPN_PROTOCOL"
+log "Protokoll: $VPN_PROTOCOL"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OpenVPN Setup
@@ -38,24 +56,21 @@ setup_openvpn() {
         log "Konfiguration aus VPN_CONFIG_BASE64 geladen"
 
     elif [ -n "$VPN_CONFIG_FILE" ] && [ -f "$VPN_CONFIG_FILE" ]; then
-        # PRÜFUNG: Nur kopieren, wenn Quelle und Ziel unterschiedlich sind
         if [ "$VPN_CONFIG_FILE" != "$CONFIG_PATH" ]; then
             cp "$VPN_CONFIG_FILE" "$CONFIG_PATH"
             log "Konfiguration von $VPN_CONFIG_FILE nach $CONFIG_PATH kopiert"
         else
-            log "Konfiguration liegt bereits am Zielort ($CONFIG_PATH). Kopieren übersprungen."
+            log "Konfiguration liegt bereits an $CONFIG_PATH"
         fi
 
     elif [ -n "$VPN_SERVER" ]; then
         if [ -z "$VPN_CA_CERT_BASE64" ]; then
-            die "VPN_CA_CERT_BASE64 ist erforderlich, wenn VPN_SERVER genutzt wird."
+            die "VPN_CA_CERT_BASE64 ist erforderlich wenn VPN_SERVER genutzt wird"
         fi
         VPN_PORT="${VPN_PORT:-1194}"
         VPN_TRANSPORT="${VPN_TRANSPORT:-udp}"
         log "Generiere Konfiguration für $VPN_SERVER:$VPN_PORT ($VPN_TRANSPORT)"
-
         echo "$VPN_CA_CERT_BASE64" | base64 -d > "$CREDS_DIR/ca.crt"
-
         cat > "$CONFIG_PATH" <<EOF
 client
 dev tun
@@ -77,19 +92,20 @@ EOF
             echo "tls-auth $CREDS_DIR/tls.key 1" >> "$CONFIG_PATH"
         fi
     else
-        die "Fehlende VPN-Daten: Setze VPN_CONFIG_BASE64, VPN_CONFIG_FILE oder VPN_SERVER + CA."
+        die "Setze VPN_CONFIG_BASE64, VPN_CONFIG_FILE oder VPN_SERVER + VPN_CA_CERT_BASE64"
     fi
 
-    # Zugangsdaten-Datei erstellen
     printf '%s\n%s\n' "${VPN_USER}" "${VPN_PASS}" > "$AUTH_PATH"
     chmod 600 "$AUTH_PATH" 2>/dev/null || true
 
-    # Sicherstellen, dass die Konfiguration die auth.txt nutzt
     if ! grep -q "^auth-user-pass" "$CONFIG_PATH"; then
         echo "auth-user-pass $AUTH_PATH" >> "$CONFIG_PATH"
     else
         sed -i "s|^auth-user-pass.*|auth-user-pass $AUTH_PATH|" "$CONFIG_PATH"
     fi
+
+    debug "OpenVPN-Config (ohne Credentials):"
+    [ "$LOG_LEVEL" = "debug" ] && grep -v "auth-user-pass\|password\|pass" "$CONFIG_PATH" | sed 's/^/[vpn]   /' || true
 
     VPN_SERVERS=$(grep "^remote " "$CONFIG_PATH" | awk '{print $2}' | sort -u)
     VPN_IFACE="tun0"
@@ -103,19 +119,19 @@ setup_wireguard() {
 
     if [ -n "$WG_CONFIG_BASE64" ]; then
         echo "$WG_CONFIG_BASE64" | base64 -d > "$WG_CONF"
+        log "WG-Konfig aus WG_CONFIG_BASE64 geladen"
     elif [ -n "$WG_CONFIG_FILE" ] && [ -f "$WG_CONFIG_FILE" ]; then
         if [ "$WG_CONFIG_FILE" != "$WG_CONF" ]; then
             cp "$WG_CONFIG_FILE" "$WG_CONF"
         fi
+        log "WG-Konfig von $WG_CONFIG_FILE geladen"
     else
         : "${WG_PRIVATE_KEY:?WG_PRIVATE_KEY erforderlich}"
         : "${WG_ADDRESS:?WG_ADDRESS erforderlich}"
         : "${WG_SERVER_PUBLIC_KEY:?WG_SERVER_PUBLIC_KEY erforderlich}"
         : "${WG_ENDPOINT:?WG_ENDPOINT erforderlich}"
-
         WG_ALLOWED_IPS="${WG_ALLOWED_IPS:-0.0.0.0/0,::/0}"
         WG_KEEPALIVE="${WG_KEEPALIVE:-25}"
-
         cat > "$WG_CONF" <<EOF
 [Interface]
 PrivateKey = $WG_PRIVATE_KEY
@@ -129,6 +145,7 @@ Endpoint = $WG_ENDPOINT
 AllowedIPs = $WG_ALLOWED_IPS
 PersistentKeepalive = $WG_KEEPALIVE
 EOF
+        log "WG-Konfig aus Env-Vars generiert"
     fi
 
     chmod 600 "$WG_CONF" 2>/dev/null || true
@@ -137,7 +154,7 @@ EOF
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Hilfsfunktionen für Netzwerk & Start
+# Hostname → IP auflösen (vor DROP-Policy!)
 # ─────────────────────────────────────────────────────────────────────────────
 resolve_servers() {
     RESOLVED=""
@@ -147,26 +164,33 @@ resolve_servers() {
             log "VPN-Server aufgelöst: $server → $ip"
             RESOLVED="$RESOLVED $ip"
         else
-            log "WARNUNG: Konnte $server nicht auflösen - nutze Hostname"
+            log "WARN: Konnte $server nicht auflösen — nutze Hostname direkt"
             RESOLVED="$RESOLVED $server"
         fi
     done
     VPN_SERVERS="$RESOLVED"
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Kill-Switch
+# ─────────────────────────────────────────────────────────────────────────────
 apply_killswitch() {
     log "Aktiviere Kill-Switch (IPv4 + IPv6)..."
     IFACE_PATTERN="${VPN_IFACE%%[0-9]*}+"
 
-    # Docker-Bridge-Interface ermitteln (eth0 in den meisten Containern)
     DOCKER_IFACE=$(ip route show default 2>/dev/null | awk '{print $5}' | head -1)
     DOCKER_IFACE="${DOCKER_IFACE:-eth0}"
     WEB_PORT="${PORT:-5000}"
 
-    # IPv4 Regeln
-    iptables -F INPUT 2>/dev/null || true
+    debug "VPN-Interface-Pattern : $IFACE_PATTERN"
+    debug "Docker-Bridge-Interface: $DOCKER_IFACE"
+    debug "Web-UI-Port            : $WEB_PORT"
+    debug "VPN-Server-IPs         : $VPN_SERVERS"
+
+    # ── IPv4 ──────────────────────────────────────────────────────────────────
+    iptables -F INPUT  2>/dev/null || true
     iptables -F OUTPUT 2>/dev/null || true
-    iptables -P INPUT DROP
+    iptables -P INPUT  DROP
     iptables -P OUTPUT DROP
 
     iptables -A INPUT  -i lo -j ACCEPT
@@ -176,62 +200,180 @@ apply_killswitch() {
     iptables -A INPUT  -i "$IFACE_PATTERN" -j ACCEPT
     iptables -A OUTPUT -o "$IFACE_PATTERN" -j ACCEPT
 
-    # Web-UI: eingehende Verbindungen auf dem Docker-Bridge-Interface erlauben.
-    # Download-Traffic läuft trotzdem ausschließlich durch den VPN-Tunnel,
-    # weil SpotiFLAC ausgehende Verbindungen initiiert (OUTPUT DROP + nur tun/wg erlaubt).
+    # Web-UI auf Docker-Bridge erlauben (eingehend, Antworten via ESTABLISHED)
     iptables -A INPUT -i "$DOCKER_IFACE" -p tcp --dport "$WEB_PORT" -j ACCEPT
-    log "Web-UI erlaubt auf $DOCKER_IFACE:$WEB_PORT (ausgehender Traffic bleibt VPN-only)"
+    log "Web-UI erlaubt: $DOCKER_IFACE:$WEB_PORT → INPUT ACCEPT"
 
     for target in $VPN_SERVERS; do
         iptables -A OUTPUT -d "$target" -j ACCEPT
         iptables -A INPUT  -s "$target" -j ACCEPT
+        debug "Whitelist: $target"
     done
 
-    # IPv6 Block
+    if [ -n "$ALLOW_SUBNETS" ]; then
+        for subnet in $(echo "$ALLOW_SUBNETS" | tr ',' ' '); do
+            [ -z "$subnet" ] && continue
+            iptables -A OUTPUT -d "$subnet" -j ACCEPT
+            iptables -A INPUT  -s "$subnet" -j ACCEPT
+            log "Extra-Subnet freigegeben: $subnet"
+        done
+    fi
+
+    # ── IPv6 ──────────────────────────────────────────────────────────────────
     if command -v ip6tables > /dev/null 2>&1; then
-        ip6tables -P INPUT DROP
+        ip6tables -F INPUT  2>/dev/null || true
+        ip6tables -F OUTPUT 2>/dev/null || true
+        ip6tables -P INPUT  DROP
         ip6tables -P OUTPUT DROP
+        ip6tables -A INPUT  -i lo -j ACCEPT
+        ip6tables -A OUTPUT -o lo -j ACCEPT
+        ip6tables -A INPUT  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        ip6tables -A INPUT  -i "$IFACE_PATTERN" -j ACCEPT
+        ip6tables -A OUTPUT -o "$IFACE_PATTERN" -j ACCEPT
         log "IPv6 Kill-Switch aktiv"
+    else
+        log "WARN: ip6tables nicht verfügbar — IPv6 nicht geblockt"
+    fi
+
+    # ── Debug: komplette iptables-Regeln ausgeben ─────────────────────────────
+    if [ "$LOG_LEVEL" = "debug" ]; then
+        echo "[vpn] ══════════════ iptables -L -v -n ══════════════"
+        iptables -L -v -n 2>/dev/null | sed 's/^/[vpn]   /' || true
+        echo "[vpn] ═══════════════════════════════════════════════"
     fi
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# VPN starten
+# ─────────────────────────────────────────────────────────────────────────────
 start_vpn() {
     case "$VPN_PROTOCOL" in
         openvpn)
             log "Starte OpenVPN..."
-            openvpn --config "$CREDS_DIR/config.ovpn" --auth-nocache --log /vpn/openvpn.log --writepid /vpn/openvpn.pid --daemon
+            openvpn \
+                --config "$CREDS_DIR/config.ovpn" \
+                --auth-nocache \
+                --log /vpn/openvpn.log \
+                --writepid /vpn/openvpn.pid \
+                --daemon
             ;;
         wireguard)
             log "Starte WireGuard..."
             mkdir -p /etc/wireguard
             cp "$CREDS_DIR/wg0.conf" /etc/wireguard/wg0.conf
-            wg-quick up wg0
+            chmod 600 /etc/wireguard/wg0.conf
+            wg-quick up wg0 2>&1 | sed 's/^/[wg]   /'
             ;;
     esac
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Auf Tunnel warten
+# ─────────────────────────────────────────────────────────────────────────────
 wait_for_tunnel() {
-    log "Warte auf Interface $VPN_IFACE..."
+    log "Warte auf Interface $VPN_IFACE (max ${VPN_CONNECT_TIMEOUT:-30}s)..."
     max="${VPN_CONNECT_TIMEOUT:-30}"
     i=0
     while [ "$i" -lt "$max" ]; do
         if ip link show "$VPN_IFACE" > /dev/null 2>&1; then
-            log "Tunnel ist online!"
+            log "Tunnel $VPN_IFACE ist online"
+            if [ "$LOG_LEVEL" = "debug" ]; then
+                echo "[vpn] ══════════════ Netzwerk nach VPN-Start ══════════"
+                ip addr 2>/dev/null | sed 's/^/[vpn]   /' || true
+                echo "[vpn] ---"
+                ip route 2>/dev/null | sed 's/^/[vpn]   /' || true
+                echo "[vpn] ═══════════════════════════════════════════════"
+            fi
             return 0
         fi
-        sleep 1
+        # OpenVPN-Fehler früh erkennen
+        if [ "$VPN_PROTOCOL" = "openvpn" ] && [ -f /vpn/openvpn.log ]; then
+            if grep -q "AUTH_FAILED\|TLS Error\|Connection refused\|SIGTERM" /vpn/openvpn.log 2>/dev/null; then
+                err "OpenVPN meldet Fehler — Logs:"
+                cat /vpn/openvpn.log >&2
+                die "OpenVPN-Verbindung fehlgeschlagen"
+            fi
+        fi
         i=$((i + 1))
+        sleep 1
     done
-    die "Tunnel konnte nicht innerhalb von ${max}s aufgebaut werden."
+
+    err "Tunnel kam nicht innerhalb von ${max}s hoch"
+    [ -f /vpn/openvpn.log ] && cat /vpn/openvpn.log >&2
+    die "Timeout"
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# App starten und überwachen
+# ─────────────────────────────────────────────────────────────────────────────
+start_app() {
+    if [ -z "$APP_CMD" ]; then
+        log "APP_CMD nicht gesetzt — kein App-Prozess wird gestartet"
+        return
+    fi
+
+    log "Starte App: $APP_CMD"
+    sh -c "$APP_CMD" 2>&1 &
+    APP_PID=$!
+    debug "App PID: $APP_PID"
+
+    # Kurz warten und prüfen ob der Prozess noch läuft
+    sleep 2
+    if ! kill -0 "$APP_PID" 2>/dev/null; then
+        err "APP_CMD ($APP_CMD) ist sofort abgestürzt (PID $APP_PID)"
+        die "App-Start fehlgeschlagen"
+    fi
+    log "App läuft (PID $APP_PID)"
+
+    if [ "$LOG_LEVEL" = "debug" ]; then
+        debug "Offene Ports nach App-Start:"
+        ss -tlnp 2>/dev/null | sed 's/^/[vpn]   /' || \
+            netstat -tlnp 2>/dev/null | sed 's/^/[vpn]   /' || \
+            echo "[vpn]   (ss/netstat nicht verfügbar)"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tunnel + App-Prozess überwachen
+# ─────────────────────────────────────────────────────────────────────────────
 monitor_tunnel() {
-    log "Monitoring läuft..."
+    log "Monitoring aktiv (Intervall: ${VPN_CHECK_INTERVAL:-10}s)..."
     while true; do
         sleep "${VPN_CHECK_INTERVAL:-10}"
+
+        # Tunnel-Check
         if ! ip link show "$VPN_IFACE" > /dev/null 2>&1; then
-            err "VPN-Verbindung abgebrochen!"
+            err "Tunnel $VPN_IFACE nicht mehr aktiv — Container wird beendet"
+            [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null || true
             exit 1
+        fi
+
+        # OpenVPN-Prozess-Check
+        if [ "$VPN_PROTOCOL" = "openvpn" ] && [ -f /vpn/openvpn.pid ]; then
+            OVPN_PID=$(cat /vpn/openvpn.pid)
+            if ! kill -0 "$OVPN_PID" 2>/dev/null; then
+                err "OpenVPN-Prozess (PID $OVPN_PID) tot — Container wird beendet"
+                [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null || true
+                exit 1
+            fi
+            debug "OpenVPN PID $OVPN_PID lebt"
+        fi
+
+        # App-Prozess-Check
+        if [ -n "${APP_PID:-}" ] && ! kill -0 "$APP_PID" 2>/dev/null; then
+            err "App-Prozess (PID $APP_PID) tot — Container wird beendet"
+            exit 1
+        fi
+
+        # Optionaler Ping-Check durch den Tunnel
+        if [ -n "$VPN_PING_HOST" ]; then
+            if ! ping -c 1 -W 5 -I "$VPN_IFACE" "$VPN_PING_HOST" > /dev/null 2>&1; then
+                err "Ping $VPN_PING_HOST via $VPN_IFACE fehlgeschlagen — Container wird beendet"
+                [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null || true
+                exit 1
+            fi
+            debug "Ping $VPN_PING_HOST OK"
         fi
     done
 }
@@ -248,11 +390,5 @@ resolve_servers
 apply_killswitch
 start_vpn
 wait_for_tunnel
-
-if [ -n "$APP_CMD" ]; then
-    log "Starte Anwendung: $APP_CMD"
-    sh -c "$APP_CMD" &
-    APP_PID=$!
-fi
-
+start_app
 monitor_tunnel

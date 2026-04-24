@@ -21,6 +21,18 @@ logging.basicConfig(
 
 os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
 
+_log = logging.getLogger("startup")
+_log.info("OUTPUT_DIR  = %s", os.path.abspath(Config.OUTPUT_DIR))
+_log.info("PORT        = %s", Config.PORT)
+_log.info("SERVICES    = %s", Config.SERVICES)
+_log.info("VPN_PROTOCOL= %s", Config.VPN_PROTOCOL)
+_log.info("UI_PASSWORD = %s", "gesetzt" if Config.UI_PASSWORD else "nicht gesetzt (kein Schutz)")
+if os.environ.get("LOG_LEVEL", "").lower() == "debug":
+    import socket
+    _log.debug("Hostname    = %s", socket.gethostname())
+    _log.debug("Working dir = %s", os.getcwd())
+    _log.debug("Python path = %s", os.sys.executable)
+
 app = Flask(__name__, template_folder="templates")
 
 
