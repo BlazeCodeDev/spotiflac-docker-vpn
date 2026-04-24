@@ -45,9 +45,6 @@ log "Protokoll: $VPN_PROTOCOL"
 # OpenVPN Setup
 # ─────────────────────────────────────────────────────────────────────────────
 setup_openvpn() {
-    : "${VPN_USER:?VPN_USER ist erforderlich für OpenVPN}"
-    : "${VPN_PASS:?VPN_PASS ist erforderlich für OpenVPN}"
-
     CONFIG_PATH="$CREDS_DIR/config.ovpn"
     AUTH_PATH="$CREDS_DIR/auth.txt"
 
@@ -64,6 +61,8 @@ setup_openvpn() {
         fi
 
     elif [ -n "$VPN_SERVER" ]; then
+        : "${VPN_USER:?VPN_USER ist erforderlich wenn VPN_SERVER genutzt wird}"
+        : "${VPN_PASS:?VPN_PASS ist erforderlich wenn VPN_SERVER genutzt wird}"
         if [ -z "$VPN_CA_CERT_BASE64" ]; then
             die "VPN_CA_CERT_BASE64 ist erforderlich wenn VPN_SERVER genutzt wird"
         fi
@@ -95,13 +94,17 @@ EOF
         die "Setze VPN_CONFIG_BASE64, VPN_CONFIG_FILE oder VPN_SERVER + VPN_CA_CERT_BASE64"
     fi
 
-    printf '%s\n%s\n' "${VPN_USER}" "${VPN_PASS}" > "$AUTH_PATH"
-    chmod 600 "$AUTH_PATH" 2>/dev/null || true
-
-    if ! grep -q "^auth-user-pass" "$CONFIG_PATH"; then
-        echo "auth-user-pass $AUTH_PATH" >> "$CONFIG_PATH"
+    if [ -n "$VPN_USER" ] && [ -n "$VPN_PASS" ]; then
+        printf '%s\n%s\n' "${VPN_USER}" "${VPN_PASS}" > "$AUTH_PATH"
+        chmod 600 "$AUTH_PATH" 2>/dev/null || true
+        if ! grep -q "^auth-user-pass" "$CONFIG_PATH"; then
+            echo "auth-user-pass $AUTH_PATH" >> "$CONFIG_PATH"
+        else
+            sed -i "s|^auth-user-pass.*|auth-user-pass $AUTH_PATH|" "$CONFIG_PATH"
+        fi
+        log "auth-user-pass aus VPN_USER/VPN_PASS gesetzt"
     else
-        sed -i "s|^auth-user-pass.*|auth-user-pass $AUTH_PATH|" "$CONFIG_PATH"
+        log "VPN_USER/VPN_PASS nicht gesetzt — Credentials aus Config-File"
     fi
 
     debug "OpenVPN-Config (ohne Credentials):"
