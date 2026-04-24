@@ -35,9 +35,15 @@ pip-wheel-metadata/
 *.swp
 *.swo
 
-# code-server
-.local/share/code-server/
-.config/code-server/
+# System / Home directory files
+.local/
+.config/
+.bash_logout
+.bashrc
+.bash_history
+.profile
+.init_done
+.bash_profile
 
 # Claude / AI tools
 .claude/
@@ -46,7 +52,6 @@ pip-wheel-metadata/
 # Logs
 *.log
 logs/
-.local/share/code-server/logs/
 
 # Docker
 .docker/
