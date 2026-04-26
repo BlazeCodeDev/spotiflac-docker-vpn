@@ -183,6 +183,8 @@ apply_killswitch() {
 
     DOCKER_IFACE=$(ip route show default 2>/dev/null | awk '{print $5}' | head -1)
     DOCKER_IFACE="${DOCKER_IFACE:-eth0}"
+    # Save gateway before VPN routes override the default
+    DOCKER_GW=$(ip route show default 2>/dev/null | awk '{print $3}' | head -1)
     WEB_PORT="${PORT:-5000}"
 
     debug "VPN-Interface-Pattern : $IFACE_PATTERN"
@@ -242,6 +244,26 @@ apply_killswitch() {
         iptables -L -v -n 2>/dev/null | sed 's/^/[vpn]   /' || true
         echo "[vpn] ═══════════════════════════════════════════════"
     fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Return-Routing: Antwortpakete vom eth0-Interface gehen zurück über eth0,
+# nicht in den VPN-Tunnel. Notwendig weil OpenVPN 0.0.0.0/1 + 128.0.0.0/1
+# via tun0 injiziert und sonst alle Docker-Port-Mapping-Antworten im Tunnel
+# verschwinden.
+# ─────────────────────────────────────────────────────────────────────────────
+setup_return_routing() {
+    ETH0_IP=$(ip -4 addr show "$DOCKER_IFACE" 2>/dev/null \
+        | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
+
+    if [ -z "$DOCKER_GW" ] || [ -z "$ETH0_IP" ]; then
+        log "WARN: Return-Routing nicht eingerichtet (GW='$DOCKER_GW', IP='$ETH0_IP')"
+        return
+    fi
+
+    ip route add table 200 default via "$DOCKER_GW" dev "$DOCKER_IFACE" 2>/dev/null || true
+    ip rule add from "$ETH0_IP" table 200 priority 100 2>/dev/null || true
+    log "Return-Routing: Pakete von $ETH0_IP → $DOCKER_GW ($DOCKER_IFACE)"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -401,5 +423,6 @@ resolve_servers
 apply_killswitch
 start_vpn
 wait_for_tunnel
+setup_return_routing
 start_app
 monitor_tunnel
