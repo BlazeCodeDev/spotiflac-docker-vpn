@@ -116,7 +116,7 @@ details summary:hover { color: var(--tx); }
 .svc-tidal   { background:#1a1a1a; color:#fff;    border:1px solid #333; }
 .svc-qobuz   { background:#1a0a2e; color:#a78bfa; border:1px solid #4c1d95; }
 .svc-amazon  { background:#1a1200; color:#fbbf24; border:1px solid #78350f; }
-.svc-spoti   { background:#0a1f0a; color:#4ade80; border:1px solid #14532d; }
+.svc-deezer  { background:#0a1020; color:#60a5fa; border:1px solid #1e3a5f; }
 .svc-youtube { background:#1f0a0a; color:#f87171; border:1px solid #7f1d1d; }
 
 /* Buttons */
@@ -182,28 +182,28 @@ button:hover { opacity: .85; }
         </div>
 
         <div class="setting-group">
-          <label>Dateiname-Format</label>
-          <input type="text" id="filename-format" value="{{ filename_fmt }}">
-          <div class="hint">Variablen: {artist} {album} {title} {track} {year}</div>
+          <label>Dateiname-Format <span style="color:var(--tx3);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
+          <input type="text" value="{{ filename_fmt }}" readonly style="opacity:.5;cursor:default">
+          <div class="hint">Variablen: {artist} {album} {title} {track} {year} — via FILENAME_FORMAT</div>
         </div>
 
         <div>
-          <label style="display:block;color:var(--tx2);font-size:.78rem;text-transform:uppercase;letter-spacing:.07em;margin-bottom:.4rem">Ordnerstruktur</label>
+          <label style="display:block;color:var(--tx2);font-size:.78rem;text-transform:uppercase;letter-spacing:.07em;margin-bottom:.4rem">Ordnerstruktur <span style="color:var(--tx3);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
           <div class="toggle-row">
             <span class="toggle-label">Künstler-Unterordner</span>
-            <label class="switch"><input type="checkbox" id="artist-dirs" {% if artist_dirs %}checked{% endif %}><span class="slider"></span></label>
+            <label class="switch"><input type="checkbox" {% if artist_dirs %}checked{% endif %} disabled><span class="slider" style="opacity:.5"></span></label>
           </div>
           <div class="toggle-row">
             <span class="toggle-label">Album-Unterordner</span>
-            <label class="switch"><input type="checkbox" id="album-dirs" {% if album_dirs %}checked{% endif %}><span class="slider"></span></label>
+            <label class="switch"><input type="checkbox" {% if album_dirs %}checked{% endif %} disabled><span class="slider" style="opacity:.5"></span></label>
           </div>
         </div>
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:.9rem">
           <div class="setting-group">
-            <label>Retry (Minuten)</label>
-            <input type="number" id="retry-min" value="{{ retry_min }}" min="0" max="1440">
-            <div class="hint">0 = deaktiviert</div>
+            <label>Retry (Minuten) <span style="color:var(--tx3);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
+            <input type="number" value="{{ retry_min }}" min="0" max="1440" readonly style="opacity:.5;cursor:default">
+            <div class="hint">via RETRY_MINUTES</div>
           </div>
           <div class="setting-group">
             <label>Qobuz Token</label>
@@ -234,7 +234,7 @@ const ALL_SERVICES = [
   {id:'tidal',   name:'Tidal'},
   {id:'qobuz',   name:'Qobuz'},
   {id:'amazon',  name:'Amazon Music'},
-  {id:'spoti',   name:'Spoti'},
+  {id:'deezer',  name:'Deezer'},
   {id:'youtube', name:'YouTube'},
 ];
 const DEFAULT_ORDER = {{ services | tojson }};
@@ -317,13 +317,16 @@ async function refreshJobs() {
   const jobs = await fetch('/api/jobs').then(r=>r.json()).catch(()=>[]);
   const el   = document.getElementById('jobs-list');
   if (!jobs.length) { el.innerHTML='<div class="jobs-empty">Noch keine Downloads</div>'; return; }
-  el.innerHTML = jobs.map(j=>`
+  el.innerHTML = jobs.map(j=>{
+    const label = j.title || j.url;
+    return `
     <div class="job-item">
-      <div class="job-url"><a href="${esc(j.url)}" target="_blank" title="${esc(j.url)}">${esc(j.url)}</a></div>
+      <div class="job-url"><a href="${esc(j.url)}" target="_blank" title="${esc(j.url)}">${esc(label)}</a></div>
       <div class="job-time">${j.started_at||''}${j.finished_at?' → '+j.finished_at:''}</div>
       <span class="badge ${j.status}">${j.status}</span>
       ${j.error?`<div class="job-error">${esc(j.error)}</div>`:''}
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 document.getElementById('btn-dl').addEventListener('click', async () => {
@@ -335,12 +338,8 @@ document.getElementById('btn-dl').addEventListener('click', async () => {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({
       urls,
-      services:              getActiveServices(),
-      filename_format:       document.getElementById('filename-format').value,
-      use_artist_subfolders: document.getElementById('artist-dirs').checked,
-      use_album_subfolders:  document.getElementById('album-dirs').checked,
-      retry_minutes:         parseInt(document.getElementById('retry-min').value)||0,
-      qobuz_token:           document.getElementById('qobuz-token').value,
+      services:    getActiveServices(),
+      qobuz_token: document.getElementById('qobuz-token').value,
     }),
   });
   const data = await res.json();

@@ -8,7 +8,7 @@ from config import Config
 
 bp = Blueprint("main", __name__)
 
-_VALID_SERVICES = {"tidal", "qobuz", "amazon", "spoti", "youtube"}
+_VALID_SERVICES = {"tidal", "qobuz", "amazon", "deezer", "youtube"}
 
 
 def _safe_int(value, default: int) -> int:
@@ -17,10 +17,6 @@ def _safe_int(value, default: int) -> int:
     except (TypeError, ValueError):
         return default
 
-
-def _validate_filename_fmt(fmt: str) -> bool:
-    # Reject absolute paths and directory traversal
-    return ".." not in fmt and not fmt.startswith("/") and not fmt.startswith("\\")
 
 
 @bp.get("/")
@@ -49,14 +45,8 @@ def api_download():
     if not services:
         return jsonify(error="Keine gültigen Dienste angegeben"), 400
 
-    # Validate filename format — no path traversal
-    filename_fmt = body.get("filename_format", Config.FILENAME_FMT)
-    if not _validate_filename_fmt(filename_fmt):
-        return jsonify(error="Ungültiges filename_format"), 400
-
-    artist_dirs = bool(body.get("use_artist_subfolders", Config.ARTIST_DIRS))
-    album_dirs  = bool(body.get("use_album_subfolders",  Config.ALBUM_DIRS))
-    retry_min   = max(0, min(1440, _safe_int(body.get("retry_minutes"), Config.RETRY_MIN)))
+    # Filename format, folder structure and retry interval are always taken from
+    # env vars — the UI may display them but cannot override them.
     qobuz_token = str(body.get("qobuz_token", Config.QOBUZ_TOKEN))
 
     os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
@@ -66,10 +56,10 @@ def api_download():
             url=url,
             output_dir=Config.OUTPUT_DIR,
             services=services,
-            filename_fmt=filename_fmt,
-            artist_dirs=artist_dirs,
-            album_dirs=album_dirs,
-            retry_min=retry_min,
+            filename_fmt=Config.FILENAME_FMT,
+            artist_dirs=Config.ARTIST_DIRS,
+            album_dirs=Config.ALBUM_DIRS,
+            retry_min=Config.RETRY_MIN,
             qobuz_token=qobuz_token,
         )
         for url in urls

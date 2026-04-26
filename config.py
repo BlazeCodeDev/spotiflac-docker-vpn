@@ -3,7 +3,7 @@ import os
 
 class Config:
     OUTPUT_DIR   = os.environ.get("OUTPUT_DIR",            "./downloads")
-    SERVICES     = [s.strip() for s in os.environ.get("SPOTIFLAC_SERVICES", "tidal,qobuz,amazon,spoti,youtube").split(",") if s.strip()]
+    SERVICES     = [s.strip() for s in os.environ.get("SPOTIFLAC_SERVICES", "tidal,qobuz,amazon,youtube").split(",") if s.strip()]
     FILENAME_FMT = os.environ.get("FILENAME_FORMAT",       "{artist}/{year} - {album}/{track}. {title}")
     ARTIST_DIRS  = os.environ.get("USE_ARTIST_SUBFOLDERS", "true").lower() == "true"
     ALBUM_DIRS   = os.environ.get("USE_ALBUM_SUBFOLDERS",  "true").lower() == "true"
