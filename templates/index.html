@@ -549,12 +549,9 @@ document.getElementById('btn-search-dl').addEventListener('click', async () => {
   const data = await res.json();
   btn.disabled = false;
   if (res.ok) {
-    msg.textContent = `${data.queued} job(s) queued`;
     _selectedUrls.clear();
-    renderSearchResults();
-    updateSearchDlBtn();
     refreshJobs();
-    setTimeout(() => { msg.textContent = ''; }, 3000);
+    closeModal();
   } else {
     msg.textContent = data.error || 'Error';
   }
