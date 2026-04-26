@@ -1,3 +1,4 @@
+import logging
 import os
 
 from flask import Blueprint, jsonify, render_template, request
@@ -5,6 +6,8 @@ from flask import Blueprint, jsonify, render_template, request
 import worker
 import vpn
 from config import Config
+
+log = logging.getLogger(__name__)
 
 bp = Blueprint("main", __name__)
 
@@ -90,3 +93,58 @@ def api_ip():
     if "error" in data:
         return jsonify(data), 503
     return jsonify(data)
+
+
+@bp.get("/api/search")
+def api_search():
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify(error="No query provided"), 400
+    try:
+        from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient
+        client = SpotifyMetadataClient(timeout_s=8)
+        data   = client._get("/search", params={
+            "q": q, "type": "track,album,playlist", "limit": 6,
+        })
+        results = []
+        for t in data.get("tracks", {}).get("items", []):
+            if not t:
+                continue
+            artists = ", ".join(a["name"] for a in t.get("artists", []))
+            album   = t.get("album", {})
+            imgs    = album.get("images", [])
+            results.append({
+                "type":      "track",
+                "title":     t["name"],
+                "subtitle":  f"{artists} · {album.get('name', '')}" if artists else album.get("name", ""),
+                "cover_url": imgs[-1]["url"] if imgs else None,
+                "url":       f"https://open.spotify.com/track/{t['id']}",
+            })
+        for a in data.get("albums", {}).get("items", []):
+            if not a:
+                continue
+            artists = ", ".join(ar["name"] for ar in a.get("artists", []))
+            imgs    = a.get("images", [])
+            results.append({
+                "type":      "album",
+                "title":     a["name"],
+                "subtitle":  artists,
+                "cover_url": imgs[-1]["url"] if imgs else None,
+                "url":       f"https://open.spotify.com/album/{a['id']}",
+            })
+        for p in data.get("playlists", {}).get("items", []):
+            if not p:
+                continue
+            owner = (p.get("owner") or {}).get("display_name", "")
+            imgs  = p.get("images", [])
+            results.append({
+                "type":      "playlist",
+                "title":     p["name"],
+                "subtitle":  f"by {owner}" if owner else "",
+                "cover_url": imgs[-1]["url"] if imgs else None,
+                "url":       f"https://open.spotify.com/playlist/{p['id']}",
+            })
+        return jsonify(results)
+    except Exception as exc:
+        log.warning("Search failed: %s", exc)
+        return jsonify(error=str(exc)), 502

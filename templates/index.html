@@ -174,10 +174,42 @@ button:hover { opacity: .85; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
 .job-error { grid-column:1/-1; font-size:.75rem; color:#f87171; background:#450a0a22; border-radius:5px; padding:.3rem .6rem; font-family:monospace; }
 
-/* Search */
+/* Job search */
 .search-wrap { position: relative; margin-bottom: .85rem; }
 .search-wrap svg { position: absolute; left: .65rem; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; color: var(--tx3); pointer-events: none; }
 #job-search { width: 100%; padding-left: 2.1rem; }
+
+/* Spotify search card */
+.spotify-search-form { display: flex; gap: .5rem; }
+.spotify-search-form input { flex: 1; }
+#btn-search { background: var(--accent); color: #fff; padding: .55rem 1.2rem; }
+.result-list { display: flex; flex-direction: column; gap: .3rem; margin-top: .85rem; }
+.result-item {
+  display: grid; grid-template-columns: 44px 1fr auto auto; align-items: center;
+  gap: .5rem .7rem; padding: .55rem .65rem; border: 1px solid var(--border);
+  border-radius: 7px; cursor: pointer; user-select: none;
+  transition: border-color .12s, background .12s;
+}
+.result-item:hover   { border-color: var(--border2); background: var(--surf); }
+.result-item.sel     { border-color: var(--accent);  background: rgba(99,102,241,.09); }
+.result-cover    { width: 44px; height: 44px; border-radius: 4px; object-fit: cover; display: block; }
+.result-cover-ph { width: 44px; height: 44px; border-radius: 4px; background: var(--border); }
+.result-info  { min-width: 0; }
+.result-title { font-size: .84rem; color: var(--tx); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result-sub   { font-size: .75rem; color: var(--tx2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: .1rem; }
+.result-type  { font-size: .67rem; padding: .15rem .42rem; border-radius: 4px; font-weight: 600; white-space: nowrap; }
+.type-track    { background: #1e1b4b; color: #a5b4fc; }
+.type-album    { background: #14532d; color: #4ade80; }
+.type-playlist { background: #1a1200; color: #fbbf24; }
+.result-check {
+  width: 18px; height: 18px; border-radius: 4px; border: 1.5px solid var(--border2);
+  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  font-size: .72rem; color: transparent; transition: background .12s, border-color .12s, color .12s;
+}
+.result-item.sel .result-check { background: var(--accent); border-color: var(--accent); color: #fff; }
+.search-actions { margin-top: .85rem; display: flex; align-items: center; gap: .75rem; }
+#btn-search-dl { background: var(--accent); color: #fff; padding: .55rem 1.4rem; display: none; }
+#search-msg    { font-size: .8rem; color: var(--tx2); }
 
 /* Theme toggle */
 #theme-toggle {
@@ -214,6 +246,19 @@ button:hover { opacity: .85; }
 </header>
 
 <main>
+  <div class="card">
+    <div class="card-header"><span class="section-title">Search Spotify</span></div>
+    <form class="spotify-search-form" id="search-form">
+      <input type="text" id="search-input" placeholder="Search for tracks, albums or playlists…" autocomplete="off">
+      <button type="submit" id="btn-search">Search</button>
+    </form>
+    <div id="search-results"></div>
+    <div class="search-actions">
+      <button id="btn-search-dl">Download 0 selected</button>
+      <span id="search-msg"></span>
+    </div>
+  </div>
+
   <div class="card">
     <div class="card-header"><span class="section-title">Download</span></div>
     <textarea id="urls" placeholder="Spotify URLs — one per line or comma-separated&#10;https://open.spotify.com/track/…&#10;https://open.spotify.com/album/…&#10;https://open.spotify.com/playlist/…"></textarea>
@@ -281,6 +326,8 @@ button:hover { opacity: .85; }
 </main>
 
 <script>
+function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
 const ALL_SERVICES = [
   {id:'tidal',   name:'Tidal'},
   {id:'qobuz',   name:'Qobuz'},
@@ -362,9 +409,98 @@ function populate(d) {
   document.getElementById('tt-isp').textContent     = d.isp     || '–';
 }
 
-// Jobs
-function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// Spotify search
+let _searchResults = [];
+let _selectedUrls  = new Set();
 
+async function doSearch() {
+  const q = document.getElementById('search-input').value.trim();
+  if (!q) return;
+  const resultsEl = document.getElementById('search-results');
+  resultsEl.innerHTML = '<div class="jobs-empty">Searching…</div>';
+  _selectedUrls.clear();
+  updateSearchDlBtn();
+  try {
+    const res  = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    if (!res.ok) {
+      resultsEl.innerHTML = `<div class="jobs-empty">${esc(data.error || 'Search failed')}</div>`;
+      return;
+    }
+    _searchResults = data;
+    renderSearchResults();
+  } catch {
+    resultsEl.innerHTML = '<div class="jobs-empty">Search failed</div>';
+  }
+}
+
+function renderSearchResults() {
+  const el = document.getElementById('search-results');
+  if (!_searchResults.length) { el.innerHTML = '<div class="jobs-empty">No results</div>'; return; }
+  el.innerHTML = '<div class="result-list">' + _searchResults.map(r => {
+    const sel   = _selectedUrls.has(r.url);
+    const cover = r.cover_url
+      ? `<img class="result-cover" src="${esc(r.cover_url)}" alt="" loading="lazy">`
+      : `<div class="result-cover-ph"></div>`;
+    return `<div class="result-item${sel ? ' sel' : ''}" data-url="${esc(r.url)}">
+      ${cover}
+      <div class="result-info">
+        <div class="result-title">${esc(r.title)}</div>
+        <div class="result-sub">${esc(r.subtitle)}</div>
+      </div>
+      <span class="result-type type-${r.type}">${r.type}</span>
+      <div class="result-check">${sel ? '✓' : ''}</div>
+    </div>`;
+  }).join('') + '</div>';
+  el.querySelectorAll('.result-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const url = item.dataset.url;
+      if (_selectedUrls.has(url)) _selectedUrls.delete(url);
+      else _selectedUrls.add(url);
+      renderSearchResults();
+      updateSearchDlBtn();
+    });
+  });
+}
+
+function updateSearchDlBtn() {
+  const btn = document.getElementById('btn-search-dl');
+  const n   = _selectedUrls.size;
+  btn.textContent   = `Download ${n} selected`;
+  btn.style.display = n ? '' : 'none';
+}
+
+document.getElementById('search-form').addEventListener('submit', e => { e.preventDefault(); doSearch(); });
+
+document.getElementById('btn-search-dl').addEventListener('click', async () => {
+  if (!_selectedUrls.size) return;
+  const btn = document.getElementById('btn-search-dl');
+  const msg = document.getElementById('search-msg');
+  btn.disabled = true;
+  msg.textContent = '…';
+  const res  = await fetch('/api/download', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      urls:        [..._selectedUrls].join('\n'),
+      services:    getActiveServices(),
+      qobuz_token: document.getElementById('qobuz-token').value,
+    }),
+  });
+  const data = await res.json();
+  btn.disabled = false;
+  if (res.ok) {
+    msg.textContent = `${data.queued} job(s) queued`;
+    _selectedUrls.clear();
+    renderSearchResults();
+    updateSearchDlBtn();
+    refreshJobs();
+    setTimeout(() => { msg.textContent = ''; }, 3000);
+  } else {
+    msg.textContent = data.error || 'Error';
+  }
+});
+
+// Jobs
 let _allJobs = [];
 
 function renderJobs() {
