@@ -353,6 +353,21 @@ button:hover { opacity: .85; }
   </div>
 </main>
 
+<!-- Search results modal -->
+<div id="search-modal" class="modal-overlay" role="dialog" aria-modal="true">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title" id="modal-title">Search results</span>
+      <button class="modal-close" id="btn-modal-close" title="Close">✕</button>
+    </div>
+    <div class="modal-body" id="search-results"></div>
+    <div class="modal-footer">
+      <button id="btn-search-dl" style="display:none">Download 0 selected</button>
+      <span id="search-msg"></span>
+    </div>
+  </div>
+</div>
+
 <script>
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
@@ -619,19 +634,5 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e =
   if (!localStorage.getItem('theme')) applyTheme(e.matches ? 'dark' : 'light');
 });
 </script>
-<!-- Search results modal -->
-<div id="search-modal" class="modal-overlay" role="dialog" aria-modal="true">
-  <div class="modal">
-    <div class="modal-header">
-      <span class="modal-title" id="modal-title">Search results</span>
-      <button class="modal-close" id="btn-modal-close" title="Close">✕</button>
-    </div>
-    <div class="modal-body" id="search-results"></div>
-    <div class="modal-footer">
-      <button id="btn-search-dl" style="display:none">Download 0 selected</button>
-      <span id="search-msg"></span>
-    </div>
-  </div>
-</div>
 </body>
 </html>
