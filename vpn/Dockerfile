@@ -15,6 +15,10 @@ RUN apk add --no-cache \
 # App dependencies
 RUN pip install --no-cache-dir SpotiFLAC flask python-dotenv
 
+# Patch SpotiFLAC: preserve / as directory separator in filename formats
+COPY patch_spotiflac.py /tmp/patch_spotiflac.py
+RUN python3 /tmp/patch_spotiflac.py
+
 RUN mkdir -p /vpn /downloads /app/templates && \
     chmod 700 /vpn && \
     mkdir -p /etc/wireguard && chmod 700 /etc/wireguard

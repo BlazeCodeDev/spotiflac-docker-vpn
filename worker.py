@@ -15,23 +15,27 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%H:%M:%S")
 
 
-def _fetch_title(url: str) -> str | None:
-    """One lightweight Spotify API call — returns 'Artist — Title' or album/playlist name."""
+def _fetch_metadata(url: str) -> tuple[str | None, str | None]:
+    """Returns (label, cover_url). One lightweight Spotify API call, fails silently."""
     try:
         from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient, parse_spotify_url
         info   = parse_spotify_url(url)
         kind   = info["type"]
         sid    = info["id"]
         if kind not in ("track", "album", "playlist"):
-            return None
+            return None, None
         client = SpotifyMetadataClient(timeout_s=5)
         if kind == "track":
-            meta = client.get_track(sid)
-            return f"{meta.artists} — {meta.title}" if meta.artists else meta.title
-        data = client._get(f"/{kind}s/{sid}?fields=name")
-        return data.get("name") or None
+            meta  = client.get_track(sid)
+            label = f"{meta.artists} — {meta.title}" if meta.artists else meta.title
+            return label, meta.cover_url or None
+        data  = client._get(f"/{kind}s/{sid}")
+        name  = data.get("name") or None
+        imgs  = data.get("images", [])
+        cover = imgs[-1].get("url") if imgs else None  # last = smallest
+        return name, cover
     except Exception:
-        return None
+        return None, None
 
 
 def get_jobs() -> list[dict]:
@@ -51,7 +55,7 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
             artist_dirs: bool, album_dirs: bool, retry_min: int, qobuz_token: str) -> str:
     jid = str(uuid.uuid4())[:8]
     with _lock:
-        _jobs[jid] = dict(id=jid, url=url, title=None, status="queued",
+        _jobs[jid] = dict(id=jid, url=url, title=None, cover_url=None, status="queued",
                           started_at=_now(), finished_at=None, error=None)
     threading.Thread(target=_run, daemon=True,
                      args=(jid, url, output_dir, services, filename_fmt,
@@ -64,10 +68,12 @@ def _run(job_id: str, url: str, output_dir: str, services: list, filename_fmt: s
     with _lock:
         _jobs[job_id]["status"] = "running"
 
-    title = _fetch_title(url)
-    if title:
-        with _lock:
+    title, cover_url = _fetch_metadata(url)
+    with _lock:
+        if title:
             _jobs[job_id]["title"] = title
+        if cover_url:
+            _jobs[job_id]["cover_url"] = cover_url
 
     while True:
         try:

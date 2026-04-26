@@ -130,9 +130,11 @@ button:hover { opacity: .85; }
 
 /* Jobs */
 .jobs-empty { color: var(--tx3); font-size: .85rem; padding: .5rem 0; text-align: center; }
-.job-item { display: grid; grid-template-columns: 1fr auto auto; align-items: start; gap: .5rem .9rem; padding: .85rem 0; border-bottom: 1px solid var(--border); }
+.job-item { display: grid; grid-template-columns: 38px 1fr auto auto; align-items: center; gap: .5rem .75rem; padding: .75rem 0; border-bottom: 1px solid var(--border); }
 .job-item:last-child { border-bottom: none; }
-.job-url { font-size: .82rem; color: var(--tx2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-cover { width: 38px; height: 38px; border-radius: 4px; object-fit: cover; background: var(--border); display: block; flex-shrink: 0; }
+.job-cover-ph { width: 38px; height: 38px; border-radius: 4px; background: var(--border); flex-shrink: 0; }
+.job-url { font-size: .82rem; color: var(--tx2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .job-url a { color: inherit; text-decoration: none; }
 .job-url a:hover { color: var(--tx); }
 .job-time { font-size: .75rem; color: var(--tx3); white-space: nowrap; }
@@ -319,8 +321,12 @@ async function refreshJobs() {
   if (!jobs.length) { el.innerHTML='<div class="jobs-empty">Noch keine Downloads</div>'; return; }
   el.innerHTML = jobs.map(j=>{
     const label = j.title || j.url;
+    const cover = j.cover_url
+      ? `<img class="job-cover" src="${esc(j.cover_url)}" alt="" loading="lazy">`
+      : `<div class="job-cover-ph"></div>`;
     return `
     <div class="job-item">
+      ${cover}
       <div class="job-url"><a href="${esc(j.url)}" target="_blank" title="${esc(j.url)}">${esc(label)}</a></div>
       <div class="job-time">${j.started_at||''}${j.finished_at?' → '+j.finished_at:''}</div>
       <span class="badge ${j.status}">${j.status}</span>
