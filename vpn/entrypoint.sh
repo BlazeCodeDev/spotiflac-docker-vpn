@@ -1,9 +1,9 @@
 #!/bin/sh
 set -e
 
-# ── Log-Level ─────────────────────────────────────────────────────────────────
-# LOG_LEVEL=info  (default) — normales Logging
-# LOG_LEVEL=debug           — iptables, Netzwerk, Env-Vars, App-Status
+# ── Log level ─────────────────────────────────────────────────────────────────
+# LOG_LEVEL=info  (default) — standard logging
+# LOG_LEVEL=debug           — iptables, network, env vars, app status
 LOG_LEVEL="${LOG_LEVEL:-info}"
 
 log()   { echo "[vpn] $(date '+%H:%M:%S') INFO  $*"; }
@@ -17,32 +17,32 @@ debug() {
 CREDS_DIR=/vpn
 mkdir -p "$CREDS_DIR"
 if ! chmod 700 "$CREDS_DIR" 2>/dev/null; then
-    log "WARN: chmod 700 auf $CREDS_DIR fehlgeschlagen — Volume evtl. read-only"
+    log "WARN: chmod 700 on $CREDS_DIR failed — volume may be read-only"
 fi
 
-# ── Debug: Env-Vars und System-Info beim Start ────────────────────────────────
+# ── Debug: env vars and system info at startup ────────────────────────────────
 if [ "$LOG_LEVEL" = "debug" ]; then
     echo "[vpn] ══════════════════ DEBUG START ══════════════════"
     echo "[vpn] Kernel : $(uname -r)"
-    echo "[vpn] Env-Vars (ohne Secrets):"
+    echo "[vpn] Env vars (secrets excluded):"
     env | grep -v -i 'PASS\|KEY\|TOKEN\|SECRET\|BASE64' | sort | sed 's/^/[vpn]   /'
-    echo "[vpn] Netzwerk-Interfaces:"
-    ip addr 2>/dev/null | sed 's/^/[vpn]   /' || echo "[vpn]   (ip nicht verfügbar)"
-    echo "[vpn] Routing-Tabelle:"
+    echo "[vpn] Network interfaces:"
+    ip addr 2>/dev/null | sed 's/^/[vpn]   /' || echo "[vpn]   (ip not available)"
+    echo "[vpn] Routing table:"
     ip route 2>/dev/null | sed 's/^/[vpn]   /' || true
     echo "[vpn] ═══════════════════════════════════════════════"
 fi
 
-# ── Protokoll-Auswahl ─────────────────────────────────────────────────────────
+# ── Protocol selection ────────────────────────────────────────────────────────
 VPN_PROTOCOL="${VPN_PROTOCOL:-openvpn}"
 case "$VPN_PROTOCOL" in
     openvpn|wireguard) ;;
-    *) die "VPN_PROTOCOL muss 'openvpn' oder 'wireguard' sein, erhalten: $VPN_PROTOCOL" ;;
+    *) die "VPN_PROTOCOL must be 'openvpn' or 'wireguard', got: $VPN_PROTOCOL" ;;
 esac
-log "Protokoll: $VPN_PROTOCOL"
+log "Protocol: $VPN_PROTOCOL"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# OpenVPN Setup
+# OpenVPN setup
 # ─────────────────────────────────────────────────────────────────────────────
 setup_openvpn() {
     CONFIG_PATH="$CREDS_DIR/config.ovpn"
@@ -50,25 +50,25 @@ setup_openvpn() {
 
     if [ -n "$VPN_CONFIG_BASE64" ]; then
         echo "$VPN_CONFIG_BASE64" | base64 -d > "$CONFIG_PATH"
-        log "Konfiguration aus VPN_CONFIG_BASE64 geladen"
+        log "Config loaded from VPN_CONFIG_BASE64"
 
     elif [ -n "$VPN_CONFIG_FILE" ] && [ -f "$VPN_CONFIG_FILE" ]; then
         if [ "$VPN_CONFIG_FILE" != "$CONFIG_PATH" ]; then
             cp "$VPN_CONFIG_FILE" "$CONFIG_PATH"
-            log "Konfiguration von $VPN_CONFIG_FILE nach $CONFIG_PATH kopiert"
+            log "Config copied from $VPN_CONFIG_FILE to $CONFIG_PATH"
         else
-            log "Konfiguration liegt bereits an $CONFIG_PATH"
+            log "Config already at $CONFIG_PATH"
         fi
 
     elif [ -n "$VPN_SERVER" ]; then
-        : "${VPN_USER:?VPN_USER ist erforderlich wenn VPN_SERVER genutzt wird}"
-        : "${VPN_PASS:?VPN_PASS ist erforderlich wenn VPN_SERVER genutzt wird}"
+        : "${VPN_USER:?VPN_USER is required when using VPN_SERVER}"
+        : "${VPN_PASS:?VPN_PASS is required when using VPN_SERVER}"
         if [ -z "$VPN_CA_CERT_BASE64" ]; then
-            die "VPN_CA_CERT_BASE64 ist erforderlich wenn VPN_SERVER genutzt wird"
+            die "VPN_CA_CERT_BASE64 is required when using VPN_SERVER"
         fi
         VPN_PORT="${VPN_PORT:-1194}"
         VPN_TRANSPORT="${VPN_TRANSPORT:-udp}"
-        log "Generiere Konfiguration für $VPN_SERVER:$VPN_PORT ($VPN_TRANSPORT)"
+        log "Generating config for $VPN_SERVER:$VPN_PORT ($VPN_TRANSPORT)"
         echo "$VPN_CA_CERT_BASE64" | base64 -d > "$CREDS_DIR/ca.crt"
         cat > "$CONFIG_PATH" <<EOF
 client
@@ -91,7 +91,7 @@ EOF
             echo "tls-auth $CREDS_DIR/tls.key 1" >> "$CONFIG_PATH"
         fi
     else
-        die "Setze VPN_CONFIG_BASE64, VPN_CONFIG_FILE oder VPN_SERVER + VPN_CA_CERT_BASE64"
+        die "Set VPN_CONFIG_BASE64, VPN_CONFIG_FILE, or VPN_SERVER + VPN_CA_CERT_BASE64"
     fi
 
     if [ -n "$VPN_USER" ] && [ -n "$VPN_PASS" ]; then
@@ -102,12 +102,12 @@ EOF
         else
             sed -i "s|^auth-user-pass.*|auth-user-pass $AUTH_PATH|" "$CONFIG_PATH"
         fi
-        log "auth-user-pass aus VPN_USER/VPN_PASS gesetzt"
+        log "auth-user-pass set from VPN_USER/VPN_PASS"
     else
-        log "VPN_USER/VPN_PASS nicht gesetzt — Credentials aus Config-File"
+        log "VPN_USER/VPN_PASS not set — credentials from config file"
     fi
 
-    debug "OpenVPN-Config (ohne Credentials):"
+    debug "OpenVPN config (credentials excluded):"
     [ "$LOG_LEVEL" = "debug" ] && grep -v "auth-user-pass\|password\|pass" "$CONFIG_PATH" | sed 's/^/[vpn]   /' || true
 
     VPN_SERVERS=$(grep "^remote " "$CONFIG_PATH" | awk '{print $2}' | sort -u)
@@ -115,24 +115,24 @@ EOF
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# WireGuard Setup
+# WireGuard setup
 # ─────────────────────────────────────────────────────────────────────────────
 setup_wireguard() {
     WG_CONF="$CREDS_DIR/wg0.conf"
 
     if [ -n "$WG_CONFIG_BASE64" ]; then
         echo "$WG_CONFIG_BASE64" | base64 -d > "$WG_CONF"
-        log "WG-Konfig aus WG_CONFIG_BASE64 geladen"
+        log "WireGuard config loaded from WG_CONFIG_BASE64"
     elif [ -n "$WG_CONFIG_FILE" ] && [ -f "$WG_CONFIG_FILE" ]; then
         if [ "$WG_CONFIG_FILE" != "$WG_CONF" ]; then
             cp "$WG_CONFIG_FILE" "$WG_CONF"
         fi
-        log "WG-Konfig von $WG_CONFIG_FILE geladen"
+        log "WireGuard config loaded from $WG_CONFIG_FILE"
     else
-        : "${WG_PRIVATE_KEY:?WG_PRIVATE_KEY erforderlich}"
-        : "${WG_ADDRESS:?WG_ADDRESS erforderlich}"
-        : "${WG_SERVER_PUBLIC_KEY:?WG_SERVER_PUBLIC_KEY erforderlich}"
-        : "${WG_ENDPOINT:?WG_ENDPOINT erforderlich}"
+        : "${WG_PRIVATE_KEY:?WG_PRIVATE_KEY required}"
+        : "${WG_ADDRESS:?WG_ADDRESS required}"
+        : "${WG_SERVER_PUBLIC_KEY:?WG_SERVER_PUBLIC_KEY required}"
+        : "${WG_ENDPOINT:?WG_ENDPOINT required}"
         WG_ALLOWED_IPS="${WG_ALLOWED_IPS:-0.0.0.0/0,::/0}"
         WG_KEEPALIVE="${WG_KEEPALIVE:-25}"
         cat > "$WG_CONF" <<EOF
@@ -148,7 +148,7 @@ Endpoint = $WG_ENDPOINT
 AllowedIPs = $WG_ALLOWED_IPS
 PersistentKeepalive = $WG_KEEPALIVE
 EOF
-        log "WG-Konfig aus Env-Vars generiert"
+        log "WireGuard config generated from env vars"
     fi
 
     chmod 600 "$WG_CONF" 2>/dev/null || true
@@ -157,17 +157,17 @@ EOF
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Hostname → IP auflösen (vor DROP-Policy!)
+# Resolve hostnames to IPs (before DROP policy is applied!)
 # ─────────────────────────────────────────────────────────────────────────────
 resolve_servers() {
     RESOLVED=""
     for server in $VPN_SERVERS; do
         ip=$(getent hosts "$server" 2>/dev/null | awk '{print $1}' | head -1)
         if [ -n "$ip" ]; then
-            log "VPN-Server aufgelöst: $server → $ip"
+            log "VPN server resolved: $server → $ip"
             RESOLVED="$RESOLVED $ip"
         else
-            log "WARN: Konnte $server nicht auflösen — nutze Hostname direkt"
+            log "WARN: Could not resolve $server — using hostname directly"
             RESOLVED="$RESOLVED $server"
         fi
     done
@@ -175,10 +175,10 @@ resolve_servers() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Kill-Switch
+# Kill-switch
 # ─────────────────────────────────────────────────────────────────────────────
 apply_killswitch() {
-    log "Aktiviere Kill-Switch (IPv4 + IPv6)..."
+    log "Activating kill-switch (IPv4 + IPv6)..."
     IFACE_PATTERN="${VPN_IFACE%%[0-9]*}+"
 
     DOCKER_IFACE=$(ip route show default 2>/dev/null | awk '{print $5}' | head -1)
@@ -187,10 +187,10 @@ apply_killswitch() {
     DOCKER_GW=$(ip route show default 2>/dev/null | awk '{print $3}' | head -1)
     WEB_PORT="${PORT:-5000}"
 
-    debug "VPN-Interface-Pattern : $IFACE_PATTERN"
-    debug "Docker-Bridge-Interface: $DOCKER_IFACE"
-    debug "Web-UI-Port            : $WEB_PORT"
-    debug "VPN-Server-IPs         : $VPN_SERVERS"
+    debug "VPN interface pattern  : $IFACE_PATTERN"
+    debug "Docker bridge interface: $DOCKER_IFACE"
+    debug "Web UI port            : $WEB_PORT"
+    debug "VPN server IPs         : $VPN_SERVERS"
 
     # ── IPv4 ──────────────────────────────────────────────────────────────────
     iptables -F INPUT  2>/dev/null || true
@@ -200,13 +200,13 @@ apply_killswitch() {
 
     iptables -A INPUT  -i lo -j ACCEPT
     iptables -A OUTPUT -o lo -j ACCEPT
-    # VPN tunnel: alle Pakete auf dem Tunnel-Interface erlauben (kein conntrack nötig)
+    # VPN tunnel: allow all packets on the tunnel interface (no conntrack needed)
     iptables -A INPUT  -i "$IFACE_PATTERN" -j ACCEPT
     iptables -A OUTPUT -o "$IFACE_PATTERN" -j ACCEPT
-    # Web-UI: eingehende Anfragen + ausgehende Antworten (stateless, kein conntrack)
+    # Web UI: allow inbound requests and outbound replies (stateless, no conntrack)
     iptables -A INPUT  -p tcp --dport "$WEB_PORT" -j ACCEPT
     iptables -A OUTPUT -p tcp --sport "$WEB_PORT" -j ACCEPT
-    log "Web-UI Port $WEB_PORT: INPUT+OUTPUT ACCEPT (stateless, kein conntrack)"
+    log "Web UI port $WEB_PORT: INPUT+OUTPUT ACCEPT (stateless, no conntrack)"
 
     for target in $VPN_SERVERS; do
         iptables -A OUTPUT -d "$target" -j ACCEPT
@@ -219,7 +219,7 @@ apply_killswitch() {
             [ -z "$subnet" ] && continue
             iptables -A OUTPUT -d "$subnet" -j ACCEPT
             iptables -A INPUT  -s "$subnet" -j ACCEPT
-            log "Extra-Subnet freigegeben: $subnet"
+            log "Extra subnet allowed: $subnet"
         done
     fi
 
@@ -233,12 +233,12 @@ apply_killswitch() {
         ip6tables -A OUTPUT -o lo -j ACCEPT
         ip6tables -A INPUT  -i "$IFACE_PATTERN" -j ACCEPT
         ip6tables -A OUTPUT -o "$IFACE_PATTERN" -j ACCEPT
-        log "IPv6 Kill-Switch aktiv"
+        log "IPv6 kill-switch active"
     else
-        log "WARN: ip6tables nicht verfügbar — IPv6 nicht geblockt"
+        log "WARN: ip6tables not available — IPv6 not blocked"
     fi
 
-    # ── Debug: komplette iptables-Regeln ausgeben ─────────────────────────────
+    # ── Debug: dump full iptables rules ──────────────────────────────────────
     if [ "$LOG_LEVEL" = "debug" ]; then
         echo "[vpn] ══════════════ iptables -L -v -n ══════════════"
         iptables -L -v -n 2>/dev/null | sed 's/^/[vpn]   /' || true
@@ -247,32 +247,31 @@ apply_killswitch() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Return-Routing: Antwortpakete vom eth0-Interface gehen zurück über eth0,
-# nicht in den VPN-Tunnel. Notwendig weil OpenVPN 0.0.0.0/1 + 128.0.0.0/1
-# via tun0 injiziert und sonst alle Docker-Port-Mapping-Antworten im Tunnel
-# verschwinden.
+# Return routing: reply packets from eth0 go back via eth0, not into the VPN
+# tunnel. Required because OpenVPN injects 0.0.0.0/1 + 128.0.0.0/1 via tun0,
+# which would otherwise swallow all Docker port-mapped replies.
 # ─────────────────────────────────────────────────────────────────────────────
 setup_return_routing() {
     ETH0_IP=$(ip -4 addr show "$DOCKER_IFACE" 2>/dev/null \
         | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
 
     if [ -z "$DOCKER_GW" ] || [ -z "$ETH0_IP" ]; then
-        log "WARN: Return-Routing nicht eingerichtet (GW='$DOCKER_GW', IP='$ETH0_IP')"
+        log "WARN: Return routing not configured (GW='$DOCKER_GW', IP='$ETH0_IP')"
         return
     fi
 
     ip route add table 200 default via "$DOCKER_GW" dev "$DOCKER_IFACE" 2>/dev/null || true
     ip rule add from "$ETH0_IP" table 200 priority 100 2>/dev/null || true
-    log "Return-Routing: Pakete von $ETH0_IP → $DOCKER_GW ($DOCKER_IFACE)"
+    log "Return routing: packets from $ETH0_IP → $DOCKER_GW ($DOCKER_IFACE)"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# VPN starten
+# Start VPN
 # ─────────────────────────────────────────────────────────────────────────────
 start_vpn() {
     case "$VPN_PROTOCOL" in
         openvpn)
-            log "Starte OpenVPN..."
+            log "Starting OpenVPN..."
             openvpn \
                 --config "$CREDS_DIR/config.ovpn" \
                 --auth-nocache \
@@ -281,7 +280,7 @@ start_vpn() {
                 --daemon
             ;;
         wireguard)
-            log "Starte WireGuard..."
+            log "Starting WireGuard..."
             mkdir -p /etc/wireguard
             cp "$CREDS_DIR/wg0.conf" /etc/wireguard/wg0.conf
             chmod 600 /etc/wireguard/wg0.conf
@@ -291,17 +290,17 @@ start_vpn() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Auf Tunnel warten
+# Wait for tunnel
 # ─────────────────────────────────────────────────────────────────────────────
 wait_for_tunnel() {
-    log "Warte auf Interface $VPN_IFACE (max ${VPN_CONNECT_TIMEOUT:-30}s)..."
+    log "Waiting for interface $VPN_IFACE (max ${VPN_CONNECT_TIMEOUT:-30}s)..."
     max="${VPN_CONNECT_TIMEOUT:-30}"
     i=0
     while [ "$i" -lt "$max" ]; do
         if ip link show "$VPN_IFACE" > /dev/null 2>&1; then
-            log "Tunnel $VPN_IFACE ist online"
+            log "Tunnel $VPN_IFACE is up"
             if [ "$LOG_LEVEL" = "debug" ]; then
-                echo "[vpn] ══════════════ Netzwerk nach VPN-Start ══════════"
+                echo "[vpn] ══════════════ Network after VPN start ══════════"
                 ip addr 2>/dev/null | sed 's/^/[vpn]   /' || true
                 echo "[vpn] ---"
                 ip route 2>/dev/null | sed 's/^/[vpn]   /' || true
@@ -309,100 +308,100 @@ wait_for_tunnel() {
             fi
             return 0
         fi
-        # OpenVPN-Fehler früh erkennen
+        # Detect OpenVPN errors early
         if [ "$VPN_PROTOCOL" = "openvpn" ] && [ -f /vpn/openvpn.log ]; then
             if grep -q "AUTH_FAILED\|TLS Error\|Connection refused\|SIGTERM" /vpn/openvpn.log 2>/dev/null; then
-                err "OpenVPN meldet Fehler — Logs:"
+                err "OpenVPN reported an error — logs:"
                 cat /vpn/openvpn.log >&2
-                die "OpenVPN-Verbindung fehlgeschlagen"
+                die "OpenVPN connection failed"
             fi
         fi
         i=$((i + 1))
         sleep 1
     done
 
-    err "Tunnel kam nicht innerhalb von ${max}s hoch"
+    err "Tunnel did not come up within ${max}s"
     [ -f /vpn/openvpn.log ] && cat /vpn/openvpn.log >&2
     die "Timeout"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# App starten und überwachen
+# Start and monitor the app process
 # ─────────────────────────────────────────────────────────────────────────────
 start_app() {
-    # Default falls APP_CMD nicht in der .env gesetzt ist
+    # Default if APP_CMD is not set in .env
     APP_CMD="${APP_CMD:-python /app/app.py}"
     WEB_PORT="${PORT:-5000}"
 
-    log "Starte App: $APP_CMD"
+    log "Starting app: $APP_CMD"
 
-    # Python-Output ungepuffert damit Logs sofort in docker logs erscheinen
+    # Unbuffered Python output so logs appear immediately in docker logs
     export PYTHONUNBUFFERED=1
 
     sh -c "$APP_CMD" 2>&1 &
     APP_PID=$!
     log "App PID: $APP_PID"
 
-    # Warten bis Flask hochgefahren ist (max 15s)
+    # Wait for Flask to be ready (max 15s)
     i=0
     while [ "$i" -lt 15 ]; do
         sleep 1
-        # Prozess noch am Leben?
+        # Is the process still alive?
         if ! kill -0 "$APP_PID" 2>/dev/null; then
-            err "App-Prozess (PID $APP_PID) ist sofort abgestürzt"
-            err "Mögliche Ursachen: fehlendes Modul, falscher APP_CMD, Permission-Error"
-            die "App-Start fehlgeschlagen — prüfe docker logs"
+            err "App process (PID $APP_PID) crashed immediately"
+            err "Possible causes: missing module, wrong APP_CMD, permission error"
+            die "App failed to start — check docker logs"
         fi
-        # Port erreichbar?
+        # Is the port reachable?
         if nc -z 127.0.0.1 "$WEB_PORT" 2>/dev/null; then
-            log "App antwortet auf Port $WEB_PORT nach ${i}s ✓"
+            log "App responding on port $WEB_PORT after ${i}s ✓"
             return 0
         fi
         i=$((i + 1))
     done
 
-    # Prozess läuft, aber Port noch nicht offen — trotzdem weitermachen
+    # Process is running but port not open yet — continue anyway
     if kill -0 "$APP_PID" 2>/dev/null; then
-        log "WARN: App (PID $APP_PID) läuft, Port $WEB_PORT noch nicht offen nach 15s"
+        log "WARN: App (PID $APP_PID) is running but port $WEB_PORT not open after 15s"
     fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tunnel + App-Prozess überwachen
+# Monitor tunnel and app process
 # ─────────────────────────────────────────────────────────────────────────────
 monitor_tunnel() {
-    log "Monitoring aktiv (Intervall: ${VPN_CHECK_INTERVAL:-10}s)..."
+    log "Monitoring active (interval: ${VPN_CHECK_INTERVAL:-10}s)..."
     while true; do
         sleep "${VPN_CHECK_INTERVAL:-10}"
 
-        # Tunnel-Check
+        # Tunnel check
         if ! ip link show "$VPN_IFACE" > /dev/null 2>&1; then
-            err "Tunnel $VPN_IFACE nicht mehr aktiv — Container wird beendet"
+            err "Tunnel $VPN_IFACE is no longer active — shutting down container"
             [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null || true
             exit 1
         fi
 
-        # OpenVPN-Prozess-Check
+        # OpenVPN process check
         if [ "$VPN_PROTOCOL" = "openvpn" ] && [ -f /vpn/openvpn.pid ]; then
             OVPN_PID=$(cat /vpn/openvpn.pid)
             if ! kill -0 "$OVPN_PID" 2>/dev/null; then
-                err "OpenVPN-Prozess (PID $OVPN_PID) tot — Container wird beendet"
+                err "OpenVPN process (PID $OVPN_PID) died — shutting down container"
                 [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null || true
                 exit 1
             fi
-            debug "OpenVPN PID $OVPN_PID lebt"
+            debug "OpenVPN PID $OVPN_PID alive"
         fi
 
-        # App-Prozess-Check
+        # App process check
         if [ -n "${APP_PID:-}" ] && ! kill -0 "$APP_PID" 2>/dev/null; then
-            err "App-Prozess (PID $APP_PID) tot — Container wird beendet"
+            err "App process (PID $APP_PID) died — shutting down container"
             exit 1
         fi
 
-        # Optionaler Ping-Check durch den Tunnel
+        # Optional ping check through the tunnel
         if [ -n "$VPN_PING_HOST" ]; then
             if ! ping -c 1 -W 5 -I "$VPN_IFACE" "$VPN_PING_HOST" > /dev/null 2>&1; then
-                err "Ping $VPN_PING_HOST via $VPN_IFACE fehlgeschlagen — Container wird beendet"
+                err "Ping $VPN_PING_HOST via $VPN_IFACE failed — shutting down container"
                 [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null || true
                 exit 1
             fi

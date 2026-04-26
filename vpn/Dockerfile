@@ -25,9 +25,9 @@ RUN mkdir -p /vpn /downloads /app/templates && \
 
 WORKDIR /app
 
-# Python-Output ungepuffert → docker logs zeigt alles sofort
+# Unbuffered Python output so docker logs shows everything immediately
 ENV PYTHONUNBUFFERED=1
-# nc (netcat) für Port-Selbsttest in entrypoint.sh
+# nc (netcat) for port self-test in entrypoint.sh
 RUN apk add --no-cache netcat-openbsd
 
 COPY vpn/entrypoint.sh /entrypoint.sh

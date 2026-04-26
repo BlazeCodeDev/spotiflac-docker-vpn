@@ -1,6 +1,6 @@
 """
 Build-time patch: fix SpotiFLAC's build_filename so that / in a filename
-format (e.g. {artist}/{year} - {album}/{track}. {title}) is preserved as a
+format (e.g. {artist}/{year} - {album}/{track}. {title}) is kept as a
 directory separator instead of being stripped by the sanitize() call.
 """
 import pathlib, re, sys

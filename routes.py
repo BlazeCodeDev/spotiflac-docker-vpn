@@ -37,13 +37,13 @@ def api_download():
     raw  = body.get("urls", "")
     urls = [u.strip() for u in raw.replace(",", "\n").splitlines() if u.strip()]
     if not urls:
-        return jsonify(error="Keine URLs angegeben"), 400
+        return jsonify(error="No URLs provided"), 400
 
     # Whitelist services — reject unknown values
     raw_services = body.get("services", Config.SERVICES)
     services = [s for s in raw_services if s in _VALID_SERVICES]
     if not services:
-        return jsonify(error="Keine gültigen Dienste angegeben"), 400
+        return jsonify(error="No valid services specified"), 400
 
     # Filename format, folder structure and retry interval are always taken from
     # env vars — the UI may display them but cannot override them.

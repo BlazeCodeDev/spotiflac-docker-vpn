@@ -26,7 +26,7 @@ _log.info("OUTPUT_DIR  = %s", os.path.abspath(Config.OUTPUT_DIR))
 _log.info("PORT        = %s", Config.PORT)
 _log.info("SERVICES    = %s", Config.SERVICES)
 _log.info("VPN_PROTOCOL= %s", Config.VPN_PROTOCOL)
-_log.info("UI_PASSWORD = %s", "gesetzt" if Config.UI_PASSWORD else "nicht gesetzt (kein Schutz)")
+_log.info("UI_PASSWORD = %s", "set" if Config.UI_PASSWORD else "not set (no protection)")
 if os.environ.get("LOG_LEVEL", "").lower() == "debug":
     import socket
     _log.debug("Hostname    = %s", socket.gethostname())

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -190,7 +190,7 @@ button:hover { opacity: .85; }
 <header>
   <div class="logo">Spoti<span>FLAC</span></div>
   <div style="display:flex;align-items:center;gap:.5rem">
-    <button id="theme-toggle" title="Theme wechseln"></button>
+    <button id="theme-toggle" title="Toggle theme"></button>
     <div class="vpn-wrap">
       <div id="vpn-badge">
         <span class="dot"></span>
@@ -200,8 +200,8 @@ button:hover { opacity: .85; }
         <div class="tt-row"><span class="tt-label">Status</span><span class="tt-val" id="tt-status">–</span></div>
         <hr class="tt-div">
         <div class="tt-row"><span class="tt-label">IP</span><span class="tt-val" id="tt-ip">–</span></div>
-        <div class="tt-row"><span class="tt-label">Land</span><span class="tt-val" id="tt-country">–</span></div>
-        <div class="tt-row"><span class="tt-label">Stadt</span><span class="tt-val" id="tt-city">–</span></div>
+        <div class="tt-row"><span class="tt-label">Country</span><span class="tt-val" id="tt-country">–</span></div>
+        <div class="tt-row"><span class="tt-label">City</span><span class="tt-val" id="tt-city">–</span></div>
         <div class="tt-row"><span class="tt-label">ISP</span><span class="tt-val" id="tt-isp">–</span></div>
       </div>
     </div>
@@ -211,39 +211,39 @@ button:hover { opacity: .85; }
 <main>
   <div class="card">
     <div class="card-header"><span class="section-title">Download</span></div>
-    <textarea id="urls" placeholder="Spotify-URLs — eine pro Zeile oder kommagetrennt&#10;https://open.spotify.com/track/…&#10;https://open.spotify.com/album/…&#10;https://open.spotify.com/playlist/…"></textarea>
+    <textarea id="urls" placeholder="Spotify URLs — one per line or comma-separated&#10;https://open.spotify.com/track/…&#10;https://open.spotify.com/album/…&#10;https://open.spotify.com/playlist/…"></textarea>
 
     <details>
-      <summary>Einstellungen</summary>
+      <summary>Settings</summary>
       <div class="settings-grid">
 
         <div class="setting-group">
-          <label>Dienste &amp; Priorität</label>
+          <label>Services &amp; Priority</label>
           <div id="services-list"></div>
-          <div class="hint">Ziehen zum Sortieren — aktivierte Dienste werden der Reihe nach versucht</div>
+          <div class="hint">Drag to reorder — enabled services are tried in order</div>
         </div>
 
         <div class="setting-group">
-          <label>Dateiname-Format <span style="color:var(--tx3);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
+          <label>Filename Format <span style="color:var(--tx3);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
           <input type="text" value="{{ filename_fmt }}" readonly style="opacity:.5;cursor:default">
-          <div class="hint">Variablen: {artist} {album} {title} {track} {year} — via FILENAME_FORMAT</div>
+          <div class="hint">Variables: {artist} {album} {title} {track} {year} — via FILENAME_FORMAT</div>
         </div>
 
         <div>
-          <label style="display:block;color:var(--tx2);font-size:.78rem;text-transform:uppercase;letter-spacing:.07em;margin-bottom:.4rem">Ordnerstruktur <span style="color:var(--tx3);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
+          <label style="display:block;color:var(--tx2);font-size:.78rem;text-transform:uppercase;letter-spacing:.07em;margin-bottom:.4rem">Folder Structure <span style="color:var(--tx3);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
           <div class="toggle-row">
-            <span class="toggle-label">Künstler-Unterordner</span>
+            <span class="toggle-label">Artist subfolder</span>
             <label class="switch"><input type="checkbox" {% if artist_dirs %}checked{% endif %} disabled><span class="slider" style="opacity:.5"></span></label>
           </div>
           <div class="toggle-row">
-            <span class="toggle-label">Album-Unterordner</span>
+            <span class="toggle-label">Album subfolder</span>
             <label class="switch"><input type="checkbox" {% if album_dirs %}checked{% endif %} disabled><span class="slider" style="opacity:.5"></span></label>
           </div>
         </div>
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:.9rem">
           <div class="setting-group">
-            <label>Retry (Minuten) <span style="color:var(--tx3);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
+            <label>Retry (minutes) <span style="color:var(--tx3);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
             <input type="number" value="{{ retry_min }}" min="0" max="1440" readonly style="opacity:.5;cursor:default">
             <div class="hint">via RETRY_MINUTES</div>
           </div>
@@ -257,7 +257,7 @@ button:hover { opacity: .85; }
     </details>
 
     <div class="btn-row">
-      <button id="btn-dl">Herunterladen</button>
+      <button id="btn-dl">Download</button>
       <span id="msg"></span>
     </div>
   </div>
@@ -265,9 +265,9 @@ button:hover { opacity: .85; }
   <div class="card">
     <div class="card-header">
       <span class="section-title">Downloads</span>
-      <button class="btn-ghost" id="btn-clr">Erledigt löschen</button>
+      <button class="btn-ghost" id="btn-clr">Clear done</button>
     </div>
-    <div id="jobs-list"><div class="jobs-empty">Noch keine Downloads</div></div>
+    <div id="jobs-list"><div class="jobs-empty">No downloads yet</div></div>
   </div>
 </main>
 
@@ -332,8 +332,8 @@ async function refreshVPN() {
     badge.classList.toggle('disconnected', !d.connected);
     label.textContent = d.connected
       ? [d.protocol?.toUpperCase(), d.country, d.interface].filter(Boolean).join(' · ')
-      : 'Getrennt';
-    document.getElementById('tt-status').textContent = d.connected ? '● Verbunden' : '○ Getrennt';
+      : 'Disconnected';
+    document.getElementById('tt-status').textContent = d.connected ? '● Connected' : '○ Disconnected';
   } catch { document.getElementById('vpn-label').textContent = 'VPN ?'; }
 }
 
@@ -358,7 +358,7 @@ function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;')
 async function refreshJobs() {
   const jobs = await fetch('/api/jobs').then(r=>r.json()).catch(()=>[]);
   const el   = document.getElementById('jobs-list');
-  if (!jobs.length) { el.innerHTML='<div class="jobs-empty">Noch keine Downloads</div>'; return; }
+  if (!jobs.length) { el.innerHTML='<div class="jobs-empty">No downloads yet</div>'; return; }
   el.innerHTML = jobs.map(j=>{
     const label = j.title || j.url;
     const cover = j.cover_url
@@ -389,7 +389,7 @@ document.getElementById('btn-dl').addEventListener('click', async () => {
     }),
   });
   const data = await res.json();
-  msg.textContent = res.ok ? `${data.queued} Job(s) gestartet` : (data.error||'Fehler');
+  msg.textContent = res.ok ? `${data.queued} job(s) started` : (data.error||'Error');
   if (res.ok) { document.getElementById('urls').value=''; refreshJobs(); }
 });
 
