@@ -35,11 +35,6 @@ def _db():
 def init_db(path: str) -> None:
     global _DB
     _DB = path
-    # WAL mode is a database-level setting that persists; set it once in
-    # autocommit mode so it doesn't conflict with the transaction below.
-    _conn = sqlite3.connect(_DB, timeout=10)
-    _conn.execute("PRAGMA journal_mode=WAL")
-    _conn.close()
     with _db() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS jobs (
