@@ -174,6 +174,11 @@ button:hover { opacity: .85; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
 .job-error { grid-column:1/-1; font-size:.75rem; color:#f87171; background:#450a0a22; border-radius:5px; padding:.3rem .6rem; font-family:monospace; }
 
+/* Search */
+.search-wrap { position: relative; margin-bottom: .85rem; }
+.search-wrap svg { position: absolute; left: .65rem; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; color: var(--tx3); pointer-events: none; }
+#job-search { width: 100%; padding-left: 2.1rem; }
+
 /* Theme toggle */
 #theme-toggle {
   background: var(--surf); border: 1px solid var(--border2); color: var(--tx);
@@ -267,6 +272,10 @@ button:hover { opacity: .85; }
       <span class="section-title">Downloads</span>
       <button class="btn-ghost" id="btn-clr">Clear done</button>
     </div>
+    <div class="search-wrap">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8.5" cy="8.5" r="5.5"/><line x1="13" y1="13" x2="18" y2="18"/></svg>
+      <input type="text" id="job-search" placeholder="Filter downloads…" autocomplete="off">
+    </div>
     <div id="jobs-list"><div class="jobs-empty">No downloads yet</div></div>
   </div>
 </main>
@@ -355,10 +364,17 @@ function populate(d) {
 
 // Jobs
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-async function refreshJobs() {
-  const jobs = await fetch('/api/jobs').then(r=>r.json()).catch(()=>[]);
-  const el   = document.getElementById('jobs-list');
-  if (!jobs.length) { el.innerHTML='<div class="jobs-empty">No downloads yet</div>'; return; }
+
+let _allJobs = [];
+
+function renderJobs() {
+  const el = document.getElementById('jobs-list');
+  const q  = document.getElementById('job-search').value.trim().toLowerCase();
+  const jobs = q
+    ? _allJobs.filter(j => (j.title || j.url).toLowerCase().includes(q) || (j.status||'').includes(q))
+    : _allJobs;
+  if (!_allJobs.length) { el.innerHTML='<div class="jobs-empty">No downloads yet</div>'; return; }
+  if (!jobs.length)     { el.innerHTML='<div class="jobs-empty">No matches</div>'; return; }
   el.innerHTML = jobs.map(j=>{
     const label = j.title || j.url;
     const cover = j.cover_url
@@ -374,6 +390,13 @@ async function refreshJobs() {
     </div>`;
   }).join('');
 }
+
+async function refreshJobs() {
+  _allJobs = await fetch('/api/jobs').then(r=>r.json()).catch(()=>[]);
+  renderJobs();
+}
+
+document.getElementById('job-search').addEventListener('input', renderJobs);
 
 document.getElementById('btn-dl').addEventListener('click', async () => {
   const urls = document.getElementById('urls').value.trim();
