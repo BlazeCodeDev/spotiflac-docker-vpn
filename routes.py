@@ -80,6 +80,24 @@ def api_clear():
     return jsonify(cleared=worker.clear_done())
 
 
+@bp.delete("/api/jobs/<job_id>")
+def api_remove_job(job_id: str):
+    ok = worker.remove_job(job_id)
+    return (jsonify(ok=True), 200) if ok else (jsonify(error="Not found"), 404)
+
+
+@bp.post("/api/jobs/<job_id>/cancel")
+def api_cancel_job(job_id: str):
+    ok = worker.cancel_job(job_id)
+    return (jsonify(ok=True), 200) if ok else (jsonify(error="Not found or not cancellable"), 400)
+
+
+@bp.post("/api/jobs/<job_id>/retry")
+def api_retry_job(job_id: str):
+    ok = worker.retry_job(job_id)
+    return (jsonify(ok=True), 200) if ok else (jsonify(error="Not found or not retryable"), 400)
+
+
 @bp.get("/api/vpn")
 def api_vpn():
     status = vpn.tunnel_status()
@@ -97,54 +115,76 @@ def api_ip():
 
 @bp.get("/api/search")
 def api_search():
-    q = request.args.get("q", "").strip()
+    q      = request.args.get("q", "").strip()
+    offset = _safe_int(request.args.get("offset", 0), 0)
+    limit  = 6
     if not q:
         return jsonify(error="No query provided"), 400
     try:
         from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient
         client = SpotifyMetadataClient(timeout_s=8)
         data   = client._get("/search", params={
-            "q": q, "type": "track,album,playlist", "limit": 6,
+            "q": q, "type": "track,album,playlist",
+            "limit": limit, "offset": offset,
         })
         results = []
-        for t in data.get("tracks", {}).get("items", []):
+        tracks_obj    = data.get("tracks", {})
+        albums_obj    = data.get("albums", {})
+        playlists_obj = data.get("playlists", {})
+
+        for t in tracks_obj.get("items", []):
             if not t:
                 continue
-            artists = ", ".join(a["name"] for a in t.get("artists", []))
-            album   = t.get("album", {})
-            imgs    = album.get("images", [])
+            artists  = ", ".join(a["name"] for a in t.get("artists", []))
+            album    = t.get("album", {})
+            imgs     = album.get("images", [])
+            year     = (album.get("release_date") or "")[:4]
             results.append({
-                "type":      "track",
-                "title":     t["name"],
-                "subtitle":  f"{artists} · {album.get('name', '')}" if artists else album.get("name", ""),
-                "cover_url": imgs[-1]["url"] if imgs else None,
-                "url":       f"https://open.spotify.com/track/{t['id']}",
+                "type":        "track",
+                "title":       t["name"],
+                "subtitle":    f"{artists} · {album.get('name', '')}" if artists else album.get("name", ""),
+                "cover_url":   imgs[-1]["url"] if imgs else None,
+                "url":         f"https://open.spotify.com/track/{t['id']}",
+                "duration_ms": t.get("duration_ms"),
+                "year":        year or None,
             })
-        for a in data.get("albums", {}).get("items", []):
+        for a in albums_obj.get("items", []):
             if not a:
                 continue
             artists = ", ".join(ar["name"] for ar in a.get("artists", []))
             imgs    = a.get("images", [])
+            year    = (a.get("release_date") or "")[:4]
             results.append({
-                "type":      "album",
-                "title":     a["name"],
-                "subtitle":  artists,
-                "cover_url": imgs[-1]["url"] if imgs else None,
-                "url":       f"https://open.spotify.com/album/{a['id']}",
+                "type":        "album",
+                "title":       a["name"],
+                "subtitle":    artists,
+                "cover_url":   imgs[-1]["url"] if imgs else None,
+                "url":         f"https://open.spotify.com/album/{a['id']}",
+                "track_count": a.get("total_tracks"),
+                "year":        year or None,
             })
-        for p in data.get("playlists", {}).get("items", []):
+        for p in playlists_obj.get("items", []):
             if not p:
                 continue
             owner = (p.get("owner") or {}).get("display_name", "")
             imgs  = p.get("images", [])
             results.append({
-                "type":      "playlist",
-                "title":     p["name"],
-                "subtitle":  f"by {owner}" if owner else "",
-                "cover_url": imgs[-1]["url"] if imgs else None,
-                "url":       f"https://open.spotify.com/playlist/{p['id']}",
+                "type":        "playlist",
+                "title":       p["name"],
+                "subtitle":    f"by {owner}" if owner else "",
+                "cover_url":   imgs[-1]["url"] if imgs else None,
+                "url":         f"https://open.spotify.com/playlist/{p['id']}",
+                "track_count": (p.get("tracks") or {}).get("total"),
             })
-        return jsonify(results)
+
+        total = max(
+            tracks_obj.get("total", 0),
+            albums_obj.get("total", 0),
+            playlists_obj.get("total", 0),
+        )
+        has_more = (offset + limit) < total
+
+        return jsonify(results=results, has_more=has_more)
     except Exception as exc:
         log.warning("Search failed: %s", exc)
         return jsonify(error=str(exc)), 502

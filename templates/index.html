@@ -157,7 +157,7 @@ button:hover { opacity: .85; }
 
 /* Jobs */
 .jobs-empty { color: var(--tx3); font-size: .85rem; padding: .5rem 0; text-align: center; }
-.job-item { display: grid; grid-template-columns: 38px 1fr auto auto; align-items: center; gap: .5rem .75rem; padding: .75rem 0; border-bottom: 1px solid var(--border); }
+.job-item { display: grid; grid-template-columns: 38px 1fr auto auto auto auto; align-items: center; gap: .5rem .75rem; padding: .75rem 0; border-bottom: 1px solid var(--border); }
 .job-item:last-child { border-bottom: none; }
 .job-cover { width: 38px; height: 38px; border-radius: 4px; object-fit: cover; background: var(--border); display: block; flex-shrink: 0; }
 .job-cover-ph { width: 38px; height: 38px; border-radius: 4px; background: var(--border); flex-shrink: 0; }
@@ -243,6 +243,36 @@ button:hover { opacity: .85; }
   font-size: .72rem; color: transparent; transition: background .12s, border-color .12s, color .12s;
 }
 .result-item.sel .result-check { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* Cancelled badge */
+.badge.cancelled { background:#1a0a00; color:#fb923c; }
+
+/* Job action buttons */
+.job-btn { background: transparent; border: 1px solid var(--border2); color: var(--tx3); border-radius: 5px; padding: .2rem .45rem; font-size: .72rem; line-height: 1; }
+.job-btn:hover { opacity: 1; color: var(--tx); border-color: var(--tx3); }
+.job-btn.cancel:hover { color: var(--red);   border-color: var(--red); }
+.job-btn.retry:hover  { color: var(--green); border-color: var(--green); }
+.job-btn.remove:hover { color: var(--red);   border-color: var(--red); }
+
+/* Light mode type badge fixes */
+html[data-theme="light"] .type-track    { background: #ede9fe; color: #6d28d9; }
+html[data-theme="light"] .type-album    { background: #dcfce7; color: #16a34a; }
+html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
+
+/* Modal filter pills */
+.modal-filter { display: flex; gap: .4rem; padding: .6rem 1.2rem; border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
+.filter-pill { background: transparent; border: 1px solid var(--border2); color: var(--tx2); border-radius: 999px; padding: .2rem .75rem; font-size: .75rem; font-weight: 500; }
+.filter-pill:hover { opacity: 1; border-color: var(--tx3); color: var(--tx); }
+.filter-pill.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* Toast notifications */
+#toast-wrap { position: fixed; bottom: 1.25rem; right: 1.25rem; z-index: 9999; display: flex; flex-direction: column; gap: .5rem; pointer-events: none; }
+.toast { background: var(--card); border: 1px solid var(--border2); border-radius: 8px; padding: .6rem 1rem; font-size: .82rem; color: var(--tx); box-shadow: 0 8px 24px rgba(0,0,0,.4); animation: toast-in .2s ease; pointer-events: auto; max-width: 280px; }
+.toast.done  { border-left: 3px solid var(--green); }
+.toast.error { border-left: 3px solid var(--red); }
+@keyframes toast-in  { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:none; } }
+.toast.out { animation: toast-out .2s ease forwards; }
+@keyframes toast-out { to { opacity:0; transform:translateX(20px); } }
 
 /* Theme toggle */
 #theme-toggle {
@@ -360,6 +390,12 @@ button:hover { opacity: .85; }
       <span class="modal-title" id="modal-title">Search results</span>
       <button class="modal-close" id="btn-modal-close" title="Close">✕</button>
     </div>
+    <div class="modal-filter">
+      <button class="filter-pill active" data-filter="all">All</button>
+      <button class="filter-pill" data-filter="track">Tracks</button>
+      <button class="filter-pill" data-filter="album">Albums</button>
+      <button class="filter-pill" data-filter="playlist">Playlists</button>
+    </div>
     <div class="modal-body" id="search-results"></div>
     <div class="modal-footer">
       <button id="btn-search-dl" style="display:none">Download 0 selected</button>
@@ -452,8 +488,25 @@ function populate(d) {
   document.getElementById('tt-isp').textContent     = d.isp     || '–';
 }
 
+// Toast
+function showToast(text, type = 'done') {
+  const wrap = document.getElementById('toast-wrap');
+  const t = document.createElement('div');
+  t.className   = `toast ${type}`;
+  t.textContent = text;
+  wrap.appendChild(t);
+  setTimeout(() => {
+    t.classList.add('out');
+    setTimeout(() => t.remove(), 220);
+  }, 4000);
+}
+
 // Spotify search + modal
 let _searchResults = [];
+let _searchOffset  = 0;
+let _searchQuery   = '';
+let _searchFilter  = 'all';
+let _searchHasMore = false;
 let _selectedUrls  = new Set();
 
 function openModal(title) {
@@ -466,33 +519,65 @@ function closeModal() {
   document.body.style.overflow = '';
 }
 
-async function doSearch() {
+function fmtDuration(ms) {
+  if (!ms) return '';
+  const s = Math.round(ms / 1000);
+  return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+}
+function fmtSubtitle(r) {
+  const parts = [r.subtitle];
+  if (r.year) parts.push(r.year);
+  if (r.duration_ms) parts.push(fmtDuration(r.duration_ms));
+  if (r.track_count != null) parts.push(`${r.track_count} tracks`);
+  return parts.filter(Boolean).join(' · ');
+}
+
+async function doSearch(append = false) {
   const q = document.getElementById('search-input').value.trim();
-  if (!q) return;
-  _selectedUrls.clear();
-  document.getElementById('search-results').innerHTML = '<div class="jobs-empty">Searching…</div>';
-  document.getElementById('btn-search-dl').style.display = 'none';
-  document.getElementById('search-msg').textContent = '';
-  openModal(`Results for "${q}"`);
+  if (!q && !append) return;
+  if (!append) {
+    _searchResults = [];
+    _searchOffset  = 0;
+    _searchQuery   = q;
+    _searchFilter  = 'all';
+    _selectedUrls.clear();
+    document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p.dataset.filter === 'all'));
+    document.getElementById('search-results').innerHTML = '<div class="jobs-empty">Searching…</div>';
+    document.getElementById('btn-search-dl').style.display = 'none';
+    document.getElementById('search-msg').textContent = '';
+    openModal(`Results for "${q}"`);
+  }
   try {
-    const res  = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+    const res  = await fetch(`/api/search?q=${encodeURIComponent(_searchQuery)}&offset=${_searchOffset}`);
     const data = await res.json();
     if (!res.ok) {
       document.getElementById('search-results').innerHTML =
         `<div class="jobs-empty">${esc(data.error || 'Search failed')}</div>`;
       return;
     }
-    _searchResults = data;
+    _searchResults = append ? [..._searchResults, ...data.results] : data.results;
+    _searchHasMore = data.has_more;
+    _searchOffset += data.results.length;
     renderSearchResults();
   } catch {
-    document.getElementById('search-results').innerHTML = '<div class="jobs-empty">Search failed</div>';
+    if (!append) {
+      document.getElementById('search-results').innerHTML = '<div class="jobs-empty">Search failed</div>';
+    }
   }
 }
 
 function renderSearchResults() {
   const el = document.getElementById('search-results');
-  if (!_searchResults.length) { el.innerHTML = '<div class="jobs-empty">No results</div>'; return; }
-  el.innerHTML = '<div class="result-list">' + _searchResults.map(r => {
+  const visible = _searchFilter === 'all'
+    ? _searchResults
+    : _searchResults.filter(r => r.type === _searchFilter);
+
+  if (!visible.length) {
+    el.innerHTML = '<div class="jobs-empty">' + (_searchResults.length ? 'No results for this filter' : 'No results') + '</div>';
+    return;
+  }
+
+  let html = '<div class="result-list">' + visible.map(r => {
     const sel   = _selectedUrls.has(r.url);
     const cover = r.cover_url
       ? `<img class="result-cover" src="${esc(r.cover_url)}" alt="" loading="lazy">`
@@ -501,12 +586,18 @@ function renderSearchResults() {
       ${cover}
       <div class="result-info">
         <div class="result-title">${esc(r.title)}</div>
-        <div class="result-sub">${esc(r.subtitle)}</div>
+        <div class="result-sub">${esc(fmtSubtitle(r))}</div>
       </div>
       <span class="result-type type-${r.type}">${r.type}</span>
       <div class="result-check">${sel ? '✓' : ''}</div>
     </div>`;
   }).join('') + '</div>';
+
+  if (_searchHasMore) {
+    html += `<button id="btn-load-more" class="btn-ghost" style="width:100%;margin-top:.5rem;padding:.5rem" onclick="doSearch(true)">Load more</button>`;
+  }
+
+  el.innerHTML = html;
   el.querySelectorAll('.result-item').forEach(item => {
     item.addEventListener('click', () => {
       const url = item.dataset.url;
@@ -531,6 +622,14 @@ document.getElementById('search-modal').addEventListener('click', e => {
   if (e.target === e.currentTarget) closeModal();
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+document.querySelectorAll('.filter-pill').forEach(pill => {
+  pill.addEventListener('click', () => {
+    _searchFilter = pill.dataset.filter;
+    document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p === pill));
+    renderSearchResults();
+  });
+});
 
 document.getElementById('btn-search-dl').addEventListener('click', async () => {
   if (!_selectedUrls.size) return;
@@ -558,34 +657,63 @@ document.getElementById('btn-search-dl').addEventListener('click', async () => {
 });
 
 // Jobs
-let _allJobs = [];
+let _allJobs       = [];
+let _prevJobStates = {};
 
 function renderJobs() {
-  const el = document.getElementById('jobs-list');
-  const q  = document.getElementById('job-search').value.trim().toLowerCase();
+  const el   = document.getElementById('jobs-list');
+  const q    = document.getElementById('job-search').value.trim().toLowerCase();
   const jobs = q
     ? _allJobs.filter(j => (j.title || j.url).toLowerCase().includes(q) || (j.status||'').includes(q))
     : _allJobs;
   if (!_allJobs.length) { el.innerHTML='<div class="jobs-empty">No downloads yet</div>'; return; }
   if (!jobs.length)     { el.innerHTML='<div class="jobs-empty">No matches</div>'; return; }
-  el.innerHTML = jobs.map(j=>{
+  el.innerHTML = jobs.map(j => {
     const label = j.title || j.url;
     const cover = j.cover_url
       ? `<img class="job-cover" src="${esc(j.cover_url)}" alt="" loading="lazy">`
       : `<div class="job-cover-ph"></div>`;
+    let actionBtn = '<span></span>';
+    if (j.status === 'queued' || j.status === 'running') {
+      actionBtn = `<button class="job-btn cancel" data-action="cancel" data-id="${esc(j.id)}" title="Cancel">⏹</button>`;
+    } else if (j.status === 'error' || j.status === 'cancelled') {
+      actionBtn = `<button class="job-btn retry" data-action="retry" data-id="${esc(j.id)}" title="Retry">↺</button>`;
+    }
     return `
     <div class="job-item">
       ${cover}
       <div class="job-url"><a href="${esc(j.url)}" target="_blank" title="${esc(j.url)}">${esc(label)}</a></div>
       <div class="job-time">${j.started_at||''}${j.finished_at?' → '+j.finished_at:''}</div>
       <span class="badge ${j.status}">${j.status}</span>
+      ${actionBtn}
+      <button class="job-btn remove" data-action="remove" data-id="${esc(j.id)}" title="Remove">✕</button>
       ${j.error?`<div class="job-error">${esc(j.error)}</div>`:''}
     </div>`;
   }).join('');
+
+  el.querySelectorAll('[data-action]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const {action, id} = btn.dataset;
+      if      (action === 'cancel') await fetch(`/api/jobs/${id}/cancel`, {method:'POST'});
+      else if (action === 'retry')  await fetch(`/api/jobs/${id}/retry`,  {method:'POST'});
+      else if (action === 'remove') await fetch(`/api/jobs/${id}`,        {method:'DELETE'});
+      refreshJobs();
+    });
+  });
 }
 
 async function refreshJobs() {
-  _allJobs = await fetch('/api/jobs').then(r=>r.json()).catch(()=>[]);
+  const newJobs = await fetch('/api/jobs').then(r=>r.json()).catch(()=>null);
+  if (!newJobs) return;
+  newJobs.forEach(j => {
+    const prev = _prevJobStates[j.id];
+    if (prev && prev !== j.status) {
+      if (j.status === 'done')  showToast(`Done: ${j.title || j.url}`,   'done');
+      if (j.status === 'error') showToast(`Failed: ${j.title || j.url}`, 'error');
+    }
+  });
+  _prevJobStates = Object.fromEntries(newJobs.map(j => [j.id, j.status]));
+  _allJobs = newJobs;
   renderJobs();
 }
 
@@ -631,5 +759,6 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e =
   if (!localStorage.getItem('theme')) applyTheme(e.matches ? 'dark' : 'light');
 });
 </script>
+<div id="toast-wrap"></div>
 </body>
 </html>
