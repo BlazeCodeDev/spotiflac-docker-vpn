@@ -18,7 +18,7 @@ _STATE_FILE = os.environ.get("STATE_FILE", "/vpn/jobs.json")
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%H:%M:%S")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _save() -> None:

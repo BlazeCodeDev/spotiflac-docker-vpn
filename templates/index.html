@@ -174,7 +174,10 @@ button:hover { opacity: .85; }
 /* Job search */
 .search-wrap { position: relative; margin-bottom: .85rem; }
 .search-wrap .material-icons { position: absolute; left: .55rem; top: 50%; transform: translateY(-50%); font-size: 16px; color: var(--tx3); pointer-events: none; }
-#job-search { width: 100%; padding-left: 2rem; }
+#job-search { width: 100%; padding-left: 2rem; padding-right: 1.75rem; }
+.search-clear { position: absolute; right: .45rem; top: 50%; transform: translateY(-50%); background: none; border: none; padding: 0; color: var(--tx3); cursor: pointer; line-height: 1; display: flex; align-items: center; border-radius: 3px; }
+.search-clear:hover { color: var(--tx); opacity: 1; }
+.search-clear .material-icons { font-size: 15px; }
 
 /* Search modal */
 .modal-overlay {
@@ -346,7 +349,10 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
       <span class="section-title">Download or Search</span>
       <button class="btn-ghost" id="btn-settings" title="Settings" style="padding:.3rem .5rem;line-height:1"><span class="material-icons">settings</span></button>
     </div>
-    <textarea id="urls" placeholder="Paste Spotify URLs — one per line or comma-separated&#10;https://open.spotify.com/track/…&#10;&#10;Or type an artist, album or track name to search"></textarea>
+    <div style="position:relative">
+      <textarea id="urls" placeholder="Paste Spotify URLs — one per line or comma-separated&#10;https://open.spotify.com/track/…&#10;&#10;Or type an artist, album or track name to search" style="padding-right:1.8rem"></textarea>
+      <button id="btn-urls-clear" title="Clear" style="display:none;position:absolute;top:.5rem;right:.5rem;background:none;border:none;color:var(--tx3);cursor:pointer;padding:0;line-height:1;border-radius:3px" onmouseover="this.style.color='var(--tx)'" onmouseout="this.style.color='var(--tx3)'"><span class="material-icons" style="font-size:15px">close</span></button>
+    </div>
 
     <div class="btn-row">
       <button id="btn-dl">Download</button>
@@ -366,6 +372,7 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
     <div class="search-wrap">
       <span class="material-icons">search</span>
       <input type="text" id="job-search" placeholder="Filter downloads…" autocomplete="off">
+      <button class="search-clear" id="btn-job-search-clear" title="Clear" style="display:none"><span class="material-icons">close</span></button>
     </div>
     <div id="bulk-bar">
       <span id="bulk-count" style="color:var(--tx2);flex-shrink:0">0 selected</span>
@@ -465,6 +472,12 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
 
 <script>
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function fmtTime(ts) {
+  if (!ts) return '';
+  if (ts.includes('T')) return new Date(ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  return ts; // legacy HH:MM:SS
+}
 
 const ALL_SERVICES = [
   {id:'tidal',   name:'Tidal'},
@@ -827,7 +840,7 @@ function renderJobs() {
       <span class="job-handle" draggable="true" data-id="${esc(j.id)}" title="Drag to reorder"><span class="material-icons">drag_indicator</span></span>
       ${cover}
       <div class="job-url"><a href="${esc(j.url)}" target="_blank" title="${esc(j.url)}">${esc(label)}</a></div>
-      <div class="job-time">${j.started_at || ''}${j.finished_at ? ' → ' + j.finished_at : ''}</div>
+      <div class="job-time">${fmtTime(j.started_at)}${j.finished_at ? ' → ' + fmtTime(j.finished_at) : ''}</div>
       <span class="badge ${j.status}">${j.status === 'running' && j.total > 1 ? j.progress + '/' + j.total : j.status}</span>
       <span class="quality-badge">${j.quality === 'hires' ? 'Hi-Res' : 'Lossless'}</span>
       ${actionBtn}
@@ -912,7 +925,30 @@ async function refreshJobs() {
   renderJobs();
 }
 
-document.getElementById('job-search').addEventListener('input', renderJobs);
+const _jobSearchEl    = document.getElementById('job-search');
+const _jobSearchClear = document.getElementById('btn-job-search-clear');
+_jobSearchEl.addEventListener('input', () => {
+  _jobSearchClear.style.display = _jobSearchEl.value ? '' : 'none';
+  renderJobs();
+});
+_jobSearchClear.addEventListener('click', () => {
+  _jobSearchEl.value = '';
+  _jobSearchClear.style.display = 'none';
+  renderJobs();
+  _jobSearchEl.focus();
+});
+
+const _urlsEl    = document.getElementById('urls');
+const _urlsClear = document.getElementById('btn-urls-clear');
+_urlsEl.addEventListener('input', () => {
+  _urlsClear.style.display = _urlsEl.value.trim() ? '' : 'none';
+});
+_urlsClear.addEventListener('click', () => {
+  _urlsEl.value = '';
+  _urlsClear.style.display = 'none';
+  document.getElementById('msg').textContent = '';
+  _urlsEl.focus();
+});
 
 document.getElementById('btn-dl').addEventListener('click', async () => {
   const urls = document.getElementById('urls').value.trim();
@@ -930,7 +966,7 @@ document.getElementById('btn-dl').addEventListener('click', async () => {
   });
   const data = await res.json();
   msg.textContent = res.ok ? `${data.queued} job(s) started` : (data.error||'Error');
-  if (res.ok) { document.getElementById('urls').value=''; refreshJobs(); }
+  if (res.ok) { _urlsEl.value=''; _urlsClear.style.display='none'; refreshJobs(); }
 });
 
 document.getElementById('btn-clr').addEventListener('click', async () => { await fetch('/api/jobs', {method: 'DELETE'}); refreshJobs(); });
