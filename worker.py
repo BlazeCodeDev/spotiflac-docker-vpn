@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -12,9 +13,45 @@ _jobs:   dict[str, dict]            = {}
 _cancel: dict[str, threading.Event] = {}
 _lock   = threading.Lock()
 
+_STATE_FILE = os.environ.get("STATE_FILE", "/vpn/jobs.json")
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%H:%M:%S")
+
+
+def _save() -> None:
+    try:
+        with _lock:
+            snapshot = {"seq": _seq, "jobs": {jid: dict(j) for jid, j in _jobs.items()}}
+        tmp = _STATE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(snapshot, f)
+        os.replace(tmp, _STATE_FILE)
+    except Exception as exc:
+        log.warning("State save failed: %s", exc)
+
+
+def _load() -> None:
+    global _seq
+    try:
+        with open(_STATE_FILE) as f:
+            snapshot = json.load(f)
+        for jid, j in snapshot.get("jobs", {}).items():
+            if j.get("status") in ("running", "queued"):
+                j["status"]      = "error"
+                j["error"]       = "Interrupted by restart"
+                j["finished_at"] = _now()
+            _jobs[jid] = j
+        _seq = snapshot.get("seq", 0)
+        log.info("Loaded %d job(s) from %s", len(_jobs), _STATE_FILE)
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        log.warning("State load failed: %s", exc)
+
+
+_load()
 
 
 def get_jobs() -> list[dict]:
@@ -29,6 +66,7 @@ def clear_done() -> int:
         for jid in ids:
             _jobs.pop(jid, None)
             _cancel.pop(jid, None)
+    _save()
     return len(ids)
 
 
@@ -37,7 +75,10 @@ def remove_job(job_id: str) -> bool:
     if ev:
         ev.set()
     with _lock:
-        return _jobs.pop(job_id, None) is not None
+        found = _jobs.pop(job_id, None) is not None
+    if found:
+        _save()
+    return found
 
 
 def cancel_job(job_id: str) -> bool:
@@ -50,6 +91,7 @@ def cancel_job(job_id: str) -> bool:
             return False
         j["status"]      = "cancelled"
         j["finished_at"] = _now()
+    _save()
     return True
 
 
@@ -59,6 +101,7 @@ def reorder_jobs(ids: list) -> None:
         for rank, jid in enumerate(ids):
             if jid in _jobs:
                 _jobs[jid]["_seq"] = total - rank
+    _save()
 
 
 def retry_job(job_id: str) -> bool:
@@ -68,6 +111,7 @@ def retry_job(job_id: str) -> bool:
             return False
         j.update(status="queued", started_at=_now(), finished_at=None, error=None)
     _cancel[job_id] = threading.Event()
+    _save()
     threading.Thread(target=_run, daemon=True, args=(job_id,)).start()
     return True
 
@@ -89,6 +133,7 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
             _seq=_seq,
         )
     _cancel[jid] = threading.Event()
+    _save()
     threading.Thread(target=_run, daemon=True, args=(jid,)).start()
     return jid
 
@@ -98,6 +143,7 @@ def _update(job_id: str, **kwargs) -> None:
         j = _jobs.get(job_id)
         if j:
             j.update(kwargs)
+    _save()
 
 
 def _fetch_metadata(url: str) -> tuple[str | None, str | None]:
@@ -139,7 +185,7 @@ def _run(job_id: str) -> None:
     artist_dirs  = j["artist_dirs"]
     album_dirs   = j["album_dirs"]
     retry_min    = j["retry_min"]
-    qobuz_token  = j["_qobuz_token"] or ""
+    qobuz_token  = j.get("_qobuz_token") or ""
 
     _update(job_id, status="running", started_at=_now())
 
