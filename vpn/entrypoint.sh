@@ -354,7 +354,7 @@ start_app() {
         fi
         # Is the port reachable?
         if nc -z 127.0.0.1 "$WEB_PORT" 2>/dev/null; then
-            log "App responding on port $WEB_PORT after ${i}s ✓"
+            log "App responding on port $WEB_PORT after ${i}s"
             return 0
         fi
         i=$((i + 1))

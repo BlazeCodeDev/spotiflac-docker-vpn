@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>SpotiFLAC</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
 <script>
 (function(){
   const s = localStorage.getItem('theme');
@@ -174,10 +175,13 @@ button:hover { opacity: .85; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
 .job-error { grid-column:1/-1; font-size:.75rem; color:#f87171; background:#450a0a22; border-radius:5px; padding:.3rem .6rem; font-family:monospace; }
 
+/* Material Icons baseline sizing */
+.material-icons { font-size: 18px; vertical-align: middle; line-height: 1; }
+
 /* Job search */
 .search-wrap { position: relative; margin-bottom: .85rem; }
-.search-wrap svg { position: absolute; left: .65rem; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; color: var(--tx3); pointer-events: none; }
-#job-search { width: 100%; padding-left: 2.1rem; }
+.search-wrap .material-icons { position: absolute; left: .55rem; top: 50%; transform: translateY(-50%); font-size: 16px; color: var(--tx3); pointer-events: none; }
+#job-search { width: 100%; padding-left: 2rem; }
 
 /* Spotify search card */
 .spotify-search-form { display: flex; gap: .5rem; }
@@ -389,7 +393,7 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
       <button class="btn-ghost" id="btn-clr">Clear done</button>
     </div>
     <div class="search-wrap">
-      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8.5" cy="8.5" r="5.5"/><line x1="13" y1="13" x2="18" y2="18"/></svg>
+      <span class="material-icons">search</span>
       <input type="text" id="job-search" placeholder="Filter downloads…" autocomplete="off">
     </div>
     <div id="bulk-bar">
@@ -411,7 +415,7 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
   <div class="modal">
     <div class="modal-header">
       <span class="modal-title" id="modal-title">Search results</span>
-      <button class="modal-close" id="btn-modal-close" title="Close">Close</button>
+      <button class="modal-close" id="btn-modal-close" title="Close"><span class="material-icons">close</span></button>
     </div>
     <div class="modal-filter">
       <button class="filter-pill active" data-filter="all">All</button>
@@ -454,7 +458,7 @@ function buildServicesList() {
     el.dataset.id = svc.id;
     const enabled = DEFAULT_ORDER.includes(svc.id);
     el.innerHTML = `
-      <span class="svc-handle">⠿</span>
+      <span class="svc-handle"><span class="material-icons">drag_indicator</span></span>
       <span class="svc-name">${svc.name}</span>
       <span class="badge svc-badge svc-${svc.id}">${svc.id}</span>
       <label class="switch"><input type="checkbox" class="svc-toggle" data-id="${svc.id}" ${enabled?'checked':''}><span class="slider"></span></label>`;
@@ -626,7 +630,7 @@ function renderSearchResults() {
         <div class="result-sub">${esc(fmtSubtitle(r))}</div>
       </div>
       <span class="result-type type-${r.type}">${r.type}</span>
-      <div class="result-check">${sel ? '✓' : ''}</div>
+      <div class="result-check"><span class="material-icons" style="font-size:13px">check</span></div>
     </div>`;
   }).join('') + '</div>';
 
@@ -722,20 +726,20 @@ function renderJobs() {
     const sel = _selectedJobIds.has(j.id);
     let actionBtn = '<span></span>';
     if (j.status === 'queued' || j.status === 'running') {
-      actionBtn = `<button class="job-btn cancel" data-action="cancel" data-id="${esc(j.id)}" title="Cancel">⏹</button>`;
+      actionBtn = `<button class="job-btn cancel" data-action="cancel" data-id="${esc(j.id)}" title="Cancel"><span class="material-icons">stop</span></button>`;
     } else if (j.status === 'error' || j.status === 'cancelled') {
-      actionBtn = `<button class="job-btn retry" data-action="retry" data-id="${esc(j.id)}" title="Retry">↺</button>`;
+      actionBtn = `<button class="job-btn retry" data-action="retry" data-id="${esc(j.id)}" title="Retry"><span class="material-icons">replay</span></button>`;
     }
     return `
     <div class="job-item${sel ? ' job-sel' : ''}" data-id="${esc(j.id)}">
       <input type="checkbox" class="job-cb" data-id="${esc(j.id)}" ${sel ? 'checked' : ''}>
-      <span class="job-handle" draggable="true" data-id="${esc(j.id)}" title="Drag to reorder">⠿</span>
+      <span class="job-handle" draggable="true" data-id="${esc(j.id)}" title="Drag to reorder"><span class="material-icons">drag_indicator</span></span>
       ${cover}
       <div class="job-url"><a href="${esc(j.url)}" target="_blank" title="${esc(j.url)}">${esc(label)}</a></div>
       <div class="job-time">${j.started_at || ''}${j.finished_at ? ' → ' + j.finished_at : ''}</div>
       <span class="badge ${j.status}">${j.status}</span>
       ${actionBtn}
-      <button class="job-btn remove" data-action="remove" data-id="${esc(j.id)}" title="Remove">✕</button>
+      <button class="job-btn remove" data-action="remove" data-id="${esc(j.id)}" title="Remove"><span class="material-icons">close</span></button>
       ${j.error ? `<div class="job-error">${esc(j.error)}</div>` : ''}
     </div>`;
   }).join('');
@@ -869,7 +873,7 @@ setInterval(() => {
 const themeToggle = document.getElementById('theme-toggle');
 function applyTheme(t) {
   document.documentElement.dataset.theme = t;
-  themeToggle.textContent = t === 'dark' ? 'Dark' : 'Light';
+  themeToggle.innerHTML = `<span class="material-icons">${t === 'dark' ? 'dark_mode' : 'light_mode'}</span>`;
 }
 themeToggle.addEventListener('click', () => {
   const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
