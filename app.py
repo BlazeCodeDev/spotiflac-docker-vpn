@@ -10,7 +10,6 @@ from functools import wraps
 
 from flask import Flask, Response, request
 
-import worker
 from config import Config
 from routes import bp
 
@@ -21,7 +20,6 @@ logging.basicConfig(
 )
 
 os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
-worker.init_db(os.path.join(os.path.abspath(Config.OUTPUT_DIR), ".jobs.db"))
 
 _log = logging.getLogger("startup")
 _log.info("OUTPUT_DIR  = %s", os.path.abspath(Config.OUTPUT_DIR))

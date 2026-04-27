@@ -1,139 +1,84 @@
 import json
 import logging
-import sqlite3
 import threading
 import time
 import uuid
-from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from SpotiFLAC import SpotiFLAC
 
 log     = logging.getLogger(__name__)
+_jobs:   dict[str, dict]            = {}
 _cancel: dict[str, threading.Event] = {}
-_DB     = ""
+_lock   = threading.Lock()
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%H:%M:%S")
 
 
-@contextmanager
-def _db():
-    conn = sqlite3.connect(_DB, timeout=10)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def init_db(path: str) -> None:
-    global _DB
-    _DB = path
-    with _db() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS jobs (
-                id           TEXT PRIMARY KEY,
-                url          TEXT NOT NULL,
-                title        TEXT,
-                cover_url    TEXT,
-                status       TEXT NOT NULL DEFAULT 'queued',
-                started_at   TEXT,
-                finished_at  TEXT,
-                error        TEXT,
-                output_dir   TEXT,
-                services     TEXT,
-                filename_fmt TEXT,
-                artist_dirs  INTEGER DEFAULT 1,
-                album_dirs   INTEGER DEFAULT 1,
-                retry_min    INTEGER DEFAULT 0,
-                qobuz_token  TEXT DEFAULT ''
-            )
-        """)
-        # Jobs interrupted by a container restart are marked as errors so they
-        # show up in the UI and can be retried.
-        conn.execute(
-            "UPDATE jobs SET status='error', error='Interrupted (container restart)', "
-            "finished_at=? WHERE status IN ('running', 'queued')",
-            (_now(),)
-        )
-
-
-def _row_to_dict(row) -> dict:
-    d = dict(row)
-    d["artist_dirs"] = bool(d.get("artist_dirs"))
-    d["album_dirs"]  = bool(d.get("album_dirs"))
-    return d
-
-
 def get_jobs() -> list[dict]:
-    with _db() as conn:
-        rows = conn.execute("SELECT * FROM jobs ORDER BY rowid DESC").fetchall()
-    return [_row_to_dict(r) for r in rows]
+    with _lock:
+        jobs = sorted(_jobs.values(), key=lambda j: j.get("_seq", 0), reverse=True)
+    return [{k: v for k, v in j.items() if not k.startswith("_")} for j in jobs]
 
 
 def clear_done() -> int:
-    with _db() as conn:
-        cur = conn.execute(
-            "DELETE FROM jobs WHERE status IN ('done', 'error', 'cancelled')"
-        )
-        return cur.rowcount
+    with _lock:
+        ids = [jid for jid, j in _jobs.items() if j["status"] in ("done", "error", "cancelled")]
+        for jid in ids:
+            _jobs.pop(jid, None)
+            _cancel.pop(jid, None)
+    return len(ids)
 
 
 def remove_job(job_id: str) -> bool:
     ev = _cancel.get(job_id)
     if ev:
         ev.set()
-    with _db() as conn:
-        cur = conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
-        return cur.rowcount > 0
+    with _lock:
+        return _jobs.pop(job_id, None) is not None
 
 
 def cancel_job(job_id: str) -> bool:
     ev = _cancel.get(job_id)
     if ev:
         ev.set()
-    with _db() as conn:
-        row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
-        if not row or row["status"] not in ("queued", "running"):
+    with _lock:
+        j = _jobs.get(job_id)
+        if not j or j["status"] not in ("queued", "running"):
             return False
-        conn.execute(
-            "UPDATE jobs SET status='cancelled', finished_at=? WHERE id=?",
-            (_now(), job_id)
-        )
+        j["status"]      = "cancelled"
+        j["finished_at"] = _now()
     return True
 
 
 def retry_job(job_id: str) -> bool:
-    with _db() as conn:
-        row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
-        if not row or row["status"] not in ("error", "cancelled"):
+    with _lock:
+        j = _jobs.get(job_id)
+        if not j or j["status"] not in ("error", "cancelled"):
             return False
-        conn.execute(
-            "UPDATE jobs SET status='queued', started_at=?, finished_at=NULL, "
-            "error=NULL WHERE id=?",
-            (_now(), job_id)
-        )
+        j.update(status="queued", started_at=_now(), finished_at=None, error=None)
     _cancel[job_id] = threading.Event()
     threading.Thread(target=_run, daemon=True, args=(job_id,)).start()
     return True
 
 
+_seq = 0
+
 def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
             artist_dirs: bool, album_dirs: bool, retry_min: int, qobuz_token: str) -> str:
+    global _seq
     jid = str(uuid.uuid4())[:8]
-    with _db() as conn:
-        conn.execute(
-            "INSERT INTO jobs (id, url, status, started_at, output_dir, services, "
-            "filename_fmt, artist_dirs, album_dirs, retry_min, qobuz_token) "
-            "VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)",
-            (jid, url, _now(), output_dir, json.dumps(services), filename_fmt,
-             int(artist_dirs), int(album_dirs), retry_min, qobuz_token)
+    with _lock:
+        _seq += 1
+        _jobs[jid] = dict(
+            id=jid, url=url, title=None, cover_url=None,
+            status="queued", started_at=_now(), finished_at=None, error=None,
+            output_dir=output_dir, services=services, filename_fmt=filename_fmt,
+            artist_dirs=artist_dirs, album_dirs=album_dirs,
+            retry_min=retry_min, qobuz_token=qobuz_token,
+            _seq=_seq,
         )
     _cancel[jid] = threading.Event()
     threading.Thread(target=_run, daemon=True, args=(jid,)).start()
@@ -141,12 +86,10 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
 
 
 def _update(job_id: str, **kwargs) -> None:
-    if not kwargs:
-        return
-    sets = ", ".join(f"{k}=?" for k in kwargs)
-    vals = list(kwargs.values()) + [job_id]
-    with _db() as conn:
-        conn.execute(f"UPDATE jobs SET {sets} WHERE id=?", vals)
+    with _lock:
+        j = _jobs.get(job_id)
+        if j:
+            j.update(kwargs)
 
 
 def _fetch_metadata(url: str) -> tuple[str | None, str | None]:
@@ -176,19 +119,19 @@ def _run(job_id: str) -> None:
     if ev.is_set():
         return
 
-    with _db() as conn:
-        row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-    if not row:
+    with _lock:
+        j = _jobs.get(job_id)
+    if not j:
         return
 
-    url          = row["url"]
-    output_dir   = row["output_dir"]
-    services     = json.loads(row["services"] or "[]")
-    filename_fmt = row["filename_fmt"]
-    artist_dirs  = bool(row["artist_dirs"])
-    album_dirs   = bool(row["album_dirs"])
-    retry_min    = row["retry_min"]
-    qobuz_token  = row["qobuz_token"] or ""
+    url          = j["url"]
+    output_dir   = j["output_dir"]
+    services     = j["services"]
+    filename_fmt = j["filename_fmt"]
+    artist_dirs  = j["artist_dirs"]
+    album_dirs   = j["album_dirs"]
+    retry_min    = j["retry_min"]
+    qobuz_token  = j["qobuz_token"] or ""
 
     _update(job_id, status="running", started_at=_now())
 
@@ -224,7 +167,6 @@ def _run(job_id: str) -> None:
         if not retry_min or ev.is_set():
             break
 
-        # Interruptible sleep so cancel takes effect within 1 s
         for _ in range(retry_min * 60):
             if ev.is_set():
                 break
