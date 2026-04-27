@@ -30,7 +30,7 @@ ENV PYTHONUNBUFFERED=1
 # nc (netcat) for port self-test in entrypoint.sh
 RUN apk add --no-cache netcat-openbsd
 
-COPY vpn/entrypoint.sh /entrypoint.sh
+COPY entrypoint.sh /entrypoint.sh
 COPY app.py config.py worker.py vpn.py routes.py /app/
 COPY templates/ /app/templates/
 RUN chmod +x /entrypoint.sh
