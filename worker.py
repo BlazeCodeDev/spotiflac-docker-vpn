@@ -9,10 +9,17 @@ from datetime import datetime, timezone
 from SpotiFLAC.downloader import SpotiflacDownloader, DownloadWorker, DownloadOptions, download_one
 from SpotiFLAC.core.progress import DownloadManager
 
-log     = logging.getLogger(__name__)
-_jobs:   dict[str, dict]            = {}
-_cancel: dict[str, threading.Event] = {}
-_lock   = threading.Lock()
+log       = logging.getLogger(__name__)
+_jobs:    dict[str, dict]            = {}
+_cancel:  dict[str, threading.Event] = {}
+_lock     = threading.Lock()
+_semaphore = threading.BoundedSemaphore(3)  # replaced by init()
+
+
+def init(max_workers: int) -> None:
+    global _semaphore
+    _semaphore = threading.BoundedSemaphore(max_workers)
+    log.info("MAX_WORKERS = %d", max_workers)
 
 _STATE_FILE = os.environ.get("STATE_FILE", "/vpn/jobs.json")
 
@@ -300,8 +307,7 @@ def _run(job_id: str) -> None:
     quality      = j.get("quality") or "lossless"
     qobuz_token  = j.get("_qobuz_token") or ""
 
-    _update(job_id, status="running", started_at=_now())
-
+    # Fetch metadata while still queued — lightweight, no slot needed.
     title, cover_url, artist = _fetch_metadata(url)
     meta: dict = {}
     if title:     meta["title"]     = title
@@ -311,11 +317,22 @@ def _run(job_id: str) -> None:
         _update(job_id, **meta)
 
     while True:
-        if ev.is_set():
-            _update(job_id, status="cancelled", finished_at=_now())
-            break
+        # Block here until a concurrency slot is free.
+        # Poll every second so cancel takes effect promptly.
+        while not _semaphore.acquire(timeout=1):
+            if ev.is_set():
+                _update(job_id, status="cancelled", finished_at=_now())
+                _cancel.pop(job_id, None)
+                return
 
         try:
+            if ev.is_set():
+                _update(job_id, status="cancelled", finished_at=_now())
+                return
+
+            _update(job_id, status="running", started_at=_now(),
+                    finished_at=None, error=None, progress=None, total=None)
+
             opts = DownloadOptions(
                 output_dir            = output_dir,
                 services              = services,
@@ -334,10 +351,13 @@ def _run(job_id: str) -> None:
         except Exception as exc:
             log.error("Job %s failed: %s", job_id, exc)
             _update(job_id, status="error", error=str(exc), finished_at=_now())
+        finally:
+            _semaphore.release()
 
         if not retry_min or ev.is_set():
             break
 
+        # Sleep without holding the slot so other jobs can run.
         for _ in range(retry_min * 60):
             if ev.is_set():
                 break
@@ -347,6 +367,6 @@ def _run(job_id: str) -> None:
             _update(job_id, status="cancelled", finished_at=_now())
             break
 
-        _update(job_id, status="running", started_at=_now(), finished_at=None, error=None)
+        _update(job_id, status="queued", started_at=_now(), finished_at=None, error=None)
 
     _cancel.pop(job_id, None)
