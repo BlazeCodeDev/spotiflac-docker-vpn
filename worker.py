@@ -6,7 +6,8 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from SpotiFLAC import SpotiFLAC
+from SpotiFLAC.downloader import SpotiflacDownloader, DownloadWorker, DownloadOptions, download_one
+from SpotiFLAC.core.progress import DownloadManager
 
 log     = logging.getLogger(__name__)
 _jobs:   dict[str, dict]            = {}
@@ -136,7 +137,7 @@ def retry_job(job_id: str) -> bool:
         j = _jobs.get(job_id)
         if not j or j["status"] not in ("error", "cancelled"):
             return False
-        j.update(status="queued", started_at=_now(), finished_at=None, error=None)
+        j.update(status="queued", started_at=_now(), finished_at=None, error=None, progress=None, total=None)
     _cancel[job_id] = threading.Event()
     _save()
     threading.Thread(target=_run, daemon=True, args=(job_id,)).start()
@@ -155,6 +156,7 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
         _jobs[jid] = dict(
             id=jid, url=url, title=None, cover_url=None,
             status="queued", started_at=_now(), finished_at=None, error=None,
+            progress=None, total=None,
             output_dir=output_dir, services=services, filename_fmt=filename_fmt,
             artist_dirs=artist_dirs, album_dirs=album_dirs,
             retry_min=retry_min, quality=quality, _qobuz_token=qobuz_token,
@@ -196,6 +198,86 @@ def _fetch_metadata(url: str) -> tuple[str | None, str | None]:
         return None, None
 
 
+class _TrackingWorker(DownloadWorker):
+    """DownloadWorker that fires on_track_done(done_count) after each track."""
+
+    def __init__(self, *args, on_track_done, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_track_done = on_track_done
+
+    def run(self):
+        manager  = DownloadManager()
+        total    = len(self._tracks)
+        start    = time.perf_counter()
+        base_out = self._resolve_output_dir()
+        done     = 0
+
+        for i, track in enumerate(self._tracks):
+            manager.start_download(track.id)
+            out_dir = self._track_output_dir(base_out, track)
+            result  = download_one(track, out_dir, self._providers, self._opts, i + 1)
+
+            if result.success:
+                size_mb = (
+                    os.path.getsize(result.file_path) / (1024 * 1024)
+                    if result.file_path and os.path.exists(result.file_path)
+                    else 0.0
+                )
+                manager.complete_download(track.id, result.file_path or "", size_mb)
+            else:
+                err = result.error or "unknown"
+                self._failed.append((track.title, track.artists, err))
+                manager.fail_download(track.id, err)
+
+            done += 1
+            self._on_track_done(done)
+
+            if i < total - 1:
+                time.sleep(self._opts.inter_track_delay_s)
+
+        elapsed = time.perf_counter() - start
+        self._print_summary(elapsed)
+        return self._failed
+
+
+class _TrackingDownloader(SpotiflacDownloader):
+    """SpotiflacDownloader that reports on_progress(done, total) after each track."""
+
+    def __init__(self, opts, on_progress):
+        super().__init__(opts)
+        self._on_progress = on_progress
+
+    def _run_once(self, spotify_url):
+        from SpotiFLAC.core.errors import SpotiflacError
+        from SpotiFLAC.providers.spotify_metadata import parse_spotify_url
+
+        collection_name, tracks = self._client.get_url(spotify_url)
+
+        if not tracks:
+            return
+
+        total = len(tracks)
+        self._on_progress(0, total)
+
+        info        = parse_spotify_url(spotify_url)
+        is_album    = info["type"] == "album"
+        is_playlist = info["type"] == "playlist"
+
+        manager = DownloadManager()
+        for t in tracks:
+            manager.add_to_queue(t.id, t.title, t.artists, t.album, t.id)
+
+        worker = _TrackingWorker(
+            tracks          = tracks,
+            opts            = self._opts,
+            collection_name = collection_name,
+            is_album        = is_album,
+            is_playlist     = is_playlist,
+            on_track_done   = lambda done: self._on_progress(done, total),
+        )
+        worker.run()
+
+
 def _run(job_id: str) -> None:
     ev = _cancel.setdefault(job_id, threading.Event())
     if ev.is_set():
@@ -231,19 +313,21 @@ def _run(job_id: str) -> None:
             break
 
         try:
-            kwargs: dict = dict(
-                url=url,
-                output_dir=output_dir,
-                services=services,
-                filename_format=filename_fmt,
-                use_artist_subfolders=artist_dirs,
-                use_album_subfolders=album_dirs,
-                quality=quality,
+            opts = DownloadOptions(
+                output_dir            = output_dir,
+                services              = services,
+                filename_format       = filename_fmt,
+                use_artist_subfolders = artist_dirs,
+                use_album_subfolders  = album_dirs,
+                quality               = quality,
             )
-            if qobuz_token:
-                kwargs["qobuz_token"] = qobuz_token
-            SpotiFLAC(**kwargs)
-            _update(job_id, status="done", finished_at=_now(), error=None)
+
+            def _on_progress(done, total):
+                if total > 1:
+                    _update(job_id, progress=done, total=total)
+
+            _TrackingDownloader(opts, _on_progress).run(url)
+            _update(job_id, status="done", finished_at=_now(), error=None, progress=None, total=None)
         except Exception as exc:
             log.error("Job %s failed: %s", job_id, exc)
             _update(job_id, status="error", error=str(exc), finished_at=_now())

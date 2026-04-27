@@ -817,7 +817,7 @@ function renderJobs() {
       ${cover}
       <div class="job-url"><a href="${esc(j.url)}" target="_blank" title="${esc(j.url)}">${esc(label)}</a></div>
       <div class="job-time">${j.started_at || ''}${j.finished_at ? ' → ' + j.finished_at : ''}</div>
-      <span class="badge ${j.status}">${j.status}</span>
+      <span class="badge ${j.status}">${j.status === 'running' && j.total > 1 ? j.progress + '/' + j.total : j.status}</span>
       <span class="quality-badge">${j.quality === 'hires' ? 'Hi-Res' : 'Lossless'}</span>
       ${actionBtn}
       <button class="job-btn remove" data-action="remove" data-id="${esc(j.id)}" title="Remove"><span class="material-icons">close</span></button>
