@@ -126,8 +126,8 @@ textarea:focus, input:focus { outline: none; border-color: var(--accent); }
 details { margin-top: 1rem; }
 details summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: .4rem; color: var(--tx2); font-size: .82rem; padding: .4rem 0; user-select: none; }
 details summary::-webkit-details-marker { display: none; }
-details summary::before { content: '›'; font-size: 1rem; transition: transform .2s; display: inline-block; }
-details[open] summary::before { transform: rotate(90deg); }
+details summary::before { font-family: 'Material Icons'; content: '\e5cf'; font-size: 18px; line-height: 1; transition: transform .2s; display: inline-block; }
+details[open] summary::before { transform: rotate(180deg); }
 details summary:hover { color: var(--tx); }
 .settings-grid { display: grid; gap: .9rem; margin-top: .9rem; padding: 1rem; background: var(--input-bg); border: 1px solid var(--border); border-radius: 7px; }
 .setting-group label { display: block; color: var(--tx2); font-size: .78rem; text-transform: uppercase; letter-spacing: .07em; margin-bottom: .35rem; }
@@ -259,9 +259,26 @@ button:hover { opacity: .85; }
 .job-item.drag-over { background: var(--drag-over-bg); border-radius: 6px; outline: 1px dashed var(--accent); }
 
 /* Bulk action bar */
-#bulk-bar { display: none; align-items: center; gap: .45rem; padding: .45rem .75rem; margin-bottom: .6rem; background: rgba(99,102,241,.08); border: 1px solid rgba(99,102,241,.4); border-radius: 7px; font-size: .8rem; }
-#bulk-bar.visible { display: flex; }
+#bulk-bar { display: none; align-items: center; gap: .45rem; padding: .45rem .75rem; margin-bottom: .6rem; border: 1px solid rgba(99,102,241,.4); border-radius: 7px; font-size: .8rem; }
+#bulk-bar.visible { display: flex; position: sticky; top: 52px; z-index: 50; background: var(--card); box-shadow: 0 2px 12px rgba(0,0,0,.25); }
 .bulk-sep { width: 1px; height: 14px; background: var(--border2); margin: 0 .1rem; flex-shrink: 0; }
+
+/* Job count summary */
+#job-counts { font-size: .72rem; color: var(--tx2); font-weight: 400; text-transform: none; letter-spacing: 0; }
+
+/* Skeleton loader */
+@keyframes shimmer { 0% { background-position: -600px 0; } 100% { background-position: 600px 0; } }
+.skel-block { background: linear-gradient(90deg, var(--border) 25%, var(--border2) 50%, var(--border) 75%); background-size: 600px 100%; animation: shimmer 1.5s ease-in-out infinite; }
+.job-skel { display: grid; grid-template-columns: 18px 14px 38px 1fr auto auto; align-items: center; gap: .5rem .75rem; padding: .75rem 0; border-bottom: 1px solid var(--border); }
+.job-skel:last-child { border-bottom: none; }
+
+/* Mobile: collapse secondary columns */
+@media (max-width: 580px) {
+  .job-item { grid-template-columns: 18px 38px 1fr auto auto; }
+  .job-skel { grid-template-columns: 18px 38px 1fr auto auto; }
+  .job-handle { display: none; }
+  .job-time   { display: none; }
+}
 
 /* Job action buttons */
 .job-btn { background: transparent; border: 1px solid var(--border2); color: var(--tx3); border-radius: 5px; padding: .2rem .45rem; font-size: .72rem; line-height: 1; }
@@ -389,7 +406,10 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
 
   <div class="card">
     <div class="card-header">
-      <span class="section-title">Downloads</span>
+      <div style="display:flex;align-items:center;gap:.5rem">
+        <span class="section-title">Downloads</span>
+        <span id="job-counts"></span>
+      </div>
       <button class="btn-ghost" id="btn-clr">Clear done</button>
     </div>
     <div class="search-wrap">
@@ -406,7 +426,7 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
       <button class="btn-ghost" id="btn-bulk-retry"  style="padding:.25rem .6rem;font-size:.75rem">Retry</button>
       <button class="btn-ghost" id="btn-bulk-remove" style="padding:.25rem .6rem;font-size:.75rem">Remove</button>
     </div>
-    <div id="jobs-list"><div class="jobs-empty">No downloads yet</div></div>
+    <div id="jobs-list"></div>
   </div>
 </main>
 
@@ -702,6 +722,32 @@ let _allJobs        = [];
 let _prevJobStates  = {};
 let _selectedJobIds = new Set();
 let _jobDragSrc     = null;
+let _jobsLoaded     = false;
+
+function renderSkeleton() {
+  document.getElementById('jobs-list').innerHTML = [0,1,2].map(() => `
+    <div class="job-skel">
+      <div class="skel-block" style="width:14px;height:14px;border-radius:3px;flex-shrink:0"></div>
+      <div class="skel-block" style="width:10px;height:18px;border-radius:3px;flex-shrink:0"></div>
+      <div class="skel-block" style="width:38px;height:38px;border-radius:4px;flex-shrink:0"></div>
+      <div class="skel-block" style="height:12px;width:55%;border-radius:3px"></div>
+      <div class="skel-block" style="width:58px;height:20px;border-radius:999px;flex-shrink:0"></div>
+      <div class="skel-block" style="width:28px;height:24px;border-radius:5px;flex-shrink:0"></div>
+    </div>`).join('');
+}
+
+function updateJobCounts() {
+  const el = document.getElementById('job-counts');
+  if (!_allJobs.length) { el.textContent = ''; return; }
+  const c = {};
+  _allJobs.forEach(j => { c[j.status] = (c[j.status] || 0) + 1; });
+  const parts = [];
+  const active = (c.running || 0) + (c.queued || 0);
+  if (active)  parts.push(`${active} active`);
+  if (c.done)  parts.push(`${c.done} done`);
+  if (c.error) parts.push(`${c.error} failed`);
+  el.textContent = parts.join(' · ');
+}
 
 function updateBulkBar() {
   const n = _selectedJobIds.size;
@@ -715,7 +761,7 @@ function renderJobs() {
   const jobs = q
     ? _allJobs.filter(j => (j.title || j.url).toLowerCase().includes(q) || (j.status || '').includes(q))
     : _allJobs;
-  if (!_allJobs.length) { el.innerHTML = '<div class="jobs-empty">No downloads yet</div>'; return; }
+  if (!_allJobs.length) { if (_jobsLoaded) el.innerHTML = '<div class="jobs-empty">No downloads yet</div>'; return; }
   if (!jobs.length)     { el.innerHTML = '<div class="jobs-empty">No matches</div>'; return; }
 
   el.innerHTML = jobs.map(j => {
@@ -797,12 +843,14 @@ function renderJobs() {
     });
   });
 
+  updateJobCounts();
   updateBulkBar();
 }
 
 async function refreshJobs() {
   const newJobs = await fetch('/api/jobs').then(r => r.json()).catch(() => null);
   if (!newJobs) return;
+  _jobsLoaded = true;
   // Drop selections for jobs that no longer exist
   const live = new Set(newJobs.map(j => j.id));
   for (const id of _selectedJobIds) { if (!live.has(id)) _selectedJobIds.delete(id); }
@@ -862,6 +910,7 @@ document.getElementById('btn-bulk-cancel').addEventListener('click', () => bulkA
 document.getElementById('btn-bulk-retry').addEventListener('click',  () => bulkAction('retry'));
 document.getElementById('btn-bulk-remove').addEventListener('click', () => bulkAction('remove'));
 
+renderSkeleton();
 refreshVPN(); refreshJobs();
 setInterval(refreshVPN, 10_000);
 setInterval(refreshJobs, 3_000);
