@@ -154,7 +154,7 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
     with _lock:
         _seq += 1
         _jobs[jid] = dict(
-            id=jid, url=url, title=None, cover_url=None,
+            id=jid, url=url, title=None, cover_url=None, artist=None,
             status="queued", started_at=_now(), finished_at=None, error=None,
             progress=None, total=None,
             output_dir=output_dir, services=services, filename_fmt=filename_fmt,
@@ -176,26 +176,28 @@ def _update(job_id: str, **kwargs) -> None:
     _save()
 
 
-def _fetch_metadata(url: str) -> tuple[str | None, str | None]:
+def _fetch_metadata(url: str) -> tuple[str | None, str | None, str | None]:
     try:
         from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient, parse_spotify_url
         info   = parse_spotify_url(url)
         kind   = info["type"]
         sid    = info["id"]
         if kind not in ("track", "album", "playlist"):
-            return None, None
+            return None, None, None
         client = SpotifyMetadataClient(timeout_s=5)
         if kind == "track":
-            meta  = client.get_track(sid)
-            label = f"{meta.artists} — {meta.title}" if meta.artists else meta.title
-            return label, meta.cover_url or None
-        data  = client._get(f"/{kind}s/{sid}")
-        name  = data.get("name") or None
-        imgs  = data.get("images", [])
-        cover = imgs[-1].get("url") if imgs else None
-        return name, cover
+            meta   = client.get_track(sid)
+            artist = meta.artists or None
+            label  = f"{meta.artists} — {meta.title}" if meta.artists else meta.title
+            return label, meta.cover_url or None, artist
+        data    = client._get(f"/{kind}s/{sid}")
+        name    = data.get("name") or None
+        imgs    = data.get("images", [])
+        cover   = imgs[-1].get("url") if imgs else None
+        artists = ", ".join(a["name"] for a in data.get("artists", []))
+        return name, cover, artists or None
     except Exception:
-        return None, None
+        return None, None, None
 
 
 class _TrackingWorker(DownloadWorker):
@@ -300,10 +302,11 @@ def _run(job_id: str) -> None:
 
     _update(job_id, status="running", started_at=_now())
 
-    title, cover_url = _fetch_metadata(url)
+    title, cover_url, artist = _fetch_metadata(url)
     meta: dict = {}
     if title:     meta["title"]     = title
     if cover_url: meta["cover_url"] = cover_url
+    if artist:    meta["artist"]    = artist
     if meta:
         _update(job_id, **meta)
 

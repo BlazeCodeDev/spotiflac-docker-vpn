@@ -172,12 +172,14 @@ button:hover { opacity: .85; }
 .material-icons { font-size: 18px; vertical-align: middle; line-height: 1; }
 
 /* Job search */
-.search-wrap { position: relative; margin-bottom: .85rem; }
+.search-row { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; margin-bottom: .85rem; }
+.search-wrap { position: relative; }
 .search-wrap .material-icons { position: absolute; left: .55rem; top: 50%; transform: translateY(-50%); font-size: 16px; color: var(--tx3); pointer-events: none; }
-#job-search { width: 100%; padding-left: 2rem; padding-right: 1.75rem; }
+.search-wrap input[type=text] { width: 100%; padding-left: 2rem; padding-right: 1.75rem; }
 .search-clear { position: absolute; right: .45rem; top: 50%; transform: translateY(-50%); background: none; border: none; padding: 0; color: var(--tx3); cursor: pointer; line-height: 1; display: flex; align-items: center; border-radius: 3px; }
 .search-clear:hover { color: var(--tx); opacity: 1; }
 .search-clear .material-icons { font-size: 15px; }
+@media (max-width: 480px) { .search-row { grid-template-columns: 1fr; } }
 
 /* Search modal */
 .modal-overlay {
@@ -369,10 +371,17 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
       </div>
       <button class="btn-ghost" id="btn-clr">Clear done</button>
     </div>
-    <div class="search-wrap">
-      <span class="material-icons">search</span>
-      <input type="text" id="job-search" placeholder="Filter downloads…" autocomplete="off">
-      <button class="search-clear" id="btn-job-search-clear" title="Clear" style="display:none"><span class="material-icons">close</span></button>
+    <div class="search-row">
+      <div class="search-wrap">
+        <span class="material-icons">search</span>
+        <input type="text" id="job-search" placeholder="Filter downloads…" autocomplete="off">
+        <button class="search-clear" id="btn-job-search-clear" title="Clear" style="display:none"><span class="material-icons">close</span></button>
+      </div>
+      <div class="search-wrap">
+        <span class="material-icons">person</span>
+        <input type="text" id="job-artist-filter" placeholder="Filter by artist…" autocomplete="off">
+        <button class="search-clear" id="btn-artist-clear" title="Clear" style="display:none"><span class="material-icons">close</span></button>
+      </div>
     </div>
     <div id="bulk-bar">
       <span id="bulk-count" style="color:var(--tx2);flex-shrink:0">0 selected</span>
@@ -816,9 +825,12 @@ function updateBulkBar() {
 function renderJobs() {
   const el = document.getElementById('jobs-list');
   const q  = document.getElementById('job-search').value.trim().toLowerCase();
-  const jobs = q
-    ? _allJobs.filter(j => (j.title || j.url).toLowerCase().includes(q) || (j.status || '').includes(q))
-    : _allJobs;
+  const aq = document.getElementById('job-artist-filter').value.trim().toLowerCase();
+  const jobs = _allJobs.filter(j => {
+    if (q  && !(j.title || j.url).toLowerCase().includes(q) && !(j.status || '').includes(q)) return false;
+    if (aq && !(j.artist || '').toLowerCase().includes(aq)) return false;
+    return true;
+  });
   if (!_allJobs.length) { if (_jobsLoaded) el.innerHTML = '<div class="jobs-empty">No downloads yet</div>'; return; }
   if (!jobs.length)     { el.innerHTML = '<div class="jobs-empty">No matches</div>'; return; }
 
@@ -936,6 +948,19 @@ _jobSearchClear.addEventListener('click', () => {
   _jobSearchClear.style.display = 'none';
   renderJobs();
   _jobSearchEl.focus();
+});
+
+const _artistFilterEl    = document.getElementById('job-artist-filter');
+const _artistFilterClear = document.getElementById('btn-artist-clear');
+_artistFilterEl.addEventListener('input', () => {
+  _artistFilterClear.style.display = _artistFilterEl.value ? '' : 'none';
+  renderJobs();
+});
+_artistFilterClear.addEventListener('click', () => {
+  _artistFilterEl.value = '';
+  _artistFilterClear.style.display = 'none';
+  renderJobs();
+  _artistFilterEl.focus();
 });
 
 const _urlsEl    = document.getElementById('urls');
