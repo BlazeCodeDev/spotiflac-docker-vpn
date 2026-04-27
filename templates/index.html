@@ -371,17 +371,10 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
       </div>
       <button class="btn-ghost" id="btn-clr">Clear done</button>
     </div>
-    <div class="search-row">
-      <div class="search-wrap">
-        <span class="material-icons">search</span>
-        <input type="text" id="job-search" placeholder="Filter downloads…" autocomplete="off">
-        <button class="search-clear" id="btn-job-search-clear" title="Clear" style="display:none"><span class="material-icons">close</span></button>
-      </div>
-      <div class="search-wrap">
-        <span class="material-icons">person</span>
-        <input type="text" id="job-artist-filter" placeholder="Filter by artist…" autocomplete="off">
-        <button class="search-clear" id="btn-artist-clear" title="Clear" style="display:none"><span class="material-icons">close</span></button>
-      </div>
+    <div class="search-wrap">
+      <span class="material-icons">search</span>
+      <input type="text" id="job-search" placeholder="Filter downloads…" autocomplete="off">
+      <button class="search-clear" id="btn-job-search-clear" title="Clear" style="display:none"><span class="material-icons">close</span></button>
     </div>
     <div id="bulk-bar">
       <span id="bulk-count" style="color:var(--tx2);flex-shrink:0">0 selected</span>
@@ -470,6 +463,11 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
       <button class="filter-pill" data-filter="track">Tracks</button>
       <button class="filter-pill" data-filter="album">Albums</button>
       <button class="filter-pill" data-filter="playlist">Playlists</button>
+      <div class="search-wrap" style="flex:1;min-width:120px;margin-bottom:0">
+        <span class="material-icons">person</span>
+        <input type="text" id="search-artist-filter" placeholder="Filter by artist…" autocomplete="off">
+        <button class="search-clear" id="btn-search-artist-clear" title="Clear" style="display:none"><span class="material-icons">close</span></button>
+      </div>
     </div>
     <div class="modal-body" id="search-results"></div>
     <div class="modal-footer">
@@ -609,6 +607,7 @@ let _searchResults  = [];
 let _searchOffset   = 0;
 let _searchQuery    = '';
 let _searchFilter   = 'all';
+let _artistQuery    = '';
 let _searchHasMore  = false;
 let _searchLoading  = false;
 let _selectedUrls   = new Set();
@@ -654,8 +653,11 @@ async function doSearch(append = false) {
     _searchOffset  = 0;
     _searchQuery   = q;
     _searchFilter  = 'all';
+    _artistQuery   = '';
     _selectedUrls.clear();
     document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p.dataset.filter === 'all'));
+    const artistEl = document.getElementById('search-artist-filter');
+    if (artistEl) { artistEl.value = ''; document.getElementById('btn-search-artist-clear').style.display = 'none'; }
     document.getElementById('search-results').innerHTML = '<div class="jobs-empty">Searching…</div>';
     document.getElementById('btn-search-dl').style.display = 'none';
     document.getElementById('search-msg').textContent = '';
@@ -687,9 +689,11 @@ async function doSearch(append = false) {
 
 function renderSearchResults() {
   const el = document.getElementById('search-results');
-  const visible = _searchFilter === 'all'
-    ? _searchResults
-    : _searchResults.filter(r => r.type === _searchFilter);
+  const visible = _searchResults.filter(r => {
+    if (_searchFilter !== 'all' && r.type !== _searchFilter) return false;
+    if (_artistQuery && !r.subtitle.toLowerCase().includes(_artistQuery)) return false;
+    return true;
+  });
 
   if (!visible.length) {
     el.innerHTML = '<div class="jobs-empty">' + (_searchResults.length ? 'No results for this filter' : 'No results') + '</div>';
@@ -827,12 +831,9 @@ function updateBulkBar() {
 function renderJobs() {
   const el = document.getElementById('jobs-list');
   const q  = document.getElementById('job-search').value.trim().toLowerCase();
-  const aq = document.getElementById('job-artist-filter').value.trim().toLowerCase();
-  const jobs = _allJobs.filter(j => {
-    if (q  && !(j.title || j.url).toLowerCase().includes(q) && !(j.status || '').includes(q)) return false;
-    if (aq && !(j.artist || '').toLowerCase().includes(aq)) return false;
-    return true;
-  });
+  const jobs = q
+    ? _allJobs.filter(j => (j.title || j.url).toLowerCase().includes(q) || (j.status || '').includes(q))
+    : _allJobs;
   if (!_allJobs.length) { if (_jobsLoaded) el.innerHTML = '<div class="jobs-empty">No downloads yet</div>'; return; }
   if (!jobs.length)     { el.innerHTML = '<div class="jobs-empty">No matches</div>'; return; }
 
@@ -952,17 +953,19 @@ _jobSearchClear.addEventListener('click', () => {
   _jobSearchEl.focus();
 });
 
-const _artistFilterEl    = document.getElementById('job-artist-filter');
-const _artistFilterClear = document.getElementById('btn-artist-clear');
-_artistFilterEl.addEventListener('input', () => {
-  _artistFilterClear.style.display = _artistFilterEl.value ? '' : 'none';
-  renderJobs();
+const _searchArtistEl    = document.getElementById('search-artist-filter');
+const _searchArtistClear = document.getElementById('btn-search-artist-clear');
+_searchArtistEl.addEventListener('input', () => {
+  _artistQuery = _searchArtistEl.value.trim().toLowerCase();
+  _searchArtistClear.style.display = _searchArtistEl.value ? '' : 'none';
+  renderSearchResults();
 });
-_artistFilterClear.addEventListener('click', () => {
-  _artistFilterEl.value = '';
-  _artistFilterClear.style.display = 'none';
-  renderJobs();
-  _artistFilterEl.focus();
+_searchArtistClear.addEventListener('click', () => {
+  _searchArtistEl.value = '';
+  _artistQuery = '';
+  _searchArtistClear.style.display = 'none';
+  renderSearchResults();
+  _searchArtistEl.focus();
 });
 
 const _urlsEl    = document.getElementById('urls');
