@@ -11,7 +11,8 @@ log = logging.getLogger(__name__)
 
 bp = Blueprint("main", __name__)
 
-_VALID_SERVICES = {"tidal", "qobuz", "amazon", "deezer", "youtube"}
+_VALID_SERVICES   = {"tidal", "qobuz", "amazon", "deezer", "youtube"}
+_VALID_QUALITIES  = {"lossless", "hires"}
 
 
 def _safe_int(value, default: int) -> int:
@@ -50,6 +51,8 @@ def api_download():
 
     # Filename format, folder structure and retry interval are always taken from
     # env vars — the UI may display them but cannot override them.
+    raw_quality = body.get("quality", "lossless")
+    quality = raw_quality if raw_quality in _VALID_QUALITIES else "lossless"
     qobuz_token = str(body.get("qobuz_token", Config.QOBUZ_TOKEN))
 
     os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
@@ -64,6 +67,7 @@ def api_download():
             album_dirs=Config.ALBUM_DIRS,
             retry_min=Config.RETRY_MIN,
             qobuz_token=qobuz_token,
+            quality=quality,
         )
         for url in urls
     ]

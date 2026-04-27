@@ -146,7 +146,8 @@ def retry_job(job_id: str) -> bool:
 _seq = 0
 
 def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
-            artist_dirs: bool, album_dirs: bool, retry_min: int, qobuz_token: str) -> str:
+            artist_dirs: bool, album_dirs: bool, retry_min: int, qobuz_token: str,
+            quality: str = "lossless") -> str:
     global _seq
     jid = str(uuid.uuid4())[:8]
     with _lock:
@@ -156,7 +157,7 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
             status="queued", started_at=_now(), finished_at=None, error=None,
             output_dir=output_dir, services=services, filename_fmt=filename_fmt,
             artist_dirs=artist_dirs, album_dirs=album_dirs,
-            retry_min=retry_min, _qobuz_token=qobuz_token,
+            retry_min=retry_min, quality=quality, _qobuz_token=qobuz_token,
             _seq=_seq,
         )
     _cancel[jid] = threading.Event()
@@ -212,6 +213,7 @@ def _run(job_id: str) -> None:
     artist_dirs  = j["artist_dirs"]
     album_dirs   = j["album_dirs"]
     retry_min    = j["retry_min"]
+    quality      = j.get("quality") or "lossless"
     qobuz_token  = j.get("_qobuz_token") or ""
 
     _update(job_id, status="running", started_at=_now())
@@ -236,6 +238,7 @@ def _run(job_id: str) -> None:
                 filename_format=filename_fmt,
                 use_artist_subfolders=artist_dirs,
                 use_album_subfolders=album_dirs,
+                quality=quality,
             )
             if qobuz_token:
                 kwargs["qobuz_token"] = qobuz_token
