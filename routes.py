@@ -92,6 +92,16 @@ def api_cancel_job(job_id: str):
     return (jsonify(ok=True), 200) if ok else (jsonify(error="Not found or not cancellable"), 400)
 
 
+@bp.post("/api/jobs/reorder")
+def api_reorder_jobs():
+    body = request.get_json(silent=True) or {}
+    ids = body.get("ids", [])
+    if not isinstance(ids, list):
+        return jsonify(error="ids must be a list"), 400
+    worker.reorder_jobs(ids)
+    return jsonify(ok=True)
+
+
 @bp.post("/api/jobs/<job_id>/retry")
 def api_retry_job(job_id: str):
     ok = worker.retry_job(job_id)

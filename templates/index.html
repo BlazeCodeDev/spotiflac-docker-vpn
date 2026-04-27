@@ -157,7 +157,7 @@ button:hover { opacity: .85; }
 
 /* Jobs */
 .jobs-empty { color: var(--tx3); font-size: .85rem; padding: .5rem 0; text-align: center; }
-.job-item { display: grid; grid-template-columns: 38px 1fr auto auto auto auto; align-items: center; gap: .5rem .75rem; padding: .75rem 0; border-bottom: 1px solid var(--border); }
+.job-item { display: grid; grid-template-columns: 18px 14px 38px 1fr auto auto auto auto; align-items: center; gap: .5rem .75rem; padding: .75rem 0; border-bottom: 1px solid var(--border); }
 .job-item:last-child { border-bottom: none; }
 .job-cover { width: 38px; height: 38px; border-radius: 4px; object-fit: cover; background: var(--border); display: block; flex-shrink: 0; }
 .job-cover-ph { width: 38px; height: 38px; border-radius: 4px; background: var(--border); flex-shrink: 0; }
@@ -247,6 +247,18 @@ button:hover { opacity: .85; }
 /* Cancelled badge */
 .badge.cancelled { background:#1a0a00; color:#fb923c; }
 
+/* Job selection + drag */
+.job-cb { accent-color: var(--accent); cursor: pointer; width: 14px; height: 14px; flex-shrink: 0; }
+.job-handle { color: var(--tx3); cursor: grab; user-select: none; font-size: .9rem; line-height: 1; }
+.job-handle:active { cursor: grabbing; }
+.job-item.job-sel { background: rgba(99,102,241,.07); border-radius: 6px; }
+.job-item.drag-over { background: var(--drag-over-bg); border-radius: 6px; outline: 1px dashed var(--accent); }
+
+/* Bulk action bar */
+#bulk-bar { display: none; align-items: center; gap: .45rem; padding: .45rem .75rem; margin-bottom: .6rem; background: rgba(99,102,241,.08); border: 1px solid rgba(99,102,241,.4); border-radius: 7px; font-size: .8rem; }
+#bulk-bar.visible { display: flex; }
+.bulk-sep { width: 1px; height: 14px; background: var(--border2); margin: 0 .1rem; flex-shrink: 0; }
+
 /* Job action buttons */
 .job-btn { background: transparent; border: 1px solid var(--border2); color: var(--tx3); border-radius: 5px; padding: .2rem .45rem; font-size: .72rem; line-height: 1; }
 .job-btn:hover { opacity: 1; color: var(--tx); border-color: var(--tx3); }
@@ -298,6 +310,7 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
       </div>
       <div class="tooltip">
         <div class="tt-row"><span class="tt-label">Status</span><span class="tt-val" id="tt-status">–</span></div>
+        <div class="tt-row"><span class="tt-label">Uptime</span><span class="tt-val" id="tt-uptime">–</span></div>
         <hr class="tt-div">
         <div class="tt-row"><span class="tt-label">IP</span><span class="tt-val" id="tt-ip">–</span></div>
         <div class="tt-row"><span class="tt-label">Country</span><span class="tt-val" id="tt-country">–</span></div>
@@ -379,6 +392,16 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8.5" cy="8.5" r="5.5"/><line x1="13" y1="13" x2="18" y2="18"/></svg>
       <input type="text" id="job-search" placeholder="Filter downloads…" autocomplete="off">
     </div>
+    <div id="bulk-bar">
+      <span id="bulk-count" style="color:var(--tx2);flex-shrink:0">0 selected</span>
+      <div class="bulk-sep"></div>
+      <button class="btn-ghost" id="btn-bulk-all"  style="padding:.25rem .6rem;font-size:.75rem">All</button>
+      <button class="btn-ghost" id="btn-bulk-none" style="padding:.25rem .6rem;font-size:.75rem">None</button>
+      <div style="flex:1"></div>
+      <button class="btn-ghost" id="btn-bulk-cancel" style="padding:.25rem .6rem;font-size:.75rem">Cancel</button>
+      <button class="btn-ghost" id="btn-bulk-retry"  style="padding:.25rem .6rem;font-size:.75rem">Retry</button>
+      <button class="btn-ghost" id="btn-bulk-remove" style="padding:.25rem .6rem;font-size:.75rem">Remove</button>
+    </div>
     <div id="jobs-list"><div class="jobs-empty">No downloads yet</div></div>
   </div>
 </main>
@@ -458,6 +481,17 @@ function getActiveServices() {
 
 // VPN
 let _ipData = null;
+let _vpnConnectedSince = null;
+
+function fmtUptime(since) {
+  const s = Math.floor(Date.now() / 1000 - since);
+  if (s < 60)  return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60)  return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
 async function refreshVPN() {
   try {
     const d = await fetch('/api/vpn').then(r=>r.json());
@@ -469,10 +503,13 @@ async function refreshVPN() {
       ? [d.protocol?.toUpperCase(), d.country, d.interface].filter(Boolean).join(' · ')
       : 'Disconnected';
     document.getElementById('tt-status').textContent = d.connected ? '● Connected' : '○ Disconnected';
+    _vpnConnectedSince = d.connected_since || null;
+    document.getElementById('tt-uptime').textContent = _vpnConnectedSince ? fmtUptime(_vpnConnectedSince) : '–';
   } catch { document.getElementById('vpn-label').textContent = 'VPN ?'; }
 }
 
 document.querySelector('.vpn-wrap').addEventListener('mouseenter', async () => {
+  if (_vpnConnectedSince) document.getElementById('tt-uptime').textContent = fmtUptime(_vpnConnectedSince);
   if (_ipData) return populate(_ipData);
   try {
     _ipData = await fetch('/api/ip').then(r=>r.json());
@@ -657,22 +694,32 @@ document.getElementById('btn-search-dl').addEventListener('click', async () => {
 });
 
 // Jobs
-let _allJobs       = [];
-let _prevJobStates = {};
+let _allJobs        = [];
+let _prevJobStates  = {};
+let _selectedJobIds = new Set();
+let _jobDragSrc     = null;
+
+function updateBulkBar() {
+  const n = _selectedJobIds.size;
+  document.getElementById('bulk-bar').classList.toggle('visible', n > 0);
+  document.getElementById('bulk-count').textContent = `${n} selected`;
+}
 
 function renderJobs() {
-  const el   = document.getElementById('jobs-list');
-  const q    = document.getElementById('job-search').value.trim().toLowerCase();
+  const el = document.getElementById('jobs-list');
+  const q  = document.getElementById('job-search').value.trim().toLowerCase();
   const jobs = q
-    ? _allJobs.filter(j => (j.title || j.url).toLowerCase().includes(q) || (j.status||'').includes(q))
+    ? _allJobs.filter(j => (j.title || j.url).toLowerCase().includes(q) || (j.status || '').includes(q))
     : _allJobs;
-  if (!_allJobs.length) { el.innerHTML='<div class="jobs-empty">No downloads yet</div>'; return; }
-  if (!jobs.length)     { el.innerHTML='<div class="jobs-empty">No matches</div>'; return; }
+  if (!_allJobs.length) { el.innerHTML = '<div class="jobs-empty">No downloads yet</div>'; return; }
+  if (!jobs.length)     { el.innerHTML = '<div class="jobs-empty">No matches</div>'; return; }
+
   el.innerHTML = jobs.map(j => {
     const label = j.title || j.url;
     const cover = j.cover_url
       ? `<img class="job-cover" src="${esc(j.cover_url)}" alt="" loading="lazy">`
       : `<div class="job-cover-ph"></div>`;
+    const sel = _selectedJobIds.has(j.id);
     let actionBtn = '<span></span>';
     if (j.status === 'queued' || j.status === 'running') {
       actionBtn = `<button class="job-btn cancel" data-action="cancel" data-id="${esc(j.id)}" title="Cancel">⏹</button>`;
@@ -680,31 +727,81 @@ function renderJobs() {
       actionBtn = `<button class="job-btn retry" data-action="retry" data-id="${esc(j.id)}" title="Retry">↺</button>`;
     }
     return `
-    <div class="job-item">
+    <div class="job-item${sel ? ' job-sel' : ''}" data-id="${esc(j.id)}">
+      <input type="checkbox" class="job-cb" data-id="${esc(j.id)}" ${sel ? 'checked' : ''}>
+      <span class="job-handle" draggable="true" data-id="${esc(j.id)}" title="Drag to reorder">⠿</span>
       ${cover}
       <div class="job-url"><a href="${esc(j.url)}" target="_blank" title="${esc(j.url)}">${esc(label)}</a></div>
-      <div class="job-time">${j.started_at||''}${j.finished_at?' → '+j.finished_at:''}</div>
+      <div class="job-time">${j.started_at || ''}${j.finished_at ? ' → ' + j.finished_at : ''}</div>
       <span class="badge ${j.status}">${j.status}</span>
       ${actionBtn}
       <button class="job-btn remove" data-action="remove" data-id="${esc(j.id)}" title="Remove">✕</button>
-      ${j.error?`<div class="job-error">${esc(j.error)}</div>`:''}
+      ${j.error ? `<div class="job-error">${esc(j.error)}</div>` : ''}
     </div>`;
   }).join('');
 
+  // Checkboxes
+  el.querySelectorAll('.job-cb').forEach(cb => {
+    cb.addEventListener('change', () => {
+      if (cb.checked) _selectedJobIds.add(cb.dataset.id);
+      else            _selectedJobIds.delete(cb.dataset.id);
+      cb.closest('.job-item').classList.toggle('job-sel', cb.checked);
+      updateBulkBar();
+    });
+  });
+
+  // Per-job action buttons
   el.querySelectorAll('[data-action]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const {action, id} = btn.dataset;
-      if      (action === 'cancel') await fetch(`/api/jobs/${id}/cancel`, {method:'POST'});
-      else if (action === 'retry')  await fetch(`/api/jobs/${id}/retry`,  {method:'POST'});
-      else if (action === 'remove') await fetch(`/api/jobs/${id}`,        {method:'DELETE'});
+      if      (action === 'cancel') await fetch(`/api/jobs/${id}/cancel`, {method: 'POST'});
+      else if (action === 'retry')  await fetch(`/api/jobs/${id}/retry`,  {method: 'POST'});
+      else if (action === 'remove') await fetch(`/api/jobs/${id}`,        {method: 'DELETE'});
       refreshJobs();
     });
   });
+
+  // Drag handles
+  el.querySelectorAll('.job-handle').forEach(handle => {
+    handle.addEventListener('dragstart', e => {
+      _jobDragSrc = handle.dataset.id;
+      handle.closest('.job-item').style.opacity = '.4';
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    handle.addEventListener('dragend', () => {
+      handle.closest('.job-item').style.opacity = '';
+      el.querySelectorAll('.job-item').forEach(x => x.classList.remove('drag-over'));
+    });
+  });
+  el.querySelectorAll('.job-item').forEach(item => {
+    item.addEventListener('dragover',  e => { e.preventDefault(); item.classList.add('drag-over'); });
+    item.addEventListener('dragleave', () => item.classList.remove('drag-over'));
+    item.addEventListener('drop', e => {
+      e.preventDefault();
+      item.classList.remove('drag-over');
+      const targetId = item.dataset.id;
+      if (!_jobDragSrc || _jobDragSrc === targetId) return;
+      const fromIdx = _allJobs.findIndex(x => x.id === _jobDragSrc);
+      const toIdx   = _allJobs.findIndex(x => x.id === targetId);
+      if (fromIdx < 0 || toIdx < 0) return;
+      _allJobs.splice(toIdx, 0, _allJobs.splice(fromIdx, 1)[0]);
+      renderJobs();
+      fetch('/api/jobs/reorder', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ids: _allJobs.map(x => x.id)}),
+      });
+    });
+  });
+
+  updateBulkBar();
 }
 
 async function refreshJobs() {
-  const newJobs = await fetch('/api/jobs').then(r=>r.json()).catch(()=>null);
+  const newJobs = await fetch('/api/jobs').then(r => r.json()).catch(() => null);
   if (!newJobs) return;
+  // Drop selections for jobs that no longer exist
+  const live = new Set(newJobs.map(j => j.id));
+  for (const id of _selectedJobIds) { if (!live.has(id)) _selectedJobIds.delete(id); }
   newJobs.forEach(j => {
     const prev = _prevJobStates[j.id];
     if (prev && prev !== j.status) {
@@ -737,7 +834,29 @@ document.getElementById('btn-dl').addEventListener('click', async () => {
   if (res.ok) { document.getElementById('urls').value=''; refreshJobs(); }
 });
 
-document.getElementById('btn-clr').addEventListener('click', async ()=>{ await fetch('/api/jobs',{method:'DELETE'}); refreshJobs(); });
+document.getElementById('btn-clr').addEventListener('click', async () => { await fetch('/api/jobs', {method: 'DELETE'}); refreshJobs(); });
+
+// Bulk actions
+async function bulkAction(action) {
+  const ids = [..._selectedJobIds];
+  await Promise.all(ids.map(id => {
+    const j = _allJobs.find(x => x.id === id);
+    if (!j) return;
+    if (action === 'cancel' && (j.status === 'queued' || j.status === 'running'))
+      return fetch(`/api/jobs/${id}/cancel`, {method: 'POST'});
+    if (action === 'retry'  && (j.status === 'error'  || j.status === 'cancelled'))
+      return fetch(`/api/jobs/${id}/retry`,  {method: 'POST'});
+    if (action === 'remove')
+      return fetch(`/api/jobs/${id}`,        {method: 'DELETE'});
+  }));
+  if (action === 'remove') _selectedJobIds.clear();
+  refreshJobs();
+}
+document.getElementById('btn-bulk-all').addEventListener('click',    () => { _allJobs.forEach(j => _selectedJobIds.add(j.id)); renderJobs(); });
+document.getElementById('btn-bulk-none').addEventListener('click',   () => { _selectedJobIds.clear(); renderJobs(); });
+document.getElementById('btn-bulk-cancel').addEventListener('click', () => bulkAction('cancel'));
+document.getElementById('btn-bulk-retry').addEventListener('click',  () => bulkAction('retry'));
+document.getElementById('btn-bulk-remove').addEventListener('click', () => bulkAction('remove'));
 
 refreshVPN(); refreshJobs();
 setInterval(refreshVPN, 10_000);

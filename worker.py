@@ -53,6 +53,14 @@ def cancel_job(job_id: str) -> bool:
     return True
 
 
+def reorder_jobs(ids: list) -> None:
+    with _lock:
+        total = len(ids)
+        for rank, jid in enumerate(ids):
+            if jid in _jobs:
+                _jobs[jid]["_seq"] = total - rank
+
+
 def retry_job(job_id: str) -> bool:
     with _lock:
         j = _jobs.get(job_id)

@@ -4,19 +4,24 @@ import subprocess
 import time
 import urllib.request
 
-log       = logging.getLogger(__name__)
-_ip_cache: dict = {}
+log               = logging.getLogger(__name__)
+_ip_cache:  dict  = {}
+_connected_since: float | None = None
 
 
 def tunnel_status() -> dict:
+    global _connected_since
     try:
         for iface in ("tun0", "wg0"):
             r = subprocess.run(["ip", "link", "show", iface], capture_output=True)
             if r.returncode == 0:
-                return dict(connected=True, interface=iface)
+                if _connected_since is None:
+                    _connected_since = time.time()
+                return dict(connected=True, interface=iface, connected_since=_connected_since)
     except FileNotFoundError:
         pass
-    return dict(connected=False, interface=None)
+    _connected_since = None
+    return dict(connected=False, interface=None, connected_since=None)
 
 
 def ip_info() -> dict:
