@@ -60,6 +60,30 @@ def get_jobs() -> list[dict]:
     return [{k: v for k, v in j.items() if not k.startswith("_")} for j in jobs]
 
 
+def _cleanup_empty_dirs() -> None:
+    from config import Config
+    root = os.path.normpath(os.path.abspath(Config.OUTPUT_DIR))
+    if not os.path.isdir(root):
+        return
+    with _lock:
+        active_dirs = {
+            os.path.normpath(os.path.abspath(j["output_dir"]))
+            for j in _jobs.values()
+            if j["status"] in ("running", "queued") and j.get("output_dir")
+        }
+    for dirpath, _dirnames, _filenames in os.walk(root, topdown=False):
+        abs_dir = os.path.normpath(os.path.abspath(dirpath))
+        if abs_dir == root:
+            continue
+        if any(abs_dir == ad or abs_dir.startswith(ad + os.sep) for ad in active_dirs):
+            continue
+        try:
+            if not os.listdir(abs_dir):
+                os.rmdir(abs_dir)
+        except OSError:
+            pass
+
+
 def clear_done() -> int:
     with _lock:
         ids = [jid for jid, j in _jobs.items() if j["status"] in ("done", "error", "cancelled")]
@@ -67,6 +91,7 @@ def clear_done() -> int:
             _jobs.pop(jid, None)
             _cancel.pop(jid, None)
     _save()
+    _cleanup_empty_dirs()
     return len(ids)
 
 
@@ -78,6 +103,7 @@ def remove_job(job_id: str) -> bool:
         found = _jobs.pop(job_id, None) is not None
     if found:
         _save()
+        _cleanup_empty_dirs()
     return found
 
 
@@ -92,6 +118,7 @@ def cancel_job(job_id: str) -> bool:
         j["status"]      = "cancelled"
         j["finished_at"] = _now()
     _save()
+    _cleanup_empty_dirs()
     return True
 
 
