@@ -411,7 +411,7 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
   <div class="modal">
     <div class="modal-header">
       <span class="modal-title" id="modal-title">Search results</span>
-      <button class="modal-close" id="btn-modal-close" title="Close">✕</button>
+      <button class="modal-close" id="btn-modal-close" title="Close">Close</button>
     </div>
     <div class="modal-filter">
       <button class="filter-pill active" data-filter="all">All</button>
@@ -861,12 +861,15 @@ document.getElementById('btn-bulk-remove').addEventListener('click', () => bulkA
 refreshVPN(); refreshJobs();
 setInterval(refreshVPN, 10_000);
 setInterval(refreshJobs, 3_000);
+setInterval(() => {
+  if (_vpnConnectedSince) document.getElementById('tt-uptime').textContent = fmtUptime(_vpnConnectedSince);
+}, 1000);
 
 // Theme toggle
 const themeToggle = document.getElementById('theme-toggle');
 function applyTheme(t) {
   document.documentElement.dataset.theme = t;
-  themeToggle.textContent = t === 'dark' ? '🌙' : '☀️';
+  themeToggle.textContent = t === 'dark' ? 'Dark' : 'Light';
 }
 themeToggle.addEventListener('click', () => {
   const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
