@@ -405,7 +405,7 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
 </div>
 
 <script>
-function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 const ALL_SERVICES = [
   {id:'tidal',   name:'Tidal'},

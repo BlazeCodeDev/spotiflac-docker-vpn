@@ -187,4 +187,4 @@ def api_search():
         return jsonify(results=results, has_more=has_more)
     except Exception as exc:
         log.warning("Search failed: %s", exc)
-        return jsonify(error=str(exc)), 502
+        return jsonify(error="Search failed"), 502

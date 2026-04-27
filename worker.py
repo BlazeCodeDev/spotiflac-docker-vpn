@@ -77,7 +77,7 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
             status="queued", started_at=_now(), finished_at=None, error=None,
             output_dir=output_dir, services=services, filename_fmt=filename_fmt,
             artist_dirs=artist_dirs, album_dirs=album_dirs,
-            retry_min=retry_min, qobuz_token=qobuz_token,
+            retry_min=retry_min, _qobuz_token=qobuz_token,
             _seq=_seq,
         )
     _cancel[jid] = threading.Event()
@@ -131,7 +131,7 @@ def _run(job_id: str) -> None:
     artist_dirs  = j["artist_dirs"]
     album_dirs   = j["album_dirs"]
     retry_min    = j["retry_min"]
-    qobuz_token  = j["qobuz_token"] or ""
+    qobuz_token  = j["_qobuz_token"] or ""
 
     _update(job_id, status="running", started_at=_now())
 

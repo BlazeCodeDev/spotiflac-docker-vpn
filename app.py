@@ -4,6 +4,7 @@ try:
 except ImportError:
     pass
 
+import hmac
 import logging
 import os
 from functools import wraps
@@ -46,7 +47,9 @@ def _require_auth():
 
 def _check_auth(req) -> bool:
     auth = req.authorization
-    return bool(auth and auth.password == Config.UI_PASSWORD)
+    if not auth:
+        return False
+    return hmac.compare_digest(auth.password or "", Config.UI_PASSWORD)
 
 
 def protected(f):

@@ -203,10 +203,10 @@ apply_killswitch() {
     # VPN tunnel: allow all packets on the tunnel interface (no conntrack needed)
     iptables -A INPUT  -i "$IFACE_PATTERN" -j ACCEPT
     iptables -A OUTPUT -o "$IFACE_PATTERN" -j ACCEPT
-    # Web UI: allow inbound requests and outbound replies (stateless, no conntrack)
-    iptables -A INPUT  -p tcp --dport "$WEB_PORT" -j ACCEPT
-    iptables -A OUTPUT -p tcp --sport "$WEB_PORT" -j ACCEPT
-    log "Web UI port $WEB_PORT: INPUT+OUTPUT ACCEPT (stateless, no conntrack)"
+    # Web UI: allow only on the Docker bridge interface, not the VPN tunnel
+    iptables -A INPUT  -i "$DOCKER_IFACE" -p tcp --dport "$WEB_PORT" -j ACCEPT
+    iptables -A OUTPUT -o "$DOCKER_IFACE" -p tcp --sport "$WEB_PORT" -j ACCEPT
+    log "Web UI port $WEB_PORT: INPUT+OUTPUT ACCEPT on $DOCKER_IFACE only"
 
     for target in $VPN_SERVERS; do
         iptables -A OUTPUT -d "$target" -j ACCEPT
