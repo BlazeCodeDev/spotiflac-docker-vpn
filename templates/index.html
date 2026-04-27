@@ -777,6 +777,8 @@ document.getElementById('btn-search-dl').addEventListener('click', async () => {
   btn.disabled = false;
   if (res.ok) {
     _selectedUrls.clear();
+    _urlsEl.value = '';
+    _urlsClear.style.display = 'none';
     refreshJobs();
     closeModal();
   } else {
