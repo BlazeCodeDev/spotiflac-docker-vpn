@@ -194,7 +194,7 @@ def api_search():
         )
         has_more = (offset + limit) < total
 
-        return jsonify(results=results, has_more=has_more)
+        return jsonify(results=results, has_more=has_more, next_offset=offset + limit)
     except Exception as exc:
         log.warning("Search failed: %s", exc)
         return jsonify(error="Search failed"), 502

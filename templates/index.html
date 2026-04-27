@@ -563,12 +563,13 @@ function showToast(text, type = 'done') {
 }
 
 // Spotify search + modal
-let _searchResults = [];
-let _searchOffset  = 0;
-let _searchQuery   = '';
-let _searchFilter  = 'all';
-let _searchHasMore = false;
-let _selectedUrls  = new Set();
+let _searchResults  = [];
+let _searchOffset   = 0;
+let _searchQuery    = '';
+let _searchFilter   = 'all';
+let _searchHasMore  = false;
+let _searchLoading  = false;
+let _selectedUrls   = new Set();
 
 function openModal(title) {
   document.getElementById('modal-title').textContent = title;
@@ -594,6 +595,7 @@ function fmtSubtitle(r) {
 }
 
 async function doSearch(append = false) {
+  if (_searchLoading) return;
   const q = document.getElementById('search-input').value.trim();
   if (!q && !append) return;
   if (!append) {
@@ -608,6 +610,9 @@ async function doSearch(append = false) {
     document.getElementById('search-msg').textContent = '';
     openModal(`Results for "${q}"`);
   }
+  _searchLoading = true;
+  const loadMore = document.getElementById('btn-load-more');
+  if (loadMore) loadMore.disabled = true;
   try {
     const res  = await fetch(`/api/search?q=${encodeURIComponent(_searchQuery)}&offset=${_searchOffset}`);
     const data = await res.json();
@@ -618,12 +623,14 @@ async function doSearch(append = false) {
     }
     _searchResults = append ? [..._searchResults, ...data.results] : data.results;
     _searchHasMore = data.has_more;
-    _searchOffset += data.results.length;
+    _searchOffset  = data.next_offset;
     renderSearchResults();
   } catch {
     if (!append) {
       document.getElementById('search-results').innerHTML = '<div class="jobs-empty">Search failed</div>';
     }
+  } finally {
+    _searchLoading = false;
   }
 }
 
