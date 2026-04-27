@@ -122,14 +122,7 @@ textarea:focus, input:focus { outline: none; border-color: var(--accent); }
 .switch input:checked + .slider { background: var(--accent); }
 .switch input:checked + .slider::before { transform: translateX(16px); }
 
-/* Settings accordion */
-details { margin-top: 1rem; }
-details summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: .4rem; color: var(--tx2); font-size: .82rem; padding: .4rem 0; user-select: none; }
-details summary::-webkit-details-marker { display: none; }
-details summary::before { font-family: 'Material Icons'; content: '\e5cf'; font-size: 18px; line-height: 1; transition: transform .2s; display: inline-block; }
-details[open] summary::before { transform: rotate(180deg); }
-details summary:hover { color: var(--tx); }
-.settings-grid { display: grid; gap: .9rem; margin-top: .9rem; padding: 1rem; background: var(--input-bg); border: 1px solid var(--border); border-radius: 7px; }
+.settings-grid { display: grid; gap: 1.1rem; }
 .setting-group label { display: block; color: var(--tx2); font-size: .78rem; text-transform: uppercase; letter-spacing: .07em; margin-bottom: .35rem; }
 .hint { font-size: .75rem; color: var(--tx3); margin-top: .3rem; }
 
@@ -349,59 +342,11 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
 
 <main>
   <div class="card">
-    <div class="card-header"><span class="section-title">Download or Search</span></div>
+    <div class="card-header">
+      <span class="section-title">Download or Search</span>
+      <button class="btn-ghost" id="btn-settings" title="Settings" style="padding:.3rem .5rem;line-height:1"><span class="material-icons">settings</span></button>
+    </div>
     <textarea id="urls" placeholder="Paste Spotify URLs — one per line or comma-separated&#10;https://open.spotify.com/track/…&#10;&#10;Or type an artist, album or track name to search"></textarea>
-
-    <details>
-      <summary>Settings</summary>
-      <div class="settings-grid">
-
-        <div class="setting-group">
-          <label>Services &amp; Priority</label>
-          <div id="services-list"></div>
-          <div class="hint">Drag to reorder — enabled services are tried in order</div>
-        </div>
-
-        <div class="setting-group">
-          <label>Filename Format <span style="color:var(--tx3);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
-          <input type="text" value="{{ filename_fmt }}" readonly style="opacity:.5;cursor:default">
-          <div class="hint">Variables: {artist} {album} {title} {track} {year} — via FILENAME_FORMAT</div>
-        </div>
-
-        <div>
-          <label style="display:block;color:var(--tx2);font-size:.78rem;text-transform:uppercase;letter-spacing:.07em;margin-bottom:.4rem">Folder Structure <span style="color:var(--tx3);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
-          <div class="toggle-row">
-            <span class="toggle-label">Artist subfolder</span>
-            <label class="switch"><input type="checkbox" {% if artist_dirs %}checked{% endif %} disabled><span class="slider" style="opacity:.5"></span></label>
-          </div>
-          <div class="toggle-row">
-            <span class="toggle-label">Album subfolder</span>
-            <label class="switch"><input type="checkbox" {% if album_dirs %}checked{% endif %} disabled><span class="slider" style="opacity:.5"></span></label>
-          </div>
-        </div>
-
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.9rem">
-          <div class="setting-group">
-            <label>Quality</label>
-            <div class="quality-sel" id="quality-selector">
-              <button class="quality-opt active" data-quality="lossless" title="CD quality · 16-bit FLAC">Lossless</button>
-              <button class="quality-opt" data-quality="hires" title="24-bit FLAC where available">Hi-Res</button>
-            </div>
-            <div class="hint">Hi-Res: 24-bit on Tidal / Qobuz</div>
-          </div>
-          <div class="setting-group">
-            <label>Retry (minutes) <span style="color:var(--tx3);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
-            <input type="number" value="{{ retry_min }}" min="0" max="1440" readonly style="opacity:.5;cursor:default">
-            <div class="hint">via RETRY_MINUTES</div>
-          </div>
-          <div class="setting-group">
-            <label>Qobuz Token</label>
-            <input type="password" id="qobuz-token" placeholder="optional">
-          </div>
-        </div>
-
-      </div>
-    </details>
 
     <div class="btn-row">
       <button id="btn-dl">Download</button>
@@ -435,6 +380,67 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
     <div id="jobs-list"></div>
   </div>
 </main>
+
+<!-- Settings modal -->
+<div id="settings-modal" class="modal-overlay" role="dialog" aria-modal="true">
+  <div class="modal" style="max-width:480px">
+    <div class="modal-header">
+      <span class="modal-title">Settings</span>
+      <button class="modal-close" id="btn-settings-close" title="Close"><span class="material-icons">close</span></button>
+    </div>
+    <div class="modal-body">
+      <div class="settings-grid">
+
+        <div class="setting-group">
+          <label>Services &amp; Priority</label>
+          <div id="services-list"></div>
+          <div class="hint">Drag to reorder — enabled services are tried in order</div>
+        </div>
+
+        <div class="setting-group">
+          <label>Quality</label>
+          <div class="quality-sel" id="quality-selector">
+            <button class="quality-opt active" data-quality="lossless" title="CD quality · 16-bit FLAC">Lossless</button>
+            <button class="quality-opt" data-quality="hires" title="24-bit FLAC where available">Hi-Res</button>
+          </div>
+          <div class="hint">Hi-Res: 24-bit on Tidal / Qobuz</div>
+        </div>
+
+        <div class="setting-group">
+          <label>Qobuz Token</label>
+          <input type="password" id="qobuz-token" placeholder="optional">
+        </div>
+
+        <hr style="border:none;border-top:1px solid var(--border);margin:.1rem 0">
+
+        <div class="setting-group">
+          <label>Filename Format <span style="color:var(--tx3);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
+          <input type="text" value="{{ filename_fmt }}" readonly style="opacity:.5;cursor:default">
+          <div class="hint">Variables: {artist} {album} {title} {track} {year} — via FILENAME_FORMAT</div>
+        </div>
+
+        <div class="setting-group">
+          <label>Folder Structure <span style="color:var(--tx3);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
+          <div class="toggle-row">
+            <span class="toggle-label">Artist subfolder</span>
+            <label class="switch"><input type="checkbox" {% if artist_dirs %}checked{% endif %} disabled><span class="slider" style="opacity:.5"></span></label>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Album subfolder</span>
+            <label class="switch"><input type="checkbox" {% if album_dirs %}checked{% endif %} disabled><span class="slider" style="opacity:.5"></span></label>
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <label>Retry (minutes) <span style="color:var(--tx3);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
+          <input type="number" value="{{ retry_min }}" min="0" max="1440" readonly style="opacity:.5;cursor:default;width:80px">
+          <div class="hint">via RETRY_MINUTES</div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- Search results modal -->
 <div id="search-modal" class="modal-overlay" role="dialog" aria-modal="true">
@@ -585,6 +591,15 @@ let _searchHasMore  = false;
 let _searchLoading  = false;
 let _selectedUrls   = new Set();
 
+function openSettingsModal() {
+  document.getElementById('settings-modal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+function closeSettingsModal() {
+  document.getElementById('settings-modal').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
 function openModal(title) {
   document.getElementById('modal-title').textContent = title;
   document.getElementById('search-modal').classList.add('open');
@@ -699,11 +714,19 @@ function updateSearchDlBtn() {
 }
 
 document.getElementById('btn-search').addEventListener('click', () => doSearch());
+document.getElementById('btn-settings').addEventListener('click', openSettingsModal);
+document.getElementById('btn-settings-close').addEventListener('click', closeSettingsModal);
+document.getElementById('settings-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeSettingsModal();
+});
+
 document.getElementById('btn-modal-close').addEventListener('click', closeModal);
 document.getElementById('search-modal').addEventListener('click', e => {
   if (e.target === e.currentTarget) closeModal();
 });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeModal(); closeSettingsModal(); }
+});
 
 document.querySelectorAll('.filter-pill').forEach(pill => {
   pill.addEventListener('click', () => {
