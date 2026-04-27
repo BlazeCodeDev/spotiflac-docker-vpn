@@ -183,11 +183,6 @@ button:hover { opacity: .85; }
 .search-wrap .material-icons { position: absolute; left: .55rem; top: 50%; transform: translateY(-50%); font-size: 16px; color: var(--tx3); pointer-events: none; }
 #job-search { width: 100%; padding-left: 2rem; }
 
-/* Spotify search card */
-.spotify-search-form { display: flex; gap: .5rem; }
-.spotify-search-form input { flex: 1; }
-#btn-search { background: var(--accent); color: #fff; padding: .55rem 1.2rem; }
-
 /* Search modal */
 .modal-overlay {
   display: none; position: fixed; inset: 0; z-index: 500;
@@ -354,16 +349,8 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
 
 <main>
   <div class="card">
-    <div class="card-header"><span class="section-title">Search Spotify</span></div>
-    <form class="spotify-search-form" id="search-form">
-      <input type="text" id="search-input" placeholder="Search for tracks, albums or playlists…" autocomplete="off">
-      <button type="submit" id="btn-search">Search</button>
-    </form>
-  </div>
-
-  <div class="card">
-    <div class="card-header"><span class="section-title">Download</span></div>
-    <textarea id="urls" placeholder="Spotify URLs — one per line or comma-separated&#10;https://open.spotify.com/track/…&#10;https://open.spotify.com/album/…&#10;https://open.spotify.com/playlist/…"></textarea>
+    <div class="card-header"><span class="section-title">Download or Search</span></div>
+    <textarea id="urls" placeholder="Paste Spotify URLs — one per line or comma-separated&#10;https://open.spotify.com/track/…&#10;&#10;Or type an artist, album or track name to search"></textarea>
 
     <details>
       <summary>Settings</summary>
@@ -418,6 +405,7 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
 
     <div class="btn-row">
       <button id="btn-dl">Download</button>
+      <button class="btn-ghost" id="btn-search">Search</button>
       <span id="msg"></span>
     </div>
   </div>
@@ -622,7 +610,7 @@ function fmtSubtitle(r) {
 
 async function doSearch(append = false) {
   if (_searchLoading) return;
-  const q = document.getElementById('search-input').value.trim();
+  const q = document.getElementById('urls').value.trim();
   if (!q && !append) return;
   if (!append) {
     _searchResults = [];
@@ -710,7 +698,7 @@ function updateSearchDlBtn() {
   btn.style.display = n ? 'inline-block' : 'none';
 }
 
-document.getElementById('search-form').addEventListener('submit', e => { e.preventDefault(); doSearch(); });
+document.getElementById('btn-search').addEventListener('click', () => doSearch());
 document.getElementById('btn-modal-close').addEventListener('click', closeModal);
 document.getElementById('search-modal').addEventListener('click', e => {
   if (e.target === e.currentTarget) closeModal();
