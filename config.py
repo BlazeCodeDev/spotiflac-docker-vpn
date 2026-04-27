@@ -4,7 +4,7 @@ import os
 class Config:
     OUTPUT_DIR   = os.environ.get("OUTPUT_DIR",            "./downloads")
     SERVICES     = [s.strip() for s in os.environ.get("SPOTIFLAC_SERVICES", "tidal,qobuz,amazon,youtube").split(",") if s.strip()]
-    FILENAME_FMT = os.environ.get("FILENAME_FORMAT",       "{artist} - {album}/{track}. {title}")
+    FILENAME_FMT = os.environ.get("FILENAME_FORMAT",       "{artist} - {year} - {album}/{track}. {title}")
     ARTIST_DIRS  = os.environ.get("USE_ARTIST_SUBFOLDERS", "false").lower() == "true"
     ALBUM_DIRS   = os.environ.get("USE_ALBUM_SUBFOLDERS",  "false").lower() == "true"
     RETRY_MIN    = int(os.environ.get("RETRY_MINUTES",     "0"))
