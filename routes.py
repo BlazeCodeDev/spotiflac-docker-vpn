@@ -32,6 +32,7 @@ def index():
         artist_dirs=Config.ARTIST_DIRS,
         album_dirs=Config.ALBUM_DIRS,
         retry_min=Config.RETRY_MIN,
+        track_delay_s=Config.TRACK_DELAY_S,
     )
 
 

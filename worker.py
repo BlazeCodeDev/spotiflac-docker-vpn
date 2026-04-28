@@ -416,6 +416,7 @@ def _run(job_id: str) -> None:
                     finished_at=None, error=None, progress=None, total=None,
                     track_results=None, success_count=None, fail_count=None)
 
+            from config import Config as _Cfg
             opts = DownloadOptions(
                 output_dir            = output_dir,
                 services              = services,
@@ -423,6 +424,7 @@ def _run(job_id: str) -> None:
                 use_artist_subfolders = artist_dirs,
                 use_album_subfolders  = album_dirs,
                 quality               = quality,
+                inter_track_delay_s   = _Cfg.TRACK_DELAY_S,
             )
 
             def _on_progress(done, total):

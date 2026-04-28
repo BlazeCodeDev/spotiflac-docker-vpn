@@ -494,6 +494,12 @@ html[data-theme="light"] .type-artist   { background: #fdf4ff; color: #a21caf; }
           <div class="hint">via RETRY_MINUTES</div>
         </div>
 
+        <div class="setting-group">
+          <label>Delay between tracks (seconds) <span style="color:var(--tx3);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
+          <input type="number" value="{{ track_delay_s }}" min="0" step="0.5" readonly style="opacity:.5;cursor:default;width:80px">
+          <div class="hint">Increase to reduce provider rate-limit errors · via TRACK_DELAY_SECONDS</div>
+        </div>
+
       </div>
     </div>
   </div>
@@ -1204,8 +1210,9 @@ function renderHistory() {
 
     const failedWithId = (h.track_results || []).filter(r => !r.success && r.track_id);
     const retryBtn = failedWithId.length
-      ? `<button class="job-btn retry hist-retry-btn" data-hkey="${esc(hkey)}" title="Re-queue ${failedWithId.length} failed track(s)"><span class="material-icons">replay</span></button>`
+      ? `<button class="job-btn retry hist-retry-btn" data-hkey="${esc(hkey)}" title="Retry ${failedWithId.length} failed track(s)"><span class="material-icons">replay</span></button>`
       : '';
+    const restartBtn = `<button class="job-btn hist-restart-btn" data-hkey="${esc(hkey)}" title="Restart full job"><span class="material-icons">restart_alt</span></button>`;
 
     const hasDetail = trackHtml !== '';
     const isOpen    = _histExpanded.has(hkey);
@@ -1220,6 +1227,7 @@ function renderHistory() {
         <span class="badge ${badgeClass}">${badgeText}</span>
         <span class="quality-badge">${h.quality === 'hires' ? 'Hi-Res' : 'Lossless'}</span>
         ${retryBtn}
+        ${restartBtn}
       </div>
       ${hasDetail ? `<div class="history-expand">${trackHtml}</div>` : ''}
     </div>`;
@@ -1230,7 +1238,7 @@ function renderHistory() {
     const row = item.querySelector('.history-row');
     if (!item.querySelector('.history-expand')) return;
     row.addEventListener('click', e => {
-      if (e.target.closest('.hist-toggle')) return;
+      if (e.target.closest('.hist-toggle, .hist-retry-btn, .hist-restart-btn')) return;
       const hkey = item.dataset.hkey;
       if (_histExpanded.has(hkey)) _histExpanded.delete(hkey);
       else _histExpanded.add(hkey);
@@ -1246,6 +1254,39 @@ function renderHistory() {
       else _histShowAll.add(hkey);
       _histExpanded.add(hkey);
       renderHistory();
+    });
+  });
+
+  // Restart full job
+  el.querySelectorAll('.hist-restart-btn').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const hkey  = btn.dataset.hkey;
+      const entry = _historyData.find(h => histKey(h) === hkey);
+      if (!entry?.url) return;
+
+      btn.disabled = true;
+      btn.innerHTML = '<span class="material-icons" style="animation:spin .7s linear infinite;display:inline-block">autorenew</span>';
+
+      const res = await fetch('/api/download', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          urls:        entry.url,
+          services:    getActiveServices(),
+          quality:     entry.quality || _quality,
+          qobuz_token: document.getElementById('qobuz-token').value,
+        }),
+      });
+
+      if (res.ok) {
+        btn.innerHTML = '<span class="material-icons" style="color:var(--green)">check</span>';
+        showToast(`Queued: ${entry.title || entry.url}`, 'done');
+        refreshJobs();
+      } else {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="material-icons">restart_alt</span>';
+        showToast('Failed to queue job', 'error');
+      }
     });
   });
 
