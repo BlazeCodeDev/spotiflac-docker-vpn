@@ -321,8 +321,6 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
 .filter-pill.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 /* Artist chips + sort row */
-.artist-chips-row { display: none; gap: .35rem; padding: .45rem 1.2rem; border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; align-items: center; }
-.artist-chips-row.visible { display: flex; }
 .artist-chip { background: transparent; border: 1px solid var(--border2); color: var(--tx2); border-radius: 999px; padding: .15rem .65rem; font-size: .73rem; font-weight: 500; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 .artist-chip:hover { opacity: 1; border-color: var(--tx3); color: var(--tx); }
 .artist-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -514,8 +512,9 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
       <button class="filter-pill" data-filter="track">Tracks</button>
       <button class="filter-pill" data-filter="album">Albums</button>
       <button class="filter-pill" data-filter="playlist">Playlists</button>
+      <span id="artist-chip-sep" style="display:none;color:var(--border2);align-self:center;margin:0 .05rem;user-select:none">|</span>
+      <span id="artist-chips-row" style="display:contents"></span>
     </div>
-    <div class="artist-chips-row" id="artist-chips-row"></div>
     <div class="modal-sort">
       <span class="sort-label">Sort:</span>
       <button class="sort-pill active" data-sort="relevance">Relevance</button>
@@ -715,7 +714,7 @@ async function doSearch(append = false) {
     document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p.dataset.filter === 'all'));
     document.querySelectorAll('.sort-pill').forEach(p => p.classList.toggle('active', p.dataset.sort === 'relevance'));
     document.getElementById('artist-chips-row').innerHTML = '';
-    document.getElementById('artist-chips-row').classList.remove('visible');
+    document.getElementById('artist-chip-sep').style.display = 'none';
     document.getElementById('search-results').innerHTML = '<div class="jobs-empty">Searching…</div>';
     document.getElementById('btn-search-dl').style.display = 'none';
     document.getElementById('search-msg').textContent = '';
@@ -755,7 +754,7 @@ function resultArtist(r) {
 
 function buildArtistChips() {
   const row = document.getElementById('artist-chips-row');
-  // Collect artists from non-playlist results, count occurrences
+  const sep = document.getElementById('artist-chip-sep');
   const counts = {};
   _searchResults.forEach(r => {
     const a = resultArtist(r);
@@ -766,19 +765,18 @@ function buildArtistChips() {
     .slice(0, 10)
     .map(([name]) => name);
 
-  if (!artists.length) { row.classList.remove('visible'); return; }
+  if (!artists.length) { row.innerHTML = ''; sep.style.display = 'none'; return; }
 
-  row.classList.add('visible');
-  row.innerHTML = '<span style="font-size:.7rem;color:var(--tx3);flex-shrink:0">Artist:</span>'
-    + ['', ...artists].map(a => {
-      const active = _selectedArtist === a;
-      return `<button class="artist-chip${active ? ' active' : ''}" data-artist="${esc(a)}">${a === '' ? 'All' : esc(a)}</button>`;
-    }).join('');
+  sep.style.display = '';
+  row.innerHTML = artists.map(a => {
+    const active = _selectedArtist === a;
+    return `<button class="artist-chip${active ? ' active' : ''}" data-artist="${esc(a)}">${esc(a)}</button>`;
+  }).join('');
 
   row.querySelectorAll('.artist-chip').forEach(chip => {
     chip.addEventListener('click', () => {
-      _selectedArtist = chip.dataset.artist;
-      row.querySelectorAll('.artist-chip').forEach(c => c.classList.toggle('active', c === chip));
+      _selectedArtist = _selectedArtist === chip.dataset.artist ? '' : chip.dataset.artist;
+      row.querySelectorAll('.artist-chip').forEach(c => c.classList.toggle('active', c.dataset.artist === _selectedArtist));
       renderSearchResults();
     });
   });
