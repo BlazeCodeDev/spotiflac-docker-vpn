@@ -320,6 +320,18 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
 .filter-pill:hover { opacity: 1; border-color: var(--tx3); color: var(--tx); }
 .filter-pill.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
+/* Artist chips + sort row */
+.artist-chips-row { display: none; gap: .35rem; padding: .45rem 1.2rem; border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; align-items: center; }
+.artist-chips-row.visible { display: flex; }
+.artist-chip { background: transparent; border: 1px solid var(--border2); color: var(--tx2); border-radius: 999px; padding: .15rem .65rem; font-size: .73rem; font-weight: 500; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.artist-chip:hover { opacity: 1; border-color: var(--tx3); color: var(--tx); }
+.artist-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.modal-sort { display: flex; align-items: center; gap: .3rem; padding: .4rem 1.2rem; border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
+.sort-label { font-size: .7rem; color: var(--tx3); margin-right: .15rem; flex-shrink: 0; }
+.sort-pill { background: transparent; border: 1px solid transparent; color: var(--tx3); border-radius: 999px; padding: .15rem .6rem; font-size: .72rem; font-weight: 500; }
+.sort-pill:hover { opacity: 1; color: var(--tx2); }
+.sort-pill.active { border-color: var(--border2); color: var(--tx); background: var(--surf); }
+
 /* Toast notifications */
 #toast-wrap { position: fixed; bottom: 1.25rem; right: 1.25rem; z-index: 9999; display: flex; flex-direction: column; gap: .5rem; pointer-events: none; }
 .toast { background: var(--card); border: 1px solid var(--border2); border-radius: 8px; padding: .6rem 1rem; font-size: .82rem; color: var(--tx); box-shadow: 0 8px 24px rgba(0,0,0,.4); animation: toast-in .2s ease; pointer-events: auto; max-width: 280px; }
@@ -502,11 +514,15 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
       <button class="filter-pill" data-filter="track">Tracks</button>
       <button class="filter-pill" data-filter="album">Albums</button>
       <button class="filter-pill" data-filter="playlist">Playlists</button>
-      <div class="search-wrap" style="flex:1;min-width:120px;margin-bottom:0">
-        <span class="material-icons">person</span>
-        <input type="text" id="search-artist-filter" placeholder="Filter by artist…" autocomplete="off">
-        <button class="search-clear" id="btn-search-artist-clear" title="Clear" style="display:none"><span class="material-icons">close</span></button>
-      </div>
+    </div>
+    <div class="artist-chips-row" id="artist-chips-row"></div>
+    <div class="modal-sort">
+      <span class="sort-label">Sort:</span>
+      <button class="sort-pill active" data-sort="relevance">Relevance</button>
+      <button class="sort-pill" data-sort="az">A–Z</button>
+      <button class="sort-pill" data-sort="za">Z–A</button>
+      <button class="sort-pill" data-sort="newest">Newest</button>
+      <button class="sort-pill" data-sort="oldest">Oldest</button>
     </div>
     <div class="modal-body" id="search-results"></div>
     <div class="modal-footer">
@@ -646,7 +662,8 @@ let _searchResults  = [];
 let _searchOffset   = 0;
 let _searchQuery    = '';
 let _searchFilter   = 'all';
-let _artistQuery    = '';
+let _selectedArtist = '';
+let _searchSort     = 'relevance';
 let _searchHasMore  = false;
 let _searchLoading  = false;
 let _selectedUrls   = new Set();
@@ -688,15 +705,17 @@ async function doSearch(append = false) {
   const q = document.getElementById('urls').value.trim();
   if (!q && !append) return;
   if (!append) {
-    _searchResults = [];
-    _searchOffset  = 0;
-    _searchQuery   = q;
-    _searchFilter  = 'all';
-    _artistQuery   = '';
+    _searchResults  = [];
+    _searchOffset   = 0;
+    _searchQuery    = q;
+    _searchFilter   = 'all';
+    _selectedArtist = '';
+    _searchSort     = 'relevance';
     _selectedUrls.clear();
     document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p.dataset.filter === 'all'));
-    const artistEl = document.getElementById('search-artist-filter');
-    if (artistEl) { artistEl.value = ''; document.getElementById('btn-search-artist-clear').style.display = 'none'; }
+    document.querySelectorAll('.sort-pill').forEach(p => p.classList.toggle('active', p.dataset.sort === 'relevance'));
+    document.getElementById('artist-chips-row').innerHTML = '';
+    document.getElementById('artist-chips-row').classList.remove('visible');
     document.getElementById('search-results').innerHTML = '<div class="jobs-empty">Searching…</div>';
     document.getElementById('btn-search-dl').style.display = 'none';
     document.getElementById('search-msg').textContent = '';
@@ -716,6 +735,7 @@ async function doSearch(append = false) {
     _searchResults = append ? [..._searchResults, ...data.results] : data.results;
     _searchHasMore = data.has_more;
     _searchOffset  = data.next_offset;
+    buildArtistChips();
     renderSearchResults();
   } catch {
     if (!append) {
@@ -726,13 +746,62 @@ async function doSearch(append = false) {
   }
 }
 
+function resultArtist(r) {
+  // Extract primary artist: for tracks/albums the subtitle starts with "Artist · …"
+  // For playlists it's "by Owner" — we skip those for artist chips
+  if (r.type === 'playlist') return '';
+  return (r.subtitle || '').split('·')[0].trim();
+}
+
+function buildArtistChips() {
+  const row = document.getElementById('artist-chips-row');
+  // Collect artists from non-playlist results, count occurrences
+  const counts = {};
+  _searchResults.forEach(r => {
+    const a = resultArtist(r);
+    if (a) counts[a] = (counts[a] || 0) + 1;
+  });
+  const artists = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([name]) => name);
+
+  if (!artists.length) { row.classList.remove('visible'); return; }
+
+  row.classList.add('visible');
+  row.innerHTML = '<span style="font-size:.7rem;color:var(--tx3);flex-shrink:0">Artist:</span>'
+    + ['', ...artists].map(a => {
+      const active = _selectedArtist === a;
+      return `<button class="artist-chip${active ? ' active' : ''}" data-artist="${esc(a)}">${a === '' ? 'All' : esc(a)}</button>`;
+    }).join('');
+
+  row.querySelectorAll('.artist-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      _selectedArtist = chip.dataset.artist;
+      row.querySelectorAll('.artist-chip').forEach(c => c.classList.toggle('active', c === chip));
+      renderSearchResults();
+    });
+  });
+}
+
+function sortResults(arr) {
+  if (_searchSort === 'relevance') return arr; // original API order
+  const copy = arr.slice();
+  if (_searchSort === 'az')     return copy.sort((a, b) => a.title.localeCompare(b.title));
+  if (_searchSort === 'za')     return copy.sort((a, b) => b.title.localeCompare(a.title));
+  if (_searchSort === 'newest') return copy.sort((a, b) => (b.year || '0').localeCompare(a.year || '0'));
+  if (_searchSort === 'oldest') return copy.sort((a, b) => (a.year || '9999').localeCompare(b.year || '9999'));
+  return copy;
+}
+
 function renderSearchResults() {
   const el = document.getElementById('search-results');
-  const visible = _searchResults.filter(r => {
+  let filtered = _searchResults.filter(r => {
     if (_searchFilter !== 'all' && r.type !== _searchFilter) return false;
-    if (_artistQuery && !r.subtitle.toLowerCase().includes(_artistQuery)) return false;
+    if (_selectedArtist && resultArtist(r).toLowerCase() !== _selectedArtist.toLowerCase()) return false;
     return true;
   });
+  const visible = sortResults(filtered);
 
   if (!visible.length) {
     el.innerHTML = '<div class="jobs-empty">' + (_searchResults.length ? 'No results for this filter' : 'No results') + '</div>';
@@ -818,6 +887,14 @@ document.querySelectorAll('.filter-pill').forEach(pill => {
     renderSearchResults();
   });
 });
+
+document.querySelectorAll('.sort-pill').forEach(pill => {
+  pill.addEventListener('click', () => {
+    _searchSort = pill.dataset.sort;
+    document.querySelectorAll('.sort-pill').forEach(p => p.classList.toggle('active', p === pill));
+    renderSearchResults();
+  });
+});;
 
 document.getElementById('btn-search-dl').addEventListener('click', async () => {
   if (!_selectedUrls.size) return;
@@ -1015,20 +1092,6 @@ _jobSearchClear.addEventListener('click', () => {
   _jobSearchEl.focus();
 });
 
-const _searchArtistEl    = document.getElementById('search-artist-filter');
-const _searchArtistClear = document.getElementById('btn-search-artist-clear');
-_searchArtistEl.addEventListener('input', () => {
-  _artistQuery = _searchArtistEl.value.trim().toLowerCase();
-  _searchArtistClear.style.display = _searchArtistEl.value ? '' : 'none';
-  renderSearchResults();
-});
-_searchArtistClear.addEventListener('click', () => {
-  _searchArtistEl.value = '';
-  _artistQuery = '';
-  _searchArtistClear.style.display = 'none';
-  renderSearchResults();
-  _searchArtistEl.focus();
-});
 
 const _urlsEl    = document.getElementById('urls');
 const _urlsClear = document.getElementById('btn-urls-clear');
