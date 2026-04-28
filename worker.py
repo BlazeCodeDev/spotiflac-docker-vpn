@@ -325,6 +325,7 @@ def _run(job_id: str) -> None:
                 _cancel.pop(job_id, None)
                 return
 
+        succeeded = False
         try:
             if ev.is_set():
                 _update(job_id, status="cancelled", finished_at=_now())
@@ -348,13 +349,14 @@ def _run(job_id: str) -> None:
 
             _TrackingDownloader(opts, _on_progress).run(url)
             _update(job_id, status="done", finished_at=_now(), error=None, progress=None, total=None)
+            succeeded = True
         except Exception as exc:
             log.error("Job %s failed: %s", job_id, exc)
             _update(job_id, status="error", error=str(exc), finished_at=_now())
         finally:
             _semaphore.release()
 
-        if not retry_min or ev.is_set():
+        if succeeded or not retry_min or ev.is_set():
             break
 
         # Sleep without holding the slot so other jobs can run.
