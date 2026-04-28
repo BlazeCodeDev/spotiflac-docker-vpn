@@ -217,16 +217,21 @@ _seq = 0
 
 def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
             artist_dirs: bool, album_dirs: bool, retry_min: int, qobuz_token: str,
-            quality: str = "lossless") -> str:
+            quality: str = "lossless",
+            pre_success_count: int = 0, full_total: int = 0,
+            batch_urls: list | None = None, pre_title: str = "") -> str:
     global _seq
     jid = str(uuid.uuid4())[:8]
     with _lock:
         _seq += 1
         _jobs[jid] = dict(
-            id=jid, url=url, title=None, cover_url=None, artist=None,
+            id=jid, url=url, title=pre_title or None, cover_url=None, artist=None,
             status="queued", started_at=_now(), finished_at=None, error=None,
-            progress=None, total=None, track_results=None,
-            success_count=None, fail_count=None,
+            progress=pre_success_count if full_total else None,
+            total=full_total if full_total else None,
+            track_results=None, success_count=None, fail_count=None,
+            pre_success_count=pre_success_count, full_total=full_total,
+            _batch_urls=batch_urls or [],
             output_dir=output_dir, services=services, filename_fmt=filename_fmt,
             artist_dirs=artist_dirs, album_dirs=album_dirs,
             retry_min=retry_min, quality=quality, _qobuz_token=qobuz_token,
@@ -375,24 +380,28 @@ def _run(job_id: str) -> None:
     if not j:
         return
 
-    url          = j["url"]
-    output_dir   = j["output_dir"]
-    services     = j["services"]
-    filename_fmt = j["filename_fmt"]
-    artist_dirs  = j["artist_dirs"]
-    album_dirs   = j["album_dirs"]
-    retry_min    = j["retry_min"]
-    quality      = j.get("quality") or "lossless"
-    qobuz_token  = j.get("_qobuz_token") or ""
+    url               = j["url"]
+    output_dir        = j["output_dir"]
+    services          = j["services"]
+    filename_fmt      = j["filename_fmt"]
+    artist_dirs       = j["artist_dirs"]
+    album_dirs        = j["album_dirs"]
+    retry_min         = j["retry_min"]
+    quality           = j.get("quality") or "lossless"
+    qobuz_token       = j.get("_qobuz_token") or ""
+    pre_success_count = j.get("pre_success_count") or 0
+    full_total        = j.get("full_total") or 0
+    batch_urls        = j.get("_batch_urls") or []
 
-    # Fetch metadata while still queued — lightweight, no slot needed.
-    title, cover_url, artist = _fetch_metadata(url)
-    meta: dict = {}
-    if title:     meta["title"]     = title
-    if cover_url: meta["cover_url"] = cover_url
-    if artist:    meta["artist"]    = artist
-    if meta:
-        _update(job_id, **meta)
+    # Skip metadata fetch if title already set (pre-filled batch jobs)
+    if not j.get("title"):
+        title, cover_url, artist = _fetch_metadata(url)
+        meta: dict = {}
+        if title:     meta["title"]     = title
+        if cover_url: meta["cover_url"] = cover_url
+        if artist:    meta["artist"]    = artist
+        if meta:
+            _update(job_id, **meta)
 
     while True:
         # Block here until a concurrency slot is free.
@@ -413,7 +422,9 @@ def _run(job_id: str) -> None:
                 return
 
             _update(job_id, status="running", started_at=_now(),
-                    finished_at=None, error=None, progress=None, total=None,
+                    finished_at=None, error=None,
+                    progress=pre_success_count if full_total else None,
+                    total=full_total if full_total else None,
                     track_results=None, success_count=None, fail_count=None)
 
             from config import Config as _Cfg
@@ -428,17 +439,42 @@ def _run(job_id: str) -> None:
             )
 
             def _on_progress(done, total):
-                if total > 1:
-                    _update(job_id, progress=done, total=total)
+                eff_total = full_total or total
+                eff_done  = pre_success_count + done
+                if eff_total > 1:
+                    _update(job_id, progress=eff_done, total=eff_total)
 
             def _on_track_result(r):
                 track_results.append(r)
 
-            _TrackingDownloader(opts, _on_progress, _on_track_result).run(url)
+            if batch_urls:
+                from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient, parse_spotify_url
+                client = SpotifyMetadataClient()
+                tracks = []
+                for burl in batch_urls:
+                    try:
+                        info = parse_spotify_url(burl)
+                        if info["type"] == "track":
+                            tracks.append(client.get_track(info["id"]))
+                    except Exception as exc:
+                        log.warning("Batch metadata fetch failed for %s: %s", burl, exc)
+                if not tracks:
+                    raise RuntimeError("Could not fetch metadata for any tracks in batch")
+                _on_progress(0, len(tracks))
+                _TrackingWorker(
+                    tracks=tracks, opts=opts, collection_name="",
+                    is_album=False, is_playlist=True,
+                    on_track_done=lambda done: _on_progress(done, len(tracks)),
+                    on_track_result=_on_track_result,
+                ).run()
+            else:
+                _TrackingDownloader(opts, _on_progress, _on_track_result).run(url)
 
-            success_count = sum(1 for r in track_results if r["success"])
-            fail_count    = len(track_results) - success_count
-            total_count   = len(track_results)
+            new_success   = sum(1 for r in track_results if r["success"])
+            new_fail      = len(track_results) - new_success
+            success_count = pre_success_count + new_success
+            fail_count    = new_fail
+            total_count   = full_total or len(track_results)
 
             _update(
                 job_id,

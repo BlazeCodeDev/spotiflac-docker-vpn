@@ -1273,13 +1273,17 @@ function renderHistory() {
       btn.disabled = true;
       btn.innerHTML = '<span class="material-icons" style="animation:spin .7s linear infinite;display:inline-block">autorenew</span>';
 
+      const isPartialRetry = failed.length > 0;
       const res = await fetch('/api/download', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           urls,
-          services:    getActiveServices(),
-          quality:     entry.quality || _quality,
-          qobuz_token: document.getElementById('qobuz-token').value,
+          services:          getActiveServices(),
+          quality:           entry.quality || _quality,
+          qobuz_token:       document.getElementById('qobuz-token').value,
+          pre_success_count: isPartialRetry ? (entry.success_count || 0) : 0,
+          full_total:        isPartialRetry ? (entry.total || 0) : 0,
+          pre_title:         isPartialRetry ? (entry.title || '') : '',
         }),
       });
 

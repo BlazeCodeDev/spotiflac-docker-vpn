@@ -56,22 +56,37 @@ def api_download():
     quality = raw_quality if raw_quality in _VALID_QUALITIES else "lossless"
     qobuz_token = str(body.get("qobuz_token", Config.QOBUZ_TOKEN))
 
+    # Optional offset fields for partial retries from history
+    pre_success_count = _safe_int(body.get("pre_success_count", 0), 0)
+    full_total        = _safe_int(body.get("full_total", 0), 0)
+    pre_title         = str(body.get("pre_title", ""))
+
     os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
 
-    ids = [
-        worker.enqueue(
-            url=url,
-            output_dir=Config.OUTPUT_DIR,
-            services=services,
-            filename_fmt=Config.FILENAME_FMT,
-            artist_dirs=Config.ARTIST_DIRS,
-            album_dirs=Config.ALBUM_DIRS,
-            retry_min=Config.RETRY_MIN,
-            qobuz_token=qobuz_token,
-            quality=quality,
-        )
-        for url in urls
-    ]
+    common = dict(
+        output_dir=Config.OUTPUT_DIR,
+        services=services,
+        filename_fmt=Config.FILENAME_FMT,
+        artist_dirs=Config.ARTIST_DIRS,
+        album_dirs=Config.ALBUM_DIRS,
+        retry_min=Config.RETRY_MIN,
+        qobuz_token=qobuz_token,
+        quality=quality,
+    )
+
+    # Partial batch retry: multiple track URLs with an offset → one job
+    if pre_success_count and full_total and len(urls) > 1:
+        ids = [worker.enqueue(
+            url=urls[0],
+            batch_urls=urls,
+            pre_title=pre_title,
+            pre_success_count=pre_success_count,
+            full_total=full_total,
+            **common,
+        )]
+    else:
+        ids = [worker.enqueue(url=url, **common) for url in urls]
+
     return jsonify(queued=len(ids), ids=ids)
 
 
