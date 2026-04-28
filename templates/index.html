@@ -166,6 +166,7 @@ button:hover { opacity: .85; }
 .badge.error    { background:#450a0a; color:#fca5a5; }
 .badge.running::before { content:''; width:6px; height:6px; border-radius:50%; background:#818cf8; animation:blink 1s ease-in-out infinite; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+@keyframes spin  { to { transform: rotate(360deg); } }
 .job-error { grid-column:1/-1; font-size:.75rem; color:#f87171; background:#450a0a22; border-radius:5px; padding:.3rem .6rem; font-family:monospace; }
 
 /* Material Icons baseline sizing */
@@ -1240,7 +1241,10 @@ function renderHistory() {
       if (!entry) return;
       const failed = (entry.track_results || []).filter(r => !r.success && r.track_id);
       if (!failed.length) return;
+
       btn.disabled = true;
+      btn.innerHTML = '<span class="material-icons" style="animation:spin .7s linear infinite;display:inline-block">autorenew</span>';
+
       const urls = failed.map(r => `https://open.spotify.com/track/${r.track_id}`).join('\n');
       const res = await fetch('/api/download', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1251,11 +1255,14 @@ function renderHistory() {
           qobuz_token: document.getElementById('qobuz-token').value,
         }),
       });
-      btn.disabled = false;
+
       if (res.ok) {
-        showToast(`Re-queued ${failed.length} track(s)`, 'done');
+        btn.innerHTML = '<span class="material-icons" style="color:var(--green)">check</span>';
+        showToast(`Queued ${failed.length} track(s) — see Downloads`, 'done');
         refreshJobs();
       } else {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="material-icons">replay</span>';
         showToast('Failed to queue tracks', 'error');
       }
     });
