@@ -449,6 +449,15 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
           <input type="password" id="qobuz-token" placeholder="optional">
         </div>
 
+        <div class="setting-group">
+          <label>Provider APIs</label>
+          <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
+            <button class="btn-ghost" id="btn-tidal-refresh" style="padding:.4rem .85rem;font-size:.8rem">Refresh Tidal APIs</button>
+            <span id="tidal-refresh-msg" style="font-size:.78rem;color:var(--tx2)"></span>
+          </div>
+          <div class="hint">Fetches the latest working Tidal proxy endpoints from upstream</div>
+        </div>
+
         <hr style="border:none;border-top:1px solid var(--border);margin:.1rem 0">
 
         <div class="setting-group">
@@ -771,6 +780,24 @@ function updateSearchDlBtn() {
 document.getElementById('btn-search').addEventListener('click', () => doSearch());
 document.getElementById('btn-settings').addEventListener('click', openSettingsModal);
 document.getElementById('btn-settings-close').addEventListener('click', closeSettingsModal);
+
+document.getElementById('btn-tidal-refresh').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-tidal-refresh');
+  const msg = document.getElementById('tidal-refresh-msg');
+  btn.disabled = true;
+  msg.textContent = 'Refreshing…';
+  try {
+    const res  = await fetch('/api/tidal/refresh', {method: 'POST'});
+    const data = await res.json();
+    msg.textContent = res.ok ? `✓ ${data.count} endpoint(s) loaded` : `✗ ${data.error || 'Failed'}`;
+    msg.style.color = res.ok ? 'var(--green)' : 'var(--red)';
+  } catch {
+    msg.textContent = '✗ Network error';
+    msg.style.color = 'var(--red)';
+  }
+  btn.disabled = false;
+  setTimeout(() => { msg.textContent = ''; msg.style.color = ''; }, 5000);
+});
 document.getElementById('settings-modal').addEventListener('click', e => {
   if (e.target === e.currentTarget) closeSettingsModal();
 });
@@ -1059,13 +1086,44 @@ document.getElementById('btn-bulk-remove').addEventListener('click', () => bulkA
 
 // History
 let _historyData = [];
-let _histShowAll = new Set(); // job ids where "show all tracks" is toggled on
+let _histShowAll  = new Set(); // hkey of entries where all tracks are shown
+let _histExpanded = new Set(); // hkey of entries that are expanded
+
+// Stable key for a history entry — id + finished_at is unique per attempt
+function histKey(h) { return `${h.id}|${h.finished_at}`; }
 
 function fmtDate(ts) {
   if (!ts) return '';
   const d = new Date(ts);
   return d.toLocaleDateString([], {month:'short', day:'numeric'}) + ' ' +
          d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+
+// Shorten a long provider error to the first meaningful sentence per provider
+function fmtTrackError(raw) {
+  if (!raw) return 'unknown';
+  // Extract just the lead reason before the long URL dump
+  // e.g. "All providers failed — tidal: [tidal] UNAVAILABLE: all 14 ... — ..."
+  // → "tidal: UNAVAILABLE · qobuz: TRACK_NOT_FOUND · youtube: failed"
+  const provMatch = raw.match(/—\s*(tidal|qobuz|amazon|deezer|youtube):/i);
+  if (provMatch) {
+    // Build a compact per-provider summary
+    const provRe = /\b(tidal|qobuz|amazon|deezer|youtube):\s*([^\n;—]{0,120})/gi;
+    const parts = [];
+    let m;
+    while ((m = provRe.exec(raw)) !== null) {
+      // Grab the first clause (up to first semicolon or em-dash)
+      let reason = m[2].replace(/\s+/g, ' ').trim();
+      // Strip bracketed provider prefix like "[tidal] "
+      reason = reason.replace(/^\[\w+\]\s*/, '');
+      // Keep only up to first ':' sub-clause for brevity if still long
+      const short = reason.length > 80 ? reason.slice(0, 80) + '…' : reason;
+      parts.push(`<b>${m[1]}</b>: ${esc(short)}`);
+    }
+    if (parts.length) return parts.join('<br>');
+  }
+  // Fallback: just truncate
+  return esc(raw.length > 200 ? raw.slice(0, 200) + '…' : raw);
 }
 
 function renderHistory() {
@@ -1079,6 +1137,7 @@ function renderHistory() {
   countEl.textContent = `${_historyData.length} entr${_historyData.length === 1 ? 'y' : 'ies'}`;
 
   el.innerHTML = _historyData.map((h, idx) => {
+    const hkey = histKey(h);
     const label = h.title || h.url;
     const cover = h.cover_url
       ? `<img class="job-cover" src="${esc(h.cover_url)}" alt="" loading="lazy" style="width:38px;height:38px">`
@@ -1105,31 +1164,35 @@ function renderHistory() {
 
     let trackHtml = '';
     if (h.track_results && h.track_results.length > 0) {
-      const showAll  = _histShowAll.has(h.id + idx);
+      const showAll  = _histShowAll.has(hkey);
       const failures = h.track_results.filter(r => !r.success);
       const shown    = showAll ? h.track_results : failures;
       const rows     = shown.map(r => {
         if (r.success) {
           return `<div class="track-row"><span class="track-ok">✓</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span></div>`;
         }
-        return `<div class="track-row"><span class="track-fail">✗</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span><span class="track-err">— ${esc(r.error||'unknown')}</span></div>`;
+        return `<div class="track-row"><span class="track-fail">✗</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span><span class="track-err">— ${fmtTrackError(r.error)}</span></div>`;
       }).join('');
 
-      const toggleLabel = showAll
-        ? `Hide successful tracks`
-        : `Show all ${h.track_results.length} tracks`;
+      const toggleLabel = showAll ? 'Hide successful tracks' : `Show all ${h.track_results.length} tracks`;
 
       trackHtml = `<div class="track-list">${rows}</div>
         ${h.track_results.length > failures.length
-          ? `<div class="hist-toggle" data-hidx="${idx}" data-hid="${esc(h.id)}">${toggleLabel}</div>`
+          ? `<div class="hist-toggle" data-hkey="${esc(hkey)}">${toggleLabel}</div>`
           : ''}`;
     } else if (h.error) {
-      trackHtml = `<div class="track-row"><span class="track-fail">✗</span><span class="track-err">${esc(h.error)}</span></div>`;
+      trackHtml = `<div class="track-row"><span class="track-fail">✗</span><span class="track-err">${fmtTrackError(h.error)}</span></div>`;
     }
 
+    const failedWithId = (h.track_results || []).filter(r => !r.success && r.track_id);
+    const retryBtn = failedWithId.length
+      ? `<button class="job-btn retry hist-retry-btn" data-hkey="${esc(hkey)}" title="Re-queue ${failedWithId.length} failed track(s)"><span class="material-icons">replay</span></button>`
+      : '';
+
     const hasDetail = trackHtml !== '';
-    return `<div class="history-item" data-hidx="${idx}">
-      <div class="history-row"${hasDetail ? ' title="Click to expand"' : ''}>
+    const isOpen    = _histExpanded.has(hkey);
+    return `<div class="history-item${isOpen ? ' open' : ''}" data-hkey="${esc(hkey)}">
+      <div class="history-row"${hasDetail ? ' style="cursor:pointer" title="Click to expand"' : ''}>
         ${cover}
         <div style="min-width:0">
           <div style="font-size:.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(label)}</div>
@@ -1138,17 +1201,21 @@ function renderHistory() {
         ${countsHtml}
         <span class="badge ${badgeClass}">${badgeText}</span>
         <span class="quality-badge">${h.quality === 'hires' ? 'Hi-Res' : 'Lossless'}</span>
+        ${retryBtn}
       </div>
       ${hasDetail ? `<div class="history-expand">${trackHtml}</div>` : ''}
     </div>`;
   }).join('');
 
-  // Click to expand/collapse
+  // Click to expand/collapse — persist state in _histExpanded
   el.querySelectorAll('.history-item').forEach(item => {
     const row = item.querySelector('.history-row');
     if (!item.querySelector('.history-expand')) return;
     row.addEventListener('click', e => {
       if (e.target.closest('.hist-toggle')) return;
+      const hkey = item.dataset.hkey;
+      if (_histExpanded.has(hkey)) _histExpanded.delete(hkey);
+      else _histExpanded.add(hkey);
       item.classList.toggle('open');
     });
   });
@@ -1156,13 +1223,41 @@ function renderHistory() {
   // Show all / hide toggle
   el.querySelectorAll('.hist-toggle').forEach(btn => {
     btn.addEventListener('click', () => {
-      const key = btn.dataset.hid + btn.dataset.hidx;
-      if (_histShowAll.has(key)) _histShowAll.delete(key);
-      else _histShowAll.add(key);
+      const hkey = btn.dataset.hkey;
+      if (_histShowAll.has(hkey)) _histShowAll.delete(hkey);
+      else _histShowAll.add(hkey);
+      _histExpanded.add(hkey);
       renderHistory();
-      // Re-open the expanded item
-      const item = el.querySelector(`.history-item[data-hidx="${btn.dataset.hidx}"]`);
-      if (item) item.classList.add('open');
+    });
+  });
+
+  // Retry failed tracks
+  el.querySelectorAll('.hist-retry-btn').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const hkey = btn.dataset.hkey;
+      const entry = _historyData.find(h => histKey(h) === hkey);
+      if (!entry) return;
+      const failed = (entry.track_results || []).filter(r => !r.success && r.track_id);
+      if (!failed.length) return;
+      btn.disabled = true;
+      const urls = failed.map(r => `https://open.spotify.com/track/${r.track_id}`).join('\n');
+      const res = await fetch('/api/download', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          urls,
+          services:    getActiveServices(),
+          quality:     entry.quality || _quality,
+          qobuz_token: document.getElementById('qobuz-token').value,
+        }),
+      });
+      btn.disabled = false;
+      if (res.ok) {
+        showToast(`Re-queued ${failed.length} track(s)`, 'done');
+        refreshJobs();
+      } else {
+        showToast('Failed to queue tracks', 'error');
+      }
     });
   });
 }
@@ -1177,6 +1272,7 @@ async function refreshHistory() {
 document.getElementById('btn-hist-clr').addEventListener('click', async () => {
   await fetch('/api/history', {method: 'DELETE'});
   _histShowAll.clear();
+  _histExpanded.clear();
   refreshHistory();
 });
 

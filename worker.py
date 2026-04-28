@@ -299,6 +299,7 @@ class _TrackingWorker(DownloadWorker):
                 manager.complete_download(track.id, result.file_path or "", size_mb)
                 if self._on_track_result:
                     self._on_track_result({
+                        "track_id": track.id,
                         "title": track.title, "artists": track.artists,
                         "success": True, "error": None,
                     })
@@ -308,6 +309,7 @@ class _TrackingWorker(DownloadWorker):
                 manager.fail_download(track.id, err)
                 if self._on_track_result:
                     self._on_track_result({
+                        "track_id": track.id,
                         "title": track.title, "artists": track.artists,
                         "success": False, "error": err,
                     })

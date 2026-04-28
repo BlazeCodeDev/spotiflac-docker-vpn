@@ -112,6 +112,17 @@ def api_retry_job(job_id: str):
     return (jsonify(ok=True), 200) if ok else (jsonify(error="Not found or not retryable"), 400)
 
 
+@bp.post("/api/tidal/refresh")
+def api_tidal_refresh():
+    try:
+        from SpotiFLAC.providers.tidal import refresh_tidal_api_list
+        urls = refresh_tidal_api_list(force=True)
+        return jsonify(ok=True, count=len(urls))
+    except Exception as exc:
+        log.warning("Tidal API refresh failed: %s", exc)
+        return jsonify(ok=False, error=str(exc)), 502
+
+
 @bp.get("/api/history")
 def api_history():
     return jsonify(worker.get_history())
