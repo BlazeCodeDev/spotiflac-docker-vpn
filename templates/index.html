@@ -1209,10 +1209,10 @@ function renderHistory() {
     }
 
     const failedWithId = (h.track_results || []).filter(r => !r.success && r.track_id);
-    const retryBtn = failedWithId.length
-      ? `<button class="job-btn retry hist-retry-btn" data-hkey="${esc(hkey)}" title="Retry ${failedWithId.length} failed track(s)"><span class="material-icons">replay</span></button>`
-      : '';
-    const restartBtn = `<button class="job-btn hist-restart-btn" data-hkey="${esc(hkey)}" title="Restart full job"><span class="material-icons">restart_alt</span></button>`;
+    const restartTitle = failedWithId.length
+      ? `Restart ${failedWithId.length} failed track(s)`
+      : 'Restart job';
+    const restartBtn = `<button class="job-btn retry hist-restart-btn" data-hkey="${esc(hkey)}" title="${restartTitle}"><span class="material-icons">restart_alt</span></button>`;
 
     const hasDetail = trackHtml !== '';
     const isOpen    = _histExpanded.has(hkey);
@@ -1226,7 +1226,6 @@ function renderHistory() {
         ${countsHtml}
         <span class="badge ${badgeClass}">${badgeText}</span>
         <span class="quality-badge">${h.quality === 'hires' ? 'Hi-Res' : 'Lossless'}</span>
-        ${retryBtn}
         ${restartBtn}
       </div>
       ${hasDetail ? `<div class="history-expand">${trackHtml}</div>` : ''}
@@ -1238,7 +1237,7 @@ function renderHistory() {
     const row = item.querySelector('.history-row');
     if (!item.querySelector('.history-expand')) return;
     row.addEventListener('click', e => {
-      if (e.target.closest('.hist-toggle, .hist-retry-btn, .hist-restart-btn')) return;
+      if (e.target.closest('.hist-toggle, .hist-restart-btn')) return;
       const hkey = item.dataset.hkey;
       if (_histExpanded.has(hkey)) _histExpanded.delete(hkey);
       else _histExpanded.add(hkey);
@@ -1257,53 +1256,23 @@ function renderHistory() {
     });
   });
 
-  // Restart full job
+  // Restart — failed tracks if available, otherwise full job
   el.querySelectorAll('.hist-restart-btn').forEach(btn => {
     btn.addEventListener('click', async e => {
       e.stopPropagation();
       const hkey  = btn.dataset.hkey;
       const entry = _historyData.find(h => histKey(h) === hkey);
-      if (!entry?.url) return;
-
-      btn.disabled = true;
-      btn.innerHTML = '<span class="material-icons" style="animation:spin .7s linear infinite;display:inline-block">autorenew</span>';
-
-      const res = await fetch('/api/download', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          urls:        entry.url,
-          services:    getActiveServices(),
-          quality:     entry.quality || _quality,
-          qobuz_token: document.getElementById('qobuz-token').value,
-        }),
-      });
-
-      if (res.ok) {
-        btn.innerHTML = '<span class="material-icons" style="color:var(--green)">check</span>';
-        showToast(`Queued: ${entry.title || entry.url}`, 'done');
-        refreshJobs();
-      } else {
-        btn.disabled = false;
-        btn.innerHTML = '<span class="material-icons">restart_alt</span>';
-        showToast('Failed to queue job', 'error');
-      }
-    });
-  });
-
-  // Retry failed tracks
-  el.querySelectorAll('.hist-retry-btn').forEach(btn => {
-    btn.addEventListener('click', async e => {
-      e.stopPropagation();
-      const hkey = btn.dataset.hkey;
-      const entry = _historyData.find(h => histKey(h) === hkey);
       if (!entry) return;
+
       const failed = (entry.track_results || []).filter(r => !r.success && r.track_id);
-      if (!failed.length) return;
+      const urls   = failed.length
+        ? failed.map(r => `https://open.spotify.com/track/${r.track_id}`).join('\n')
+        : entry.url;
+      if (!urls) return;
 
       btn.disabled = true;
       btn.innerHTML = '<span class="material-icons" style="animation:spin .7s linear infinite;display:inline-block">autorenew</span>';
 
-      const urls = failed.map(r => `https://open.spotify.com/track/${r.track_id}`).join('\n');
       const res = await fetch('/api/download', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -1316,12 +1285,13 @@ function renderHistory() {
 
       if (res.ok) {
         btn.innerHTML = '<span class="material-icons" style="color:var(--green)">check</span>';
-        showToast(`Queued ${failed.length} track(s) — see Downloads`, 'done');
+        const label = failed.length ? `${failed.length} failed track(s)` : (entry.title || entry.url);
+        showToast(`Queued: ${label}`, 'done');
         refreshJobs();
       } else {
         btn.disabled = false;
-        btn.innerHTML = '<span class="material-icons">replay</span>';
-        showToast('Failed to queue tracks', 'error');
+        btn.innerHTML = '<span class="material-icons">restart_alt</span>';
+        showToast('Failed to queue', 'error');
       }
     });
   });
