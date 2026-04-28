@@ -112,6 +112,16 @@ def api_retry_job(job_id: str):
     return (jsonify(ok=True), 200) if ok else (jsonify(error="Not found or not retryable"), 400)
 
 
+@bp.get("/api/history")
+def api_history():
+    return jsonify(worker.get_history())
+
+
+@bp.delete("/api/history")
+def api_clear_history():
+    return jsonify(cleared=worker.clear_history())
+
+
 @bp.get("/api/vpn")
 def api_vpn():
     status = vpn.tunnel_status()

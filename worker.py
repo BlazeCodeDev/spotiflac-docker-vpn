@@ -21,7 +21,11 @@ def init(max_workers: int) -> None:
     _semaphore = threading.BoundedSemaphore(max_workers)
     log.info("MAX_WORKERS = %d", max_workers)
 
-_STATE_FILE = os.environ.get("STATE_FILE", "/vpn/jobs.json")
+_STATE_FILE   = os.environ.get("STATE_FILE",   "/vpn/jobs.json")
+_HISTORY_FILE = os.environ.get("HISTORY_FILE", "/vpn/history.json")
+_MAX_HISTORY  = 500
+
+_history: list[dict] = []
 
 
 def _now() -> str:
@@ -59,13 +63,69 @@ def _load() -> None:
         log.warning("State load failed: %s", exc)
 
 
+def _save_history() -> None:
+    try:
+        tmp = _HISTORY_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"history": _history}, f)
+        os.replace(tmp, _HISTORY_FILE)
+    except Exception as exc:
+        log.warning("History save failed: %s", exc)
+
+
+def _load_history() -> None:
+    global _history
+    try:
+        with open(_HISTORY_FILE) as f:
+            data = json.load(f)
+        _history = data.get("history", [])
+        log.info("Loaded %d history entries from %s", len(_history), _HISTORY_FILE)
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        log.warning("History load failed: %s", exc)
+
+
+def _add_to_history(job: dict) -> None:
+    global _history
+    entry = {k: v for k, v in job.items() if not k.startswith("_")}
+    with _lock:
+        _history.append(entry)
+        if len(_history) > _MAX_HISTORY:
+            _history = _history[-_MAX_HISTORY:]
+    _save_history()
+
+
+def _record_history(job_id: str) -> None:
+    with _lock:
+        j = _jobs.get(job_id)
+    if j and j.get("status") in ("done", "error", "cancelled"):
+        _add_to_history(dict(j))
+
+
+def get_history() -> list[dict]:
+    with _lock:
+        return list(reversed(_history))
+
+
+def clear_history() -> int:
+    global _history
+    with _lock:
+        n = len(_history)
+        _history = []
+    _save_history()
+    return n
+
+
 _load()
+_load_history()
 
 
 def get_jobs() -> list[dict]:
     with _lock:
         jobs = sorted(_jobs.values(), key=lambda j: j.get("_seq", 0), reverse=True)
-    return [{k: v for k, v in j.items() if not k.startswith("_")} for j in jobs]
+    # Exclude private keys and track_results (sent separately via history API)
+    return [{k: v for k, v in j.items() if not k.startswith("_") and k != "track_results"} for j in jobs]
 
 
 def _cleanup_empty_dirs() -> None:
@@ -144,7 +204,9 @@ def retry_job(job_id: str) -> bool:
         j = _jobs.get(job_id)
         if not j or j["status"] not in ("error", "cancelled"):
             return False
-        j.update(status="queued", started_at=_now(), finished_at=None, error=None, progress=None, total=None)
+        j.update(status="queued", started_at=_now(), finished_at=None, error=None,
+                 progress=None, total=None, track_results=None,
+                 success_count=None, fail_count=None)
     _cancel[job_id] = threading.Event()
     _save()
     threading.Thread(target=_run, daemon=True, args=(job_id,)).start()
@@ -163,7 +225,8 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
         _jobs[jid] = dict(
             id=jid, url=url, title=None, cover_url=None, artist=None,
             status="queued", started_at=_now(), finished_at=None, error=None,
-            progress=None, total=None,
+            progress=None, total=None, track_results=None,
+            success_count=None, fail_count=None,
             output_dir=output_dir, services=services, filename_fmt=filename_fmt,
             artist_dirs=artist_dirs, album_dirs=album_dirs,
             retry_min=retry_min, quality=quality, _qobuz_token=qobuz_token,
@@ -208,11 +271,12 @@ def _fetch_metadata(url: str) -> tuple[str | None, str | None, str | None]:
 
 
 class _TrackingWorker(DownloadWorker):
-    """DownloadWorker that fires on_track_done(done_count) after each track."""
+    """DownloadWorker that fires callbacks after each track."""
 
-    def __init__(self, *args, on_track_done, **kwargs):
+    def __init__(self, *args, on_track_done, on_track_result=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self._on_track_done = on_track_done
+        self._on_track_done   = on_track_done
+        self._on_track_result = on_track_result
 
     def run(self):
         manager  = DownloadManager()
@@ -233,10 +297,20 @@ class _TrackingWorker(DownloadWorker):
                     else 0.0
                 )
                 manager.complete_download(track.id, result.file_path or "", size_mb)
+                if self._on_track_result:
+                    self._on_track_result({
+                        "title": track.title, "artists": track.artists,
+                        "success": True, "error": None,
+                    })
             else:
                 err = result.error or "unknown"
                 self._failed.append((track.title, track.artists, err))
                 manager.fail_download(track.id, err)
+                if self._on_track_result:
+                    self._on_track_result({
+                        "title": track.title, "artists": track.artists,
+                        "success": False, "error": err,
+                    })
 
             done += 1
             self._on_track_done(done)
@@ -250,11 +324,12 @@ class _TrackingWorker(DownloadWorker):
 
 
 class _TrackingDownloader(SpotiflacDownloader):
-    """SpotiflacDownloader that reports on_progress(done, total) after each track."""
+    """SpotiflacDownloader that reports on_progress(done, total) and per-track results."""
 
-    def __init__(self, opts, on_progress):
+    def __init__(self, opts, on_progress, on_track_result=None):
         super().__init__(opts)
-        self._on_progress = on_progress
+        self._on_progress    = on_progress
+        self._on_track_result = on_track_result
 
     def _run_once(self, spotify_url):
         from SpotiFLAC.core.errors import SpotiflacError
@@ -283,6 +358,7 @@ class _TrackingDownloader(SpotiflacDownloader):
             is_album        = is_album,
             is_playlist     = is_playlist,
             on_track_done   = lambda done: self._on_progress(done, total),
+            on_track_result = self._on_track_result,
         )
         worker.run()
 
@@ -323,16 +399,20 @@ def _run(job_id: str) -> None:
             if ev.is_set():
                 _update(job_id, status="cancelled", finished_at=_now())
                 _cancel.pop(job_id, None)
+                _record_history(job_id)
                 return
 
+        track_results: list[dict] = []
         succeeded = False
         try:
             if ev.is_set():
                 _update(job_id, status="cancelled", finished_at=_now())
+                _record_history(job_id)
                 return
 
             _update(job_id, status="running", started_at=_now(),
-                    finished_at=None, error=None, progress=None, total=None)
+                    finished_at=None, error=None, progress=None, total=None,
+                    track_results=None, success_count=None, fail_count=None)
 
             opts = DownloadOptions(
                 output_dir            = output_dir,
@@ -347,8 +427,26 @@ def _run(job_id: str) -> None:
                 if total > 1:
                     _update(job_id, progress=done, total=total)
 
-            _TrackingDownloader(opts, _on_progress).run(url)
-            _update(job_id, status="done", finished_at=_now(), error=None, progress=None, total=None)
+            def _on_track_result(r):
+                track_results.append(r)
+
+            _TrackingDownloader(opts, _on_progress, _on_track_result).run(url)
+
+            success_count = sum(1 for r in track_results if r["success"])
+            fail_count    = len(track_results) - success_count
+            total_count   = len(track_results)
+
+            _update(
+                job_id,
+                status        = "done",
+                finished_at   = _now(),
+                error         = None,
+                progress      = success_count if total_count > 1 else None,
+                total         = total_count   if total_count > 1 else None,
+                track_results = track_results if track_results else None,
+                success_count = success_count if track_results else None,
+                fail_count    = fail_count    if track_results else None,
+            )
             succeeded = True
         except Exception as exc:
             log.error("Job %s failed: %s", job_id, exc)
@@ -372,3 +470,4 @@ def _run(job_id: str) -> None:
         _update(job_id, status="queued", started_at=_now(), finished_at=None, error=None)
 
     _cancel.pop(job_id, None)
+    _record_history(job_id)
