@@ -159,13 +159,14 @@ def api_search():
         from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient
         client = SpotifyMetadataClient(timeout_s=8)
         data   = client._get("/search", params={
-            "q": q, "type": "track,album,playlist",
+            "q": q, "type": "track,album,playlist,artist",
             "limit": limit, "offset": offset,
         })
         results = []
         tracks_obj    = data.get("tracks", {})
         albums_obj    = data.get("albums", {})
         playlists_obj = data.get("playlists", {})
+        artists_obj   = data.get("artists", {})
 
         for t in tracks_obj.get("items", []):
             if not t:
@@ -212,10 +213,26 @@ def api_search():
                 "track_count": (p.get("tracks") or {}).get("total"),
             })
 
+        for a in artists_obj.get("items", []):
+            if not a:
+                continue
+            imgs      = a.get("images", [])
+            genres    = a.get("genres", [])
+            followers = (a.get("followers") or {}).get("total", 0)
+            subtitle  = genres[0].title() if genres else (f"{followers:,} followers" if followers else "")
+            results.append({
+                "type":      "artist",
+                "title":     a["name"],
+                "subtitle":  subtitle,
+                "cover_url": imgs[-1]["url"] if imgs else None,
+                "url":       f"https://open.spotify.com/artist/{a['id']}",
+            })
+
         total = max(
             tracks_obj.get("total", 0),
             albums_obj.get("total", 0),
             playlists_obj.get("total", 0),
+            artists_obj.get("total", 0),
         )
         has_more = (offset + limit) < total
 

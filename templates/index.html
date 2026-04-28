@@ -235,6 +235,7 @@ button:hover { opacity: .85; }
 .type-track    { background: #1e1b4b; color: #a5b4fc; }
 .type-album    { background: #14532d; color: #4ade80; }
 .type-playlist { background: #1a1200; color: #fbbf24; }
+.type-artist   { background: #1a0a2e; color: #e879f9; }
 .result-check {
   width: 18px; height: 18px; border-radius: 4px; border: 1.5px solid var(--border2);
   flex-shrink: 0; display: flex; align-items: center; justify-content: center;
@@ -296,6 +297,7 @@ button:hover { opacity: .85; }
 html[data-theme="light"] .type-track    { background: #ede9fe; color: #6d28d9; }
 html[data-theme="light"] .type-album    { background: #dcfce7; color: #16a34a; }
 html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
+html[data-theme="light"] .type-artist   { background: #fdf4ff; color: #a21caf; }
 
 /* History */
 .history-item { padding: .7rem 0; border-bottom: 1px solid var(--border); }
@@ -320,10 +322,7 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
 .filter-pill:hover { opacity: 1; border-color: var(--tx3); color: var(--tx); }
 .filter-pill.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-/* Artist chips + sort row */
-.artist-chip { background: transparent; border: 1px solid var(--border2); color: var(--tx2); border-radius: 999px; padding: .15rem .65rem; font-size: .73rem; font-weight: 500; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
-.artist-chip:hover { opacity: 1; border-color: var(--tx3); color: var(--tx); }
-.artist-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* Sort row */
 .modal-sort { display: flex; align-items: center; gap: .3rem; padding: .4rem 1.2rem; border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
 .sort-label { font-size: .7rem; color: var(--tx3); margin-right: .15rem; flex-shrink: 0; }
 .sort-pill { background: transparent; border: 1px solid transparent; color: var(--tx3); border-radius: 999px; padding: .15rem .6rem; font-size: .72rem; font-weight: 500; }
@@ -512,8 +511,7 @@ html[data-theme="light"] .type-playlist { background: #fef9c3; color: #ca8a04; }
       <button class="filter-pill" data-filter="track">Tracks</button>
       <button class="filter-pill" data-filter="album">Albums</button>
       <button class="filter-pill" data-filter="playlist">Playlists</button>
-      <span id="artist-chip-sep" style="display:none;color:var(--border2);align-self:center;margin:0 .05rem;user-select:none">|</span>
-      <span id="artist-chips-row" style="display:contents"></span>
+      <button class="filter-pill" data-filter="artist">Artists</button>
     </div>
     <div class="modal-sort">
       <span class="sort-label">Sort:</span>
@@ -661,7 +659,6 @@ let _searchResults  = [];
 let _searchOffset   = 0;
 let _searchQuery    = '';
 let _searchFilter   = 'all';
-let _selectedArtist = '';
 let _searchSort     = 'relevance';
 let _searchHasMore  = false;
 let _searchLoading  = false;
@@ -713,8 +710,6 @@ async function doSearch(append = false) {
     _selectedUrls.clear();
     document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p.dataset.filter === 'all'));
     document.querySelectorAll('.sort-pill').forEach(p => p.classList.toggle('active', p.dataset.sort === 'relevance'));
-    document.getElementById('artist-chips-row').innerHTML = '';
-    document.getElementById('artist-chip-sep').style.display = 'none';
     document.getElementById('search-results').innerHTML = '<div class="jobs-empty">Searching…</div>';
     document.getElementById('btn-search-dl').style.display = 'none';
     document.getElementById('search-msg').textContent = '';
@@ -734,7 +729,6 @@ async function doSearch(append = false) {
     _searchResults = append ? [..._searchResults, ...data.results] : data.results;
     _searchHasMore = data.has_more;
     _searchOffset  = data.next_offset;
-    buildArtistChips();
     renderSearchResults();
   } catch {
     if (!append) {
@@ -743,43 +737,6 @@ async function doSearch(append = false) {
   } finally {
     _searchLoading = false;
   }
-}
-
-function resultArtist(r) {
-  // Extract primary artist: for tracks/albums the subtitle starts with "Artist · …"
-  // For playlists it's "by Owner" — we skip those for artist chips
-  if (r.type === 'playlist') return '';
-  return (r.subtitle || '').split('·')[0].trim();
-}
-
-function buildArtistChips() {
-  const row = document.getElementById('artist-chips-row');
-  const sep = document.getElementById('artist-chip-sep');
-  const counts = {};
-  _searchResults.forEach(r => {
-    const a = resultArtist(r);
-    if (a) counts[a] = (counts[a] || 0) + 1;
-  });
-  const artists = Object.entries(counts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 10)
-    .map(([name]) => name);
-
-  if (!artists.length) { row.innerHTML = ''; sep.style.display = 'none'; return; }
-
-  sep.style.display = '';
-  row.innerHTML = artists.map(a => {
-    const active = _selectedArtist === a;
-    return `<button class="artist-chip${active ? ' active' : ''}" data-artist="${esc(a)}">${esc(a)}</button>`;
-  }).join('');
-
-  row.querySelectorAll('.artist-chip').forEach(chip => {
-    chip.addEventListener('click', () => {
-      _selectedArtist = _selectedArtist === chip.dataset.artist ? '' : chip.dataset.artist;
-      row.querySelectorAll('.artist-chip').forEach(c => c.classList.toggle('active', c.dataset.artist === _selectedArtist));
-      renderSearchResults();
-    });
-  });
 }
 
 function sortResults(arr) {
@@ -796,7 +753,6 @@ function renderSearchResults() {
   const el = document.getElementById('search-results');
   let filtered = _searchResults.filter(r => {
     if (_searchFilter !== 'all' && r.type !== _searchFilter) return false;
-    if (_selectedArtist && resultArtist(r).toLowerCase() !== _selectedArtist.toLowerCase()) return false;
     return true;
   });
   const visible = sortResults(filtered);
