@@ -7,7 +7,7 @@
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons+Round+Round">
+<link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
 <script>
 (function(){
   const s = localStorage.getItem('theme');
@@ -135,7 +135,7 @@ header {
 }
 #theme-toggle:hover::before, #btn-settings:hover::before { opacity: .08; }
 #theme-toggle:active::before, #btn-settings:active::before { opacity: .12; }
-#theme-toggle .material-icons-round, #btn-settings .material-icons-round { font-size: 24px; position: relative; }
+#theme-toggle .material-icons, #btn-settings .material-icons { font-size: 24px; position: relative; }
 
 /* ─── VPN chip (Assist chip) ─────────────────────────────────────── */
 .vpn-wrap { position: relative; }
@@ -358,15 +358,15 @@ button { cursor: pointer; font-family: inherit; border: none; }
 .jobs-empty { color: var(--md-on-surface-variant); font-size: .875rem; padding: 32px 0; text-align: center; }
 .search-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
 .search-wrap { position: relative; }
-.search-wrap .material-icons-round { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 20px; color: var(--md-on-surface-variant); pointer-events: none; }
+.search-wrap .material-icons { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 20px; color: var(--md-on-surface-variant); pointer-events: none; }
 .search-wrap input[type=text] { padding-left: 2.5rem; padding-right: 2rem; }
 .search-clear { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; padding: 0; color: var(--md-on-surface-variant); cursor: pointer; display: flex; align-items: center; border-radius: 999px; }
 .search-clear:hover { color: var(--md-on-surface); }
-.search-clear .material-icons-round { font-size: 18px; }
+.search-clear .material-icons { font-size: 18px; }
 @media (max-width: 480px) { .search-row { grid-template-columns: 1fr; } }
 
 /* ─── M3 Job list items ───────────────────────────────────────────── */
-.material-icons-round { font-size: 20px; vertical-align: middle; line-height: 1; }
+.material-icons { font-size: 20px; vertical-align: middle; line-height: 1; }
 .job-item {
   display: grid;
   grid-template-columns: 20px 24px 44px 1fr auto auto auto auto auto;
@@ -406,7 +406,7 @@ button { cursor: pointer; font-family: inherit; border: none; }
 .job-btn::before { content: ''; position: absolute; inset: 0; background: currentColor; opacity: 0; transition: opacity .2s; border-radius: inherit; }
 .job-btn:hover::before  { opacity: .08; }
 .job-btn:active::before { opacity: .12; }
-.job-btn .material-icons-round { font-size: 20px; position: relative; }
+.job-btn .material-icons { font-size: 20px; position: relative; }
 .job-btn.cancel:hover { color: var(--red); }
 .job-btn.retry  { color: var(--green); }
 .job-btn.remove:hover { color: var(--red); }
@@ -554,6 +554,22 @@ button { cursor: pointer; font-family: inherit; border: none; }
 .hist-toggle:hover { opacity: .85; }
 .hist-restart-btn { color: var(--green) !important; }
 
+/* ─── Color preset picker ─────────────────────────────────────────── */
+.color-presets { display: flex; flex-wrap: wrap; gap: 8px; }
+.color-swatch {
+  width: 36px; height: 36px; border-radius: 50%; border: none; cursor: pointer;
+  position: relative; flex-shrink: 0;
+  transition: transform .15s, box-shadow .15s;
+}
+.color-swatch:hover { transform: scale(1.12); }
+.color-swatch.active::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  border: 2.5px solid var(--md-on-surface);
+  box-shadow: inset 0 0 0 2px var(--color-swatch-bg, #fff);
+}
+.color-swatch .material-icons { font-size: 16px; color: rgba(255,255,255,.9); position: absolute; top:50%; left:50%; transform:translate(-50%,-50%); display:none; }
+.color-swatch.active .material-icons { display:block; }
+
 /* ─── Theme transition ────────────────────────────────────────────── */
 html.theme-transitioning,
 html.theme-transitioning *,
@@ -568,7 +584,7 @@ html.theme-transitioning *::after {
 <header>
   <div class="logo">Spoti<span>FLAC</span></div>
   <button id="theme-toggle" title="Toggle theme"></button>
-  <button id="btn-settings" title="Settings"><span class="material-icons-round">settings</span></button>
+  <button id="btn-settings" title="Settings"><span class="material-icons">settings</span></button>
   <div class="vpn-wrap">
       <div id="vpn-badge">
         <span class="dot"></span>
@@ -593,7 +609,7 @@ html.theme-transitioning *::after {
     </div>
     <div style="position:relative">
       <textarea id="urls" placeholder="Paste Spotify URLs — one per line or comma-separated&#10;https://open.spotify.com/track/…&#10;&#10;Or type an artist, album or track name to search" style="padding-right:1.8rem"></textarea>
-      <button id="btn-urls-clear" title="Clear" style="display:none;position:absolute;top:8px;right:8px;background:none;border:none;color:var(--md-on-surface-variant);cursor:pointer;padding:0;border-radius:999px;width:32px;height:32px;align-items:center;justify-content:center"><span class="material-icons-round" style="font-size:18px">close</span></button>
+      <button id="btn-urls-clear" title="Clear" style="display:none;position:absolute;top:8px;right:8px;background:none;border:none;color:var(--md-on-surface-variant);cursor:pointer;padding:0;border-radius:999px;width:32px;height:32px;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">close</span></button>
     </div>
 
     <div class="btn-row">
@@ -631,9 +647,9 @@ html.theme-transitioning *::after {
       </div>
     </div>
     <div class="search-wrap">
-      <span class="material-icons-round">search</span>
+      <span class="material-icons">search</span>
       <input type="text" id="job-search" placeholder="Filter downloads…" autocomplete="off">
-      <button class="search-clear" id="btn-job-search-clear" title="Clear" style="display:none"><span class="material-icons-round">close</span></button>
+      <button class="search-clear" id="btn-job-search-clear" title="Clear" style="display:none"><span class="material-icons">close</span></button>
     </div>
     <div id="bulk-bar">
       <span id="bulk-count" style="flex-shrink:0">0 selected</span>
@@ -665,10 +681,18 @@ html.theme-transitioning *::after {
   <div class="modal" style="max-width:480px">
     <div class="modal-header">
       <span class="modal-title">Settings</span>
-      <button class="modal-close" id="btn-settings-close" title="Close"><span class="material-icons-round">close</span></button>
+      <button class="modal-close" id="btn-settings-close" title="Close"><span class="material-icons">close</span></button>
     </div>
     <div class="modal-body">
       <div class="settings-grid">
+
+        <div class="setting-group">
+          <label>Color Theme</label>
+          <div class="color-presets" id="color-presets"></div>
+          <div class="hint">Accent color applied across the interface</div>
+        </div>
+
+        <hr style="border:none;border-top:1px solid var(--md-outline-variant);margin:0">
 
         <div class="setting-group">
           <label>Services &amp; Priority</label>
@@ -732,7 +756,7 @@ html.theme-transitioning *::after {
   <div class="modal">
     <div class="modal-header">
       <span class="modal-title" id="modal-title">Search results</span>
-      <button class="modal-close" id="btn-modal-close" title="Close"><span class="material-icons-round">close</span></button>
+      <button class="modal-close" id="btn-modal-close" title="Close"><span class="material-icons">close</span></button>
     </div>
     <div class="modal-filter">
       <button class="filter-pill active" data-filter="all">All</button>
@@ -790,7 +814,7 @@ function buildServicesList() {
     el.dataset.id = svc.id;
     const enabled = DEFAULT_ORDER.includes(svc.id);
     el.innerHTML = `
-      <span class="svc-handle"><span class="material-icons-round">drag_indicator</span></span>
+      <span class="svc-handle"><span class="material-icons">drag_indicator</span></span>
       <span class="svc-name">${svc.name}</span>
       <span class="badge svc-badge svc-${svc.id}">${svc.id}</span>
       <label class="switch"><input type="checkbox" class="svc-toggle" data-id="${svc.id}" ${enabled?'checked':''}><span class="slider"></span></label>`;
@@ -810,6 +834,76 @@ function buildServicesList() {
   });
 }
 buildServicesList();
+
+// ── Color theme presets ───────────────────────────────────────────────
+const COLOR_PRESETS = [
+  { id: 'purple',  label: 'Purple',   dark: { p:'#D0BCFF', op:'#381E72', pc:'#4F378B', opc:'#EADDFF', sc:'#4A4458', osc:'#E8DEF8' }, light: { p:'#6750A4', op:'#FFFFFF', pc:'#EADDFF', opc:'#21005D', sc:'#E8DEF8', osc:'#1D192B' } },
+  { id: 'indigo',  label: 'Indigo',   dark: { p:'#BBC2FF', op:'#1E2678', pc:'#353D90', opc:'#DDE1FF', sc:'#44475A', osc:'#E2E1F9' }, light: { p:'#4355B9', op:'#FFFFFF', pc:'#DDE1FF', opc:'#00105C', sc:'#E2E1F9', osc:'#191A2C' } },
+  { id: 'teal',    label: 'Teal',     dark: { p:'#80D5CC', op:'#00363C', pc:'#004F57', opc:'#9CF1E8', sc:'#3D6360', osc:'#BCF0E7' }, light: { p:'#006874', op:'#FFFFFF', pc:'#9EEFFD', opc:'#001F24', sc:'#CDE7E0', osc:'#0D1F1C' } },
+  { id: 'green',   label: 'Green',    dark: { p:'#78DC77', op:'#003909', pc:'#0A5211', opc:'#93F990', sc:'#3C6340', osc:'#B8F0B3' }, light: { p:'#1A6B26', op:'#FFFFFF', pc:'#A3F69C', opc:'#002106', sc:'#BEF1B8', osc:'#002108' } },
+  { id: 'amber',   label: 'Amber',    dark: { p:'#FFD740', op:'#3A2F00', pc:'#564400', opc:'#FFE98A', sc:'#524533', osc:'#EFE0B1' }, light: { p:'#695F00', op:'#FFFFFF', pc:'#FAEEA2', opc:'#211B00', sc:'#EEE2B5', osc:'#221C00' } },
+  { id: 'orange',  label: 'Orange',   dark: { p:'#FFB778', op:'#4A2800', pc:'#6B3A00', opc:'#FFDBAF', sc:'#5D4030', osc:'#FFDCBB', }, light: { p:'#8B5000', op:'#FFFFFF', pc:'#FFDCBB', opc:'#2C1600', sc:'#F2DCC5', osc:'#2D1600' } },
+  { id: 'rose',    label: 'Rose',     dark: { p:'#FFB3B3', op:'#680808', pc:'#920E0E', opc:'#FFDAD6', sc:'#5D3F3F', osc:'#FFDAD6' }, light: { p:'#B3261E', op:'#FFFFFF', pc:'#FFDAD6', opc:'#410E0B', sc:'#F9DEDC', osc:'#2C1512' } },
+  { id: 'pink',    label: 'Pink',     dark: { p:'#FFB0C8', op:'#5E1133', pc:'#7B294C', opc:'#FFD8E7', sc:'#5D3B47', osc:'#FFD8E7' }, light: { p:'#984061', op:'#FFFFFF', pc:'#FFD8E7', opc:'#3E001F', sc:'#FFD8E7', osc:'#3E001F' } },
+  { id: 'slate',   label: 'Slate',    dark: { p:'#BBC7DB', op:'#253140', pc:'#3C4758', opc:'#D7E3F7', sc:'#475D74', osc:'#D0E4F7' }, light: { p:'#4A5D72', op:'#FFFFFF', pc:'#D0E4F7', opc:'#061C2C', sc:'#D0E4F7', osc:'#061C2C' } },
+  { id: 'mono',    label: 'Mono',     dark: { p:'#E2E2E2', op:'#313131', pc:'#4C4C4C', opc:'#F5F5F5', sc:'#4C4C4C', osc:'#E2E2E2' }, light: { p:'#5E5E5E', op:'#FFFFFF', pc:'#E2E2E2', opc:'#191919', sc:'#E2E2E2', osc:'#191919' } },
+];
+
+// Swatch display colors (always shown regardless of theme)
+const SWATCH_COLORS = {
+  purple: '#6750A4', indigo: '#4355B9', teal: '#006874', green: '#1A6B26',
+  amber:  '#695F00', orange: '#8B5000', rose: '#B3261E', pink:  '#984061',
+  slate:  '#4A5D72', mono:   '#5E5E5E',
+};
+
+function applyColorPreset(id, animate = true) {
+  const preset = COLOR_PRESETS.find(p => p.id === id);
+  if (!preset) return;
+  const html  = document.documentElement;
+  const isDark = html.dataset.theme === 'dark';
+  const tokens = isDark ? preset.dark : preset.light;
+
+  if (animate) {
+    html.classList.add('theme-transitioning');
+    setTimeout(() => html.classList.remove('theme-transitioning'), 300);
+  }
+  html.style.setProperty('--md-primary',                tokens.p);
+  html.style.setProperty('--md-on-primary',             tokens.op);
+  html.style.setProperty('--md-primary-container',      tokens.pc);
+  html.style.setProperty('--md-on-primary-container',   tokens.opc);
+  html.style.setProperty('--md-secondary-container',    tokens.sc);
+  html.style.setProperty('--md-on-secondary-container', tokens.osc);
+  localStorage.setItem('colorPreset', id);
+
+  document.querySelectorAll('.color-swatch').forEach(s => {
+    s.classList.toggle('active', s.dataset.preset === id);
+  });
+  // Re-position quality indicator since color change may shift layout
+  requestAnimationFrame(() => {
+    const active = document.querySelector('.quality-opt.active');
+    _moveQualityIndicator(active);
+  });
+}
+
+function buildColorPresets() {
+  const wrap = document.getElementById('color-presets');
+  if (!wrap) return;
+  const saved = localStorage.getItem('colorPreset') || 'purple';
+  wrap.innerHTML = COLOR_PRESETS.map(p => `
+    <button class="color-swatch${p.id === saved ? ' active' : ''}" data-preset="${p.id}"
+      title="${p.label}"
+      style="background:${SWATCH_COLORS[p.id]};--color-swatch-bg:${SWATCH_COLORS[p.id]}">
+      <span class="material-icons">check</span>
+    </button>`).join('');
+  wrap.querySelectorAll('.color-swatch').forEach(btn => {
+    btn.addEventListener('click', () => applyColorPreset(btn.dataset.preset));
+  });
+}
+buildColorPresets();
+
+// Apply saved preset on load (no animation)
+const _savedPreset = localStorage.getItem('colorPreset');
+if (_savedPreset && _savedPreset !== 'purple') applyColorPreset(_savedPreset, false);
 
 function getActiveServices() {
   return [...document.querySelectorAll('.svc-toggle')].filter(c=>c.checked).map(c=>c.dataset.id);
@@ -913,6 +1007,7 @@ let _selectedUrls   = new Set();
 function openSettingsModal() {
   document.getElementById('settings-modal').classList.add('open');
   document.body.style.overflow = 'hidden';
+  buildColorPresets();
 }
 function closeSettingsModal() {
   document.getElementById('settings-modal').classList.remove('open');
@@ -1020,7 +1115,7 @@ function renderSearchResults() {
         <div class="result-sub">${esc(fmtSubtitle(r))}</div>
       </div>
       <span class="result-type type-${r.type}">${r.type}</span>
-      <div class="result-check"><span class="material-icons-round" style="font-size:13px">check</span></div>
+      <div class="result-check"><span class="material-icons" style="font-size:13px">check</span></div>
     </div>`;
   }).join('') + '</div>';
 
@@ -1186,16 +1281,16 @@ function renderJobs() {
     const sel = _selectedJobIds.has(j.id);
     let actionBtn = '<span></span>';
     if (j.status === 'queued' || j.status === 'running') {
-      actionBtn = `<button class="job-btn cancel" data-action="cancel" data-id="${esc(j.id)}" title="Cancel"><span class="material-icons-round">stop</span></button>`;
+      actionBtn = `<button class="job-btn cancel" data-action="cancel" data-id="${esc(j.id)}" title="Cancel"><span class="material-icons">stop</span></button>`;
     } else if (j.status === 'error' || j.status === 'cancelled') {
-      actionBtn = `<button class="job-btn retry" data-action="retry" data-id="${esc(j.id)}" title="Retry"><span class="material-icons-round">replay</span></button>`;
+      actionBtn = `<button class="job-btn retry" data-action="retry" data-id="${esc(j.id)}" title="Retry"><span class="material-icons">replay</span></button>`;
     } else if (j.status === 'done' && j.fail_count > 0) {
-      actionBtn = `<button class="job-btn retry" data-action="retry-partial" data-id="${esc(j.id)}" title="Retry ${j.fail_count} failed track(s)"><span class="material-icons-round">replay</span></button>`;
+      actionBtn = `<button class="job-btn retry" data-action="retry-partial" data-id="${esc(j.id)}" title="Retry ${j.fail_count} failed track(s)"><span class="material-icons">replay</span></button>`;
     }
     return `
     <div class="job-item${sel ? ' job-sel' : ''}" data-id="${esc(j.id)}">
       <input type="checkbox" class="job-cb" data-id="${esc(j.id)}" ${sel ? 'checked' : ''}>
-      <span class="job-handle" draggable="true" data-id="${esc(j.id)}" title="Drag to reorder"><span class="material-icons-round">drag_indicator</span></span>
+      <span class="job-handle" draggable="true" data-id="${esc(j.id)}" title="Drag to reorder"><span class="material-icons">drag_indicator</span></span>
       ${cover}
       <div class="job-url"><a href="${esc(j.url)}" target="_blank" title="${esc(j.url)}">${esc(label)}</a></div>
       <div class="job-time">${fmtTime(j.started_at)}${j.finished_at ? ' → ' + fmtTime(j.finished_at) : ''}</div>
@@ -1206,7 +1301,7 @@ function renderJobs() {
       }</span>
       <span class="quality-badge">${j.quality === 'hires' ? 'Hi-Res' : j.quality === 'high' ? 'High' : 'Lossless'}</span>
       ${actionBtn}
-      <button class="job-btn remove" data-action="remove" data-id="${esc(j.id)}" title="Remove"><span class="material-icons-round">close</span></button>
+      <button class="job-btn remove" data-action="remove" data-id="${esc(j.id)}" title="Remove"><span class="material-icons">close</span></button>
       ${j.error ? `<div class="job-error">${esc(j.error)}</div>` : ''}
       ${j.status === 'done' && j.fail_count > 0 ? `<div class="job-error">${j.fail_count} track(s) failed</div>` : ''}
     </div>`;
@@ -1590,7 +1685,7 @@ function renderHistory() {
     const restartTitle = failedWithId.length
       ? `Restart ${failedWithId.length} failed track(s)`
       : 'Restart job';
-    const restartBtn = `<button class="job-btn retry hist-restart-btn" data-hkey="${esc(hkey)}" title="${restartTitle}"><span class="material-icons-round">restart_alt</span></button>`;
+    const restartBtn = `<button class="job-btn retry hist-restart-btn" data-hkey="${esc(hkey)}" title="${restartTitle}"><span class="material-icons">restart_alt</span></button>`;
 
     const hasDetail = trackHtml !== '';
     const isOpen    = _histExpanded.has(hkey);
@@ -1649,7 +1744,7 @@ function renderHistory() {
       if (!urls) return;
 
       btn.disabled = true;
-      btn.innerHTML = '<span class="material-icons-round" style="animation:spin .7s linear infinite;display:inline-block">autorenew</span>';
+      btn.innerHTML = '<span class="material-icons" style="animation:spin .7s linear infinite;display:inline-block">autorenew</span>';
 
       const isPartialRetry = failed.length > 0;
       const res = await fetch('/api/download', {
@@ -1666,13 +1761,13 @@ function renderHistory() {
       });
 
       if (res.ok) {
-        btn.innerHTML = '<span class="material-icons-round" style="color:var(--green)">check</span>';
+        btn.innerHTML = '<span class="material-icons" style="color:var(--green)">check</span>';
         const label = failed.length ? `${failed.length} failed track(s)` : (entry.title || entry.url);
         showToast(`Queued: ${label}`, 'done');
         refreshJobs();
       } else {
         btn.disabled = false;
-        btn.innerHTML = '<span class="material-icons-round">restart_alt</span>';
+        btn.innerHTML = '<span class="material-icons">restart_alt</span>';
         showToast('Failed to queue', 'error');
       }
     });
@@ -1718,8 +1813,11 @@ function applyTheme(stored, animate = true) {
   html.dataset.theme = effective;
   const icon = stored === 'dark' ? 'dark_mode' : stored === 'light' ? 'light_mode' : 'brightness_auto';
   const tip  = stored === 'dark' ? 'Dark mode' : stored === 'light' ? 'Light mode' : 'Auto (follows browser)';
-  themeToggle.innerHTML = `<span class="material-icons-round">${icon}</span>`;
+  themeToggle.innerHTML = `<span class="material-icons">${icon}</span>`;
   themeToggle.title = tip;
+  // Re-apply color preset with updated dark/light tokens
+  const savedPreset = localStorage.getItem('colorPreset');
+  if (savedPreset) applyColorPreset(savedPreset, false);
 }
 
 themeToggle.addEventListener('click', () => {
