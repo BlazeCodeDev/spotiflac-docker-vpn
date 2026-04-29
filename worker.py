@@ -295,6 +295,9 @@ class _TrackingWorker(DownloadWorker):
         self._on_track_result = on_track_result
 
     def run(self):
+        from SpotiFLAC.core.models import build_filename
+        from pathlib import Path as _Path
+
         manager  = DownloadManager()
         total    = len(self._tracks)
         start    = time.perf_counter()
@@ -304,7 +307,40 @@ class _TrackingWorker(DownloadWorker):
         for i, track in enumerate(self._tracks):
             manager.start_download(track.id)
             out_dir = self._track_output_dir(base_out, track)
-            result  = download_one(track, out_dir, self._providers, self._opts, i + 1)
+
+            # Pre-check: skip if a matching audio file already exists on disk.
+            # Checks all common extensions so cross-format duplicates are caught too.
+            existing = None
+            for ext in ('.flac', '.m4a', '.mp3'):
+                fname = build_filename(
+                    track,
+                    fmt                 = self._opts.filename_format,
+                    position            = i + 1,
+                    include_track_num   = self._opts.use_track_numbers,
+                    use_album_track_num = self._opts.use_track_numbers,
+                    first_artist_only   = self._opts.first_artist_only,
+                    extension           = ext,
+                )
+                candidate = _Path(out_dir) / fname
+                if candidate.exists() and candidate.stat().st_size > 0:
+                    existing = candidate
+                    break
+
+            if existing:
+                log.info("Skipping already-downloaded track: %s", existing.name)
+                size_mb = existing.stat().st_size / (1024 * 1024)
+                manager.complete_download(track.id, str(existing), size_mb)
+                if self._on_track_result:
+                    self._on_track_result({
+                        "track_id": track.id,
+                        "title": track.title, "artists": track.artists,
+                        "success": True, "error": None,
+                    })
+                done += 1
+                self._on_track_done(done)
+                continue
+
+            result = download_one(track, out_dir, self._providers, self._opts, i + 1)
 
             if result.success:
                 size_mb = (
@@ -447,6 +483,7 @@ def _run(job_id: str) -> None:
                 use_album_subfolders  = album_dirs,
                 quality               = quality,
                 inter_track_delay_s   = _Cfg.TRACK_DELAY_S,
+                use_track_numbers     = True,
             )
 
             def _on_progress(done, total):
