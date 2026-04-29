@@ -7,12 +7,13 @@ Build-time patches for SpotiFLAC:
 2. downloader.py — forward opts.quality to provider.download_track(), mapping
    abstract quality levels ("lossless", "hires") to provider-specific strings.
 """
-import pathlib, sys
+import importlib.util, pathlib, sys
 
-_BASE = pathlib.Path(
-    f"/home/coder/.local/lib/python{sys.version_info.major}.{sys.version_info.minor}"
-    "/site-packages/SpotiFLAC"
-)
+_spec = importlib.util.find_spec("SpotiFLAC")
+if _spec is None or _spec.origin is None:
+    print("[patch] SpotiFLAC not found — aborting")
+    sys.exit(1)
+_BASE = pathlib.Path(_spec.origin).parent
 
 # ---------------------------------------------------------------------------
 # Patch 1: models.py — preserve / as directory separator in build_filename
