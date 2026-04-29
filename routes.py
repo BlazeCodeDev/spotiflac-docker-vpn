@@ -149,6 +149,12 @@ def api_clear_history():
     return jsonify(cleared=worker.clear_history())
 
 
+@bp.delete("/api/history/<job_id>")
+def api_remove_history(job_id: str):
+    ok = worker.remove_history_entry(job_id)
+    return (jsonify(ok=True), 200) if ok else (jsonify(error="Not found"), 404)
+
+
 @bp.get("/api/vpn")
 def api_vpn():
     status = vpn.tunnel_status()

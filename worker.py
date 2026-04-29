@@ -117,6 +117,17 @@ def clear_history() -> int:
     return n
 
 
+def remove_history_entry(job_id: str) -> bool:
+    global _history
+    with _lock:
+        before = len(_history)
+        _history = [h for h in _history if h.get("id") != job_id]
+        removed = len(_history) < before
+    if removed:
+        _save_history()
+    return removed
+
+
 _load()
 _load_history()
 

@@ -942,6 +942,8 @@ function renderJobs() {
       actionBtn = `<button class="job-btn cancel" data-action="cancel" data-id="${esc(j.id)}" title="Cancel"><span class="material-icons">stop</span></button>`;
     } else if (j.status === 'error' || j.status === 'cancelled') {
       actionBtn = `<button class="job-btn retry" data-action="retry" data-id="${esc(j.id)}" title="Retry"><span class="material-icons">replay</span></button>`;
+    } else if (j.status === 'done' && j.fail_count > 0) {
+      actionBtn = `<button class="job-btn retry" data-action="retry-partial" data-id="${esc(j.id)}" title="Retry ${j.fail_count} failed track(s)"><span class="material-icons">replay</span></button>`;
     }
     return `
     <div class="job-item${sel ? ' job-sel' : ''}" data-id="${esc(j.id)}">
@@ -959,7 +961,7 @@ function renderJobs() {
       ${actionBtn}
       <button class="job-btn remove" data-action="remove" data-id="${esc(j.id)}" title="Remove"><span class="material-icons">close</span></button>
       ${j.error ? `<div class="job-error">${esc(j.error)}</div>` : ''}
-      ${j.status === 'done' && j.fail_count > 0 ? `<div class="job-error">${j.fail_count} track(s) failed — see History for details</div>` : ''}
+      ${j.status === 'done' && j.fail_count > 0 ? `<div class="job-error">${j.fail_count} track(s) failed</div>` : ''}
     </div>`;
   }).join('');
 
@@ -977,10 +979,56 @@ function renderJobs() {
   el.querySelectorAll('[data-action]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const {action, id} = btn.dataset;
-      if      (action === 'cancel') await fetch(`/api/jobs/${id}/cancel`, {method: 'POST'});
-      else if (action === 'retry')  await fetch(`/api/jobs/${id}/retry`,  {method: 'POST'});
-      else if (action === 'remove') await fetch(`/api/jobs/${id}`,        {method: 'DELETE'});
-      refreshJobs();
+      if (action === 'cancel') {
+        await fetch(`/api/jobs/${id}/cancel`, {method: 'POST'});
+        refreshJobs();
+      } else if (action === 'retry') {
+        // Delete history entry so the stale failed state disappears
+        await fetch(`/api/history/${id}`, {method: 'DELETE'});
+        await fetch(`/api/jobs/${id}/retry`, {method: 'POST'});
+        refreshJobs(); refreshHistory();
+      } else if (action === 'remove') {
+        await fetch(`/api/jobs/${id}`, {method: 'DELETE'});
+        refreshJobs();
+      } else if (action === 'retry-partial') {
+        // Fetch fresh history to get track_results for this job
+        const histData = await fetch('/api/history').then(r => r.json()).catch(() => []);
+        const entry = histData.find(h => h.id === id);
+        const job   = _allJobs.find(j => j.id === id);
+        const failed = (entry?.track_results || []).filter(r => !r.success && r.track_id);
+
+        // Remove history entry and the done job first
+        await fetch(`/api/history/${id}`, {method: 'DELETE'});
+        await fetch(`/api/jobs/${id}`, {method: 'DELETE'});
+
+        if (failed.length && entry) {
+          const urls = failed.map(r => `https://open.spotify.com/track/${r.track_id}`).join('\n');
+          await fetch('/api/download', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              urls,
+              services:          getActiveServices(),
+              quality:           entry.quality || _quality,
+              qobuz_token:       document.getElementById('qobuz-token').value,
+              pre_success_count: entry.success_count || 0,
+              full_total:        entry.total || 0,
+              pre_title:         entry.title || '',
+            }),
+          });
+        } else {
+          // No track-level data — re-queue the original URL from scratch
+          await fetch('/api/download', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              urls: job?.url || '',
+              services:    getActiveServices(),
+              quality:     job?.quality || _quality,
+              qobuz_token: document.getElementById('qobuz-token').value,
+            }),
+          });
+        }
+        refreshJobs(); refreshHistory();
+      }
     });
   });
 
@@ -1095,7 +1143,8 @@ async function bulkAction(action) {
     if (action === 'cancel' && (j.status === 'queued' || j.status === 'running'))
       return fetch(`/api/jobs/${id}/cancel`, {method: 'POST'});
     if (action === 'retry'  && (j.status === 'error'  || j.status === 'cancelled'))
-      return fetch(`/api/jobs/${id}/retry`,  {method: 'POST'});
+      return fetch(`/api/history/${id}`, {method: 'DELETE'}).then(() =>
+             fetch(`/api/jobs/${id}/retry`, {method: 'POST'}));
     if (action === 'remove')
       return fetch(`/api/jobs/${id}`,        {method: 'DELETE'});
   }));
