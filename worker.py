@@ -165,7 +165,10 @@ def _cleanup_empty_dirs() -> None:
 
 def clear_done() -> int:
     with _lock:
-        ids = [jid for jid, j in _jobs.items() if j["status"] in ("done", "error", "cancelled")]
+        ids = [
+            jid for jid, j in _jobs.items()
+            if j["status"] == "done" and not j.get("fail_count")
+        ]
         for jid in ids:
             _jobs.pop(jid, None)
             _cancel.pop(jid, None)
