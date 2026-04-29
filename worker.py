@@ -21,11 +21,7 @@ def init(max_workers: int) -> None:
     _semaphore = threading.BoundedSemaphore(max_workers)
     log.info("MAX_WORKERS = %d", max_workers)
 
-_STATE_FILE   = os.environ.get("STATE_FILE",   "/vpn/jobs.json")
-_HISTORY_FILE = os.environ.get("HISTORY_FILE", "/vpn/history.json")
-_MAX_HISTORY  = 500
-
-_history: list[dict] = []
+_STATE_FILE = os.environ.get("STATE_FILE", "/vpn/jobs.json")
 
 
 def _now() -> str:
@@ -63,80 +59,13 @@ def _load() -> None:
         log.warning("State load failed: %s", exc)
 
 
-def _save_history() -> None:
-    try:
-        tmp = _HISTORY_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump({"history": _history}, f)
-        os.replace(tmp, _HISTORY_FILE)
-    except Exception as exc:
-        log.warning("History save failed: %s", exc)
-
-
-def _load_history() -> None:
-    global _history
-    try:
-        with open(_HISTORY_FILE) as f:
-            data = json.load(f)
-        _history = data.get("history", [])
-        log.info("Loaded %d history entries from %s", len(_history), _HISTORY_FILE)
-    except FileNotFoundError:
-        pass
-    except Exception as exc:
-        log.warning("History load failed: %s", exc)
-
-
-def _add_to_history(job: dict) -> None:
-    global _history
-    entry = {k: v for k, v in job.items() if not k.startswith("_")}
-    with _lock:
-        _history.append(entry)
-        if len(_history) > _MAX_HISTORY:
-            _history = _history[-_MAX_HISTORY:]
-    _save_history()
-
-
-def _record_history(job_id: str) -> None:
-    with _lock:
-        j = _jobs.get(job_id)
-    if j and j.get("status") in ("done", "error", "cancelled"):
-        _add_to_history(dict(j))
-
-
-def get_history() -> list[dict]:
-    with _lock:
-        return list(reversed(_history))
-
-
-def clear_history() -> int:
-    global _history
-    with _lock:
-        n = len(_history)
-        _history = []
-    _save_history()
-    return n
-
-
-def remove_history_entry(job_id: str) -> bool:
-    global _history
-    with _lock:
-        before = len(_history)
-        _history = [h for h in _history if h.get("id") != job_id]
-        removed = len(_history) < before
-    if removed:
-        _save_history()
-    return removed
-
-
 _load()
-_load_history()
 
 
 def get_jobs() -> list[dict]:
     with _lock:
         jobs = sorted(_jobs.values(), key=lambda j: j.get("_seq", 0), reverse=True)
-    # Exclude private keys and track_results (sent separately via history API)
-    return [{k: v for k, v in j.items() if not k.startswith("_") and k != "track_results"} for j in jobs]
+    return [{k: v for k, v in j.items() if not k.startswith("_")} for j in jobs]
 
 
 def _cleanup_empty_dirs() -> None:
@@ -460,7 +389,6 @@ def _run(job_id: str) -> None:
             if ev.is_set():
                 _update(job_id, status="cancelled", finished_at=_now())
                 _cancel.pop(job_id, None)
-                _record_history(job_id)
                 return
 
         track_results: list[dict] = []
@@ -468,7 +396,6 @@ def _run(job_id: str) -> None:
         try:
             if ev.is_set():
                 _update(job_id, status="cancelled", finished_at=_now())
-                _record_history(job_id)
                 return
 
             _update(job_id, status="running", started_at=_now(),
@@ -561,4 +488,3 @@ def _run(job_id: str) -> None:
         _update(job_id, status="queued", started_at=_now(), finished_at=None, error=None)
 
     _cancel.pop(job_id, None)
-    _record_history(job_id)

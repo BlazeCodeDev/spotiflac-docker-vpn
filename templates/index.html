@@ -536,23 +536,20 @@ button { cursor: pointer; font-family: inherit; border: none; }
 .toast.out { animation: toast-out .15s ease forwards; }
 @keyframes toast-out { to{opacity:0;transform:translateY(4px) scale(.98)} }
 
-/* ─── History ─────────────────────────────────────────────────────── */
-.history-item { padding: 6px 0; border-bottom: 1px solid var(--md-outline-variant); }
-.history-item:last-child { border-bottom: none; }
-.history-row  { display: grid; grid-template-columns: 36px 1fr auto auto auto auto auto; align-items: center; gap: 4px 8px; cursor: pointer; }
-.history-expand { display: none; margin-top: 8px; padding: 12px; background: var(--md-surface-container); border-radius: 8px; }
-.history-item.open .history-expand { display: block; }
-.track-list  { display: flex; flex-direction: column; gap: 3px; max-height: 260px; overflow-y: auto; }
-.track-row   { display: flex; align-items: baseline; gap: 6px; font-size: .8rem; line-height: 1.5; }
+/* ─── Job track expand ────────────────────────────────────────────── */
+.job-expand { grid-column: 1/-1; display: none; margin-top: 4px; padding: 8px 12px; background: var(--md-surface-container); border-radius: 8px; }
+.job-item.expanded .job-expand { display: block; }
+.job-expand-btn { background: none; border: none; padding: 0 2px; color: var(--md-on-surface-variant); cursor: pointer; display: flex; align-items: center; flex-shrink: 0; transition: transform .2s; }
+.job-item.expanded .job-expand-btn .material-icons { transform: rotate(180deg); }
+.track-list  { display: flex; flex-direction: column; gap: 3px; max-height: 240px; overflow-y: auto; }
+.track-row   { display: flex; align-items: baseline; gap: 6px; font-size: .78rem; line-height: 1.5; }
 .track-ok    { color: var(--green); flex-shrink: 0; }
 .track-fail  { color: var(--red); flex-shrink: 0; }
 .track-name  { color: var(--md-on-surface); }
-.track-err   { color: var(--md-on-surface-variant); font-family: 'Roboto Mono', monospace; font-size: .72rem; }
-.track-artist { color: var(--md-on-surface-variant); font-size: .72rem; }
-.history-counts { font-size: .75rem; color: var(--md-on-surface-variant); white-space: nowrap; }
-.hist-toggle { font-size: .75rem; color: var(--md-primary); font-weight: 500; margin-top: 6px; cursor: pointer; user-select: none; }
-.hist-toggle:hover { opacity: .85; }
-.hist-restart-btn { color: var(--green) !important; }
+.track-err   { color: var(--md-on-surface-variant); font-family: 'Roboto Mono', monospace; font-size: .7rem; }
+.track-artist { color: var(--md-on-surface-variant); font-size: .7rem; }
+.track-show-toggle { font-size: .72rem; color: var(--md-primary); font-weight: 500; margin-top: 5px; cursor: pointer; user-select: none; }
+.track-show-toggle:hover { opacity: .85; }
 
 /* ─── Color preset picker ─────────────────────────────────────────── */
 .color-presets { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -608,7 +605,7 @@ html.theme-transitioning *::after {
       <span class="section-title">Download or Search</span>
     </div>
     <div style="position:relative">
-      <textarea id="urls" placeholder="Paste Spotify URLs — one per line or comma-separated&#10;https://open.spotify.com/track/…&#10;&#10;Or type an artist, album or track name to search" style="padding-right:1.8rem"></textarea>
+      <textarea id="urls" placeholder="Paste Spotify URLs or search by name" style="padding-right:1.8rem"></textarea>
       <button id="btn-urls-clear" title="Clear" style="display:none;position:absolute;top:8px;right:8px;background:none;border:none;color:var(--md-on-surface-variant);cursor:pointer;padding:0;border-radius:999px;width:32px;height:32px;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">close</span></button>
     </div>
 
@@ -664,16 +661,6 @@ html.theme-transitioning *::after {
     <div id="jobs-list"></div>
   </div>
 
-  <div class="card" id="history-card">
-    <div class="card-header">
-      <div style="display:flex;align-items:center;gap:.5rem">
-        <span class="section-title">History</span>
-        <span id="history-counts" style="font-size:.75rem;color:var(--md-on-surface-variant);font-weight:400"></span>
-      </div>
-      <button class="btn-ghost" id="btn-hist-clr">Clear</button>
-    </div>
-    <div id="history-list"><div class="jobs-empty">No history yet</div></div>
-  </div>
 </main>
 
 <!-- Settings modal -->
@@ -1226,6 +1213,8 @@ let _selectedJobIds = new Set();
 let _prevJobIds     = new Set();
 let _jobDragSrc     = null;
 let _jobsLoaded     = false;
+let _jobExpanded    = new Set();
+let _jobShowAll     = new Set();
 
 function renderSkeleton() {
   document.getElementById('jobs-list').innerHTML = [0,1,2].map(() => `
@@ -1278,7 +1267,9 @@ function renderJobs() {
     const cover = j.cover_url
       ? `<img class="job-cover" src="${esc(j.cover_url)}" alt="" loading="lazy">`
       : `<div class="job-cover-ph"></div>`;
-    const sel = _selectedJobIds.has(j.id);
+    const sel      = _selectedJobIds.has(j.id);
+    const expanded = _jobExpanded.has(j.id);
+    const hasTracks = j.track_results && j.track_results.length > 0;
     let actionBtn = '<span></span>';
     if (j.status === 'queued' || j.status === 'running') {
       actionBtn = `<button class="job-btn cancel" data-action="cancel" data-id="${esc(j.id)}" title="Cancel"><span class="material-icons">stop</span></button>`;
@@ -1287,12 +1278,32 @@ function renderJobs() {
     } else if (j.status === 'done' && j.fail_count > 0) {
       actionBtn = `<button class="job-btn retry" data-action="retry-partial" data-id="${esc(j.id)}" title="Retry ${j.fail_count} failed track(s)"><span class="material-icons">replay</span></button>`;
     }
+
+    let expandPanel = '';
+    if (hasTracks) {
+      const showAll  = _jobShowAll.has(j.id);
+      const failures = j.track_results.filter(r => !r.success);
+      const shown    = showAll ? j.track_results : failures;
+      const rows = shown.map(r => r.success
+        ? `<div class="track-row"><span class="track-ok">✓</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span></div>`
+        : `<div class="track-row"><span class="track-fail">✗</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span><span class="track-err">— ${fmtTrackError(r.error)}</span></div>`
+      ).join('');
+      const toggleLabel = showAll ? 'Show failures only' : `Show all ${j.track_results.length} tracks`;
+      const toggleBtn = j.track_results.length > failures.length
+        ? `<div class="track-show-toggle" data-action="tracks-toggle" data-id="${esc(j.id)}">${toggleLabel}</div>`
+        : '';
+      expandPanel = `<div class="job-expand"><div class="track-list">${rows}</div>${toggleBtn}</div>`;
+    }
+
     return `
-    <div class="job-item${sel ? ' job-sel' : ''}" data-id="${esc(j.id)}">
+    <div class="job-item${sel ? ' job-sel' : ''}${expanded ? ' expanded' : ''}" data-id="${esc(j.id)}">
       <input type="checkbox" class="job-cb" data-id="${esc(j.id)}" ${sel ? 'checked' : ''}>
       <span class="job-handle" draggable="true" data-id="${esc(j.id)}" title="Drag to reorder"><span class="material-icons">drag_indicator</span></span>
       ${cover}
-      <div class="job-url"><a href="${esc(j.url)}" target="_blank" title="${esc(j.url)}">${esc(label)}</a></div>
+      <div class="job-url" style="display:flex;align-items:center;gap:4px;min-width:0">
+        <a href="${esc(j.url)}" target="_blank" title="${esc(j.url)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${esc(label)}</a>
+        ${hasTracks ? `<button class="job-expand-btn" data-action="expand" data-id="${esc(j.id)}" title="Show tracks"><span class="material-icons" style="font-size:16px">expand_more</span></button>` : ''}
+      </div>
       <div class="job-time">${fmtTime(j.started_at)}${j.finished_at ? ' → ' + fmtTime(j.finished_at) : ''}</div>
       <span class="badge ${j.status === 'done' && j.fail_count > 0 ? 'partial' : j.status}">${
         j.status === 'running' && j.total > 1 ? j.progress + '/' + j.total
@@ -1303,7 +1314,7 @@ function renderJobs() {
       ${actionBtn}
       <button class="job-btn remove" data-action="remove" data-id="${esc(j.id)}" title="Remove"><span class="material-icons">close</span></button>
       ${j.error ? `<div class="job-error">${esc(j.error)}</div>` : ''}
-      ${j.status === 'done' && j.fail_count > 0 ? `<div class="job-error">${j.fail_count} track(s) failed</div>` : ''}
+      ${expandPanel}
     </div>`;
   }).join('');
 
@@ -1327,60 +1338,63 @@ function renderJobs() {
   el.querySelectorAll('[data-action]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const {action, id} = btn.dataset;
-      if (action === 'cancel') {
+      if (action === 'expand') {
+        if (_jobExpanded.has(id)) _jobExpanded.delete(id);
+        else _jobExpanded.add(id);
+        renderJobs();
+      } else if (action === 'tracks-toggle') {
+        if (_jobShowAll.has(id)) _jobShowAll.delete(id);
+        else _jobShowAll.add(id);
+        _jobExpanded.add(id);
+        renderJobs();
+      } else if (action === 'cancel') {
         await fetch(`/api/jobs/${id}/cancel`, {method: 'POST'});
         refreshJobs();
       } else if (action === 'retry') {
-        // Delete history entry so the stale failed state disappears
-        await fetch(`/api/history/${id}`, {method: 'DELETE'});
         await fetch(`/api/jobs/${id}/retry`, {method: 'POST'});
-        refreshJobs(); refreshHistory();
+        refreshJobs();
       } else if (action === 'remove') {
+        _jobExpanded.delete(id); _jobShowAll.delete(id);
         const item = btn.closest('.job-item');
         item.classList.add('job-exit'); _prevJobIds.delete(id);
         await new Promise(r => setTimeout(r, 200));
         await fetch(`/api/jobs/${id}`, {method: 'DELETE'});
         refreshJobs();
       } else if (action === 'retry-partial') {
-        // Fetch fresh history to get track_results for this job
-        const histData = await fetch('/api/history').then(r => r.json()).catch(() => []);
-        const entry = histData.find(h => h.id === id);
-        const job   = _allJobs.find(j => j.id === id);
-        const failed = (entry?.track_results || []).filter(r => !r.success && r.track_id);
+        const job    = _allJobs.find(j => j.id === id);
+        const failed = (job?.track_results || []).filter(r => !r.success && r.track_id);
 
-        // Animate out, then remove history entry and the done job
+        _jobExpanded.delete(id); _jobShowAll.delete(id);
         btn.closest('.job-item').classList.add('job-exit'); _prevJobIds.delete(id);
         await new Promise(r => setTimeout(r, 200));
-        await fetch(`/api/history/${id}`, {method: 'DELETE'});
         await fetch(`/api/jobs/${id}`, {method: 'DELETE'});
 
-        if (failed.length && entry) {
+        if (failed.length && job) {
           const urls = failed.map(r => `https://open.spotify.com/track/${r.track_id}`).join('\n');
           await fetch('/api/download', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
               urls,
               services:          getActiveServices(),
-              quality:           entry.quality || _quality,
+              quality:           job.quality || _quality,
               qobuz_token:       document.getElementById('qobuz-token').value,
-              pre_success_count: entry.success_count || 0,
-              full_total:        entry.total || 0,
-              pre_title:         entry.title || '',
+              pre_success_count: job.success_count || 0,
+              full_total:        job.total || 0,
+              pre_title:         job.title || '',
             }),
           });
         } else {
-          // No track-level data — re-queue the original URL from scratch
           await fetch('/api/download', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
-              urls: job?.url || '',
+              urls:        job?.url || '',
               services:    getActiveServices(),
               quality:     job?.quality || _quality,
               qobuz_token: document.getElementById('qobuz-token').value,
             }),
           });
         }
-        refreshJobs(); refreshHistory();
+        refreshJobs();
       }
     });
   });
@@ -1503,42 +1517,33 @@ document.getElementById('btn-restart-failed').addEventListener('click', async ()
   );
   if (!retryable.length) return;
 
-  // Animate out the partial-failure jobs that will be replaced by new ones
   retryable.filter(j => j.status === 'done' && j.fail_count > 0).forEach(j => {
+    _jobExpanded.delete(j.id); _jobShowAll.delete(j.id);
     const item = document.querySelector(`.job-item[data-id="${j.id}"]`);
     if (item) { item.classList.add('job-exit'); _prevJobIds.delete(j.id); }
   });
 
-  // Fetch history once for partial-failure jobs that need track_results
-  const partials = retryable.filter(j => j.status === 'done' && j.fail_count > 0);
-  const histData = partials.length
-    ? await fetch('/api/history').then(r => r.json()).catch(() => [])
-    : [];
-
-  if (partials.length) await new Promise(r => setTimeout(r, 200));
+  const hasPartials = retryable.some(j => j.status === 'done' && j.fail_count > 0);
+  if (hasPartials) await new Promise(r => setTimeout(r, 200));
 
   await Promise.all(retryable.map(async j => {
     if (j.status === 'error' || j.status === 'cancelled') {
-      await fetch(`/api/history/${j.id}`, {method: 'DELETE'});
       await fetch(`/api/jobs/${j.id}/retry`, {method: 'POST'});
     } else {
-      // done + partial failures — same logic as per-job retry-partial
-      const entry  = histData.find(h => h.id === j.id);
-      const failed = (entry?.track_results || []).filter(r => !r.success && r.track_id);
-      await fetch(`/api/history/${j.id}`, {method: 'DELETE'});
+      const failed = (j.track_results || []).filter(r => !r.success && r.track_id);
       await fetch(`/api/jobs/${j.id}`, {method: 'DELETE'});
-      if (failed.length && entry) {
+      if (failed.length) {
         const urls = failed.map(r => `https://open.spotify.com/track/${r.track_id}`).join('\n');
         await fetch('/api/download', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
             urls,
             services:          getActiveServices(),
-            quality:           entry.quality || _quality,
+            quality:           j.quality || _quality,
             qobuz_token:       document.getElementById('qobuz-token').value,
-            pre_success_count: entry.success_count || 0,
-            full_total:        entry.total || 0,
-            pre_title:         entry.title || '',
+            pre_success_count: j.success_count || 0,
+            full_total:        j.total || 0,
+            pre_title:         j.title || '',
           }),
         });
       } else {
@@ -1555,7 +1560,7 @@ document.getElementById('btn-restart-failed').addEventListener('click', async ()
     }
   }));
 
-  refreshJobs(); refreshHistory();
+  refreshJobs();
 });
 
 // Bulk actions
@@ -1567,8 +1572,7 @@ async function bulkAction(action) {
     if (action === 'cancel' && (j.status === 'queued' || j.status === 'running'))
       return fetch(`/api/jobs/${id}/cancel`, {method: 'POST'});
     if (action === 'retry'  && (j.status === 'error'  || j.status === 'cancelled'))
-      return fetch(`/api/history/${id}`, {method: 'DELETE'}).then(() =>
-             fetch(`/api/jobs/${id}/retry`, {method: 'POST'}));
+      return fetch(`/api/jobs/${id}/retry`, {method: 'POST'});
     if (action === 'remove')
       return fetch(`/api/jobs/${id}`,        {method: 'DELETE'});
   }));
@@ -1580,21 +1584,6 @@ document.getElementById('btn-bulk-none').addEventListener('click',   () => { _se
 document.getElementById('btn-bulk-cancel').addEventListener('click', () => bulkAction('cancel'));
 document.getElementById('btn-bulk-retry').addEventListener('click',  () => bulkAction('retry'));
 document.getElementById('btn-bulk-remove').addEventListener('click', () => bulkAction('remove'));
-
-// History
-let _historyData = [];
-let _histShowAll  = new Set(); // hkey of entries where all tracks are shown
-let _histExpanded = new Set(); // hkey of entries that are expanded
-
-// Stable key for a history entry — id + finished_at is unique per attempt
-function histKey(h) { return `${h.id}|${h.finished_at}`; }
-
-function fmtDate(ts) {
-  if (!ts) return '';
-  const d = new Date(ts);
-  return d.toLocaleDateString([], {month:'short', day:'numeric'}) + ' ' +
-         d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-}
 
 // Shorten a long provider error to the first meaningful sentence per provider
 function fmtTrackError(raw) {
@@ -1623,176 +1612,10 @@ function fmtTrackError(raw) {
   return esc(raw.length > 200 ? raw.slice(0, 200) + '…' : raw);
 }
 
-function renderHistory() {
-  const el = document.getElementById('history-list');
-  const countEl = document.getElementById('history-counts');
-  if (!_historyData.length) {
-    el.innerHTML = '<div class="jobs-empty">No history yet</div>';
-    countEl.textContent = '';
-    return;
-  }
-  countEl.textContent = `${_historyData.length} entr${_historyData.length === 1 ? 'y' : 'ies'}`;
-
-  el.innerHTML = _historyData.map((h, idx) => {
-    const hkey = histKey(h);
-    const label = h.title || h.url;
-    const cover = h.cover_url
-      ? `<img class="job-cover" src="${esc(h.cover_url)}" alt="" loading="lazy" style="width:38px;height:38px">`
-      : `<div class="job-cover-ph" style="width:38px;height:38px"></div>`;
-
-    let badgeClass = h.status;
-    let badgeText  = h.status;
-    if (h.status === 'done' && h.fail_count > 0) {
-      badgeClass = 'partial';
-      badgeText  = h.total > 1 ? `${h.success_count}/${h.total}` : 'partial';
-    } else if (h.status === 'done' && h.total > 1) {
-      badgeText = `${h.total}/${h.total}`;
-    }
-
-    let countsHtml = '';
-    if (h.track_results && h.track_results.length > 0) {
-      const ok   = h.success_count ?? h.track_results.filter(r=>r.success).length;
-      const fail = h.fail_count    ?? h.track_results.filter(r=>!r.success).length;
-      const parts = [];
-      if (ok)   parts.push(`<span style="color:var(--green)">${ok} ok</span>`);
-      if (fail) parts.push(`<span style="color:var(--red)">${fail} failed</span>`);
-      countsHtml = `<span class="history-counts">${parts.join(' · ')}</span>`;
-    }
-
-    let trackHtml = '';
-    if (h.track_results && h.track_results.length > 0) {
-      const showAll  = _histShowAll.has(hkey);
-      const failures = h.track_results.filter(r => !r.success);
-      const shown    = showAll ? h.track_results : failures;
-      const rows     = shown.map(r => {
-        if (r.success) {
-          return `<div class="track-row"><span class="track-ok">✓</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span></div>`;
-        }
-        return `<div class="track-row"><span class="track-fail">✗</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span><span class="track-err">— ${fmtTrackError(r.error)}</span></div>`;
-      }).join('');
-
-      const toggleLabel = showAll ? 'Hide successful tracks' : `Show all ${h.track_results.length} tracks`;
-
-      trackHtml = `<div class="track-list">${rows}</div>
-        ${h.track_results.length > failures.length
-          ? `<div class="hist-toggle" data-hkey="${esc(hkey)}">${toggleLabel}</div>`
-          : ''}`;
-    } else if (h.error) {
-      trackHtml = `<div class="track-row"><span class="track-fail">✗</span><span class="track-err">${fmtTrackError(h.error)}</span></div>`;
-    }
-
-    const failedWithId = (h.track_results || []).filter(r => !r.success && r.track_id);
-    const restartTitle = failedWithId.length
-      ? `Restart ${failedWithId.length} failed track(s)`
-      : 'Restart job';
-    const restartBtn = `<button class="job-btn retry hist-restart-btn" data-hkey="${esc(hkey)}" title="${restartTitle}"><span class="material-icons">restart_alt</span></button>`;
-
-    const hasDetail = trackHtml !== '';
-    const isOpen    = _histExpanded.has(hkey);
-    return `<div class="history-item${isOpen ? ' open' : ''}" data-hkey="${esc(hkey)}">
-      <div class="history-row"${hasDetail ? ' style="cursor:pointer" title="Click to expand"' : ''}>
-        ${cover}
-        <div style="min-width:0">
-          <div style="font-size:.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(label)}</div>
-          <div style="font-size:.72rem;color:var(--md-on-surface-variant)">${fmtDate(h.finished_at)}</div>
-        </div>
-        ${countsHtml}
-        <span class="badge ${badgeClass}">${badgeText}</span>
-        <span class="quality-badge">${h.quality === 'hires' ? 'Hi-Res' : h.quality === 'high' ? 'High' : 'Lossless'}</span>
-        ${restartBtn}
-      </div>
-      ${hasDetail ? `<div class="history-expand">${trackHtml}</div>` : ''}
-    </div>`;
-  }).join('');
-
-  // Click to expand/collapse — persist state in _histExpanded
-  el.querySelectorAll('.history-item').forEach(item => {
-    const row = item.querySelector('.history-row');
-    if (!item.querySelector('.history-expand')) return;
-    row.addEventListener('click', e => {
-      if (e.target.closest('.hist-toggle, .hist-restart-btn')) return;
-      const hkey = item.dataset.hkey;
-      if (_histExpanded.has(hkey)) _histExpanded.delete(hkey);
-      else _histExpanded.add(hkey);
-      item.classList.toggle('open');
-    });
-  });
-
-  // Show all / hide toggle
-  el.querySelectorAll('.hist-toggle').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const hkey = btn.dataset.hkey;
-      if (_histShowAll.has(hkey)) _histShowAll.delete(hkey);
-      else _histShowAll.add(hkey);
-      _histExpanded.add(hkey);
-      renderHistory();
-    });
-  });
-
-  // Restart — failed tracks if available, otherwise full job
-  el.querySelectorAll('.hist-restart-btn').forEach(btn => {
-    btn.addEventListener('click', async e => {
-      e.stopPropagation();
-      const hkey  = btn.dataset.hkey;
-      const entry = _historyData.find(h => histKey(h) === hkey);
-      if (!entry) return;
-
-      const failed = (entry.track_results || []).filter(r => !r.success && r.track_id);
-      const urls   = failed.length
-        ? failed.map(r => `https://open.spotify.com/track/${r.track_id}`).join('\n')
-        : entry.url;
-      if (!urls) return;
-
-      btn.disabled = true;
-      btn.innerHTML = '<span class="material-icons" style="animation:spin .7s linear infinite;display:inline-block">autorenew</span>';
-
-      const isPartialRetry = failed.length > 0;
-      const res = await fetch('/api/download', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          urls,
-          services:          getActiveServices(),
-          quality:           entry.quality || _quality,
-          qobuz_token:       document.getElementById('qobuz-token').value,
-          pre_success_count: isPartialRetry ? (entry.success_count || 0) : 0,
-          full_total:        isPartialRetry ? (entry.total || 0) : 0,
-          pre_title:         isPartialRetry ? (entry.title || '') : '',
-        }),
-      });
-
-      if (res.ok) {
-        btn.innerHTML = '<span class="material-icons" style="color:var(--green)">check</span>';
-        const label = failed.length ? `${failed.length} failed track(s)` : (entry.title || entry.url);
-        showToast(`Queued: ${label}`, 'done');
-        refreshJobs();
-      } else {
-        btn.disabled = false;
-        btn.innerHTML = '<span class="material-icons">restart_alt</span>';
-        showToast('Failed to queue', 'error');
-      }
-    });
-  });
-}
-
-async function refreshHistory() {
-  const data = await fetch('/api/history').then(r => r.json()).catch(() => null);
-  if (!data) return;
-  _historyData = data;
-  renderHistory();
-}
-
-document.getElementById('btn-hist-clr').addEventListener('click', async () => {
-  await fetch('/api/history', {method: 'DELETE'});
-  _histShowAll.clear();
-  _histExpanded.clear();
-  refreshHistory();
-});
-
 renderSkeleton();
-refreshVPN(); refreshJobs(); refreshHistory();
+refreshVPN(); refreshJobs();
 setInterval(refreshVPN, 10_000);
 setInterval(refreshJobs, 3_000);
-setInterval(refreshHistory, 10_000);
 setInterval(() => {
   if (_vpnConnectedSince) document.getElementById('tt-uptime').textContent = fmtUptime(_vpnConnectedSince);
 }, 1000);

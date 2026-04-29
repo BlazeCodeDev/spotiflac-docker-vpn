@@ -56,7 +56,7 @@ def api_download():
     quality = raw_quality if raw_quality in _VALID_QUALITIES else "lossless"
     qobuz_token = str(body.get("qobuz_token", Config.QOBUZ_TOKEN))
 
-    # Optional offset fields for partial retries from history
+    # Optional offset fields for partial retries
     pre_success_count = _safe_int(body.get("pre_success_count", 0), 0)
     full_total        = _safe_int(body.get("full_total", 0), 0)
     pre_title         = str(body.get("pre_title", ""))
@@ -137,22 +137,6 @@ def api_tidal_refresh():
     except Exception as exc:
         log.warning("Tidal API refresh failed: %s", exc)
         return jsonify(ok=False, error=str(exc)), 502
-
-
-@bp.get("/api/history")
-def api_history():
-    return jsonify(worker.get_history())
-
-
-@bp.delete("/api/history")
-def api_clear_history():
-    return jsonify(cleared=worker.clear_history())
-
-
-@bp.delete("/api/history/<job_id>")
-def api_remove_history(job_id: str):
-    ok = worker.remove_history_entry(job_id)
-    return (jsonify(ok=True), 200) if ok else (jsonify(error="Not found"), 404)
 
 
 @bp.get("/api/vpn")
