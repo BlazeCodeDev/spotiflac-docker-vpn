@@ -341,14 +341,14 @@ html[data-theme="light"] .type-artist   { background: #fdf4ff; color: #a21caf; }
 @keyframes toast-out { to { opacity:0; transform:translateX(20px); } }
 
 /* Theme toggle */
-#theme-toggle {
+#theme-toggle, #btn-settings {
   background: var(--surf); border: 1px solid var(--border2); color: var(--tx);
   border-radius: 999px; width: 34px; height: 34px;
   display: flex; align-items: center; justify-content: center;
   font-size: 1rem; padding: 0; flex-shrink: 0;
   transition: border-color .2s, background .2s, color .2s;
 }
-#theme-toggle:hover { border-color: var(--tx3); opacity: 1; }
+#theme-toggle:hover, #btn-settings:hover { border-color: var(--tx3); opacity: 1; }
 </style>
 </head>
 <body>
@@ -357,6 +357,7 @@ html[data-theme="light"] .type-artist   { background: #fdf4ff; color: #a21caf; }
   <div class="logo">Spoti<span>FLAC</span></div>
   <div style="display:flex;align-items:center;gap:.5rem">
     <button id="theme-toggle" title="Toggle theme"></button>
+    <button id="btn-settings" title="Settings"><span class="material-icons" style="font-size:18px">settings</span></button>
     <div class="vpn-wrap">
       <div id="vpn-badge">
         <span class="dot"></span>
@@ -379,7 +380,6 @@ html[data-theme="light"] .type-artist   { background: #fdf4ff; color: #a21caf; }
   <div class="card">
     <div class="card-header">
       <span class="section-title">Download or Search</span>
-      <button class="btn-ghost" id="btn-settings" title="Settings" style="padding:.3rem .5rem;line-height:1"><span class="material-icons">settings</span></button>
     </div>
     <div style="position:relative">
       <textarea id="urls" placeholder="Paste Spotify URLs — one per line or comma-separated&#10;https://open.spotify.com/track/…&#10;&#10;Or type an artist, album or track name to search" style="padding-right:1.8rem"></textarea>
@@ -390,6 +390,11 @@ html[data-theme="light"] .type-artist   { background: #fdf4ff; color: #a21caf; }
       <button id="btn-dl">Download</button>
       <button class="btn-ghost" id="btn-search">Search</button>
       <span id="msg"></span>
+      <div style="flex:1"></div>
+      <div class="quality-sel" id="quality-selector">
+        <button class="quality-opt active" data-quality="lossless" title="CD quality · 16-bit FLAC">Lossless</button>
+        <button class="quality-opt" data-quality="hires" title="24-bit FLAC where available">Hi-Res</button>
+      </div>
     </div>
   </div>
 
@@ -445,15 +450,6 @@ html[data-theme="light"] .type-artist   { background: #fdf4ff; color: #a21caf; }
           <label>Services &amp; Priority</label>
           <div id="services-list"></div>
           <div class="hint">Drag to reorder — enabled services are tried in order</div>
-        </div>
-
-        <div class="setting-group">
-          <label>Quality</label>
-          <div class="quality-sel" id="quality-selector">
-            <button class="quality-opt active" data-quality="lossless" title="CD quality · 16-bit FLAC">Lossless</button>
-            <button class="quality-opt" data-quality="hires" title="24-bit FLAC where available">Hi-Res</button>
-          </div>
-          <div class="hint">Hi-Res: 24-bit on Tidal / Qobuz</div>
         </div>
 
         <div class="setting-group">
