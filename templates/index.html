@@ -404,7 +404,10 @@ html[data-theme="light"] .type-artist   { background: #fdf4ff; color: #a21caf; }
         <span class="section-title">Downloads</span>
         <span id="job-counts"></span>
       </div>
-      <button class="btn-ghost" id="btn-clr">Clear done</button>
+      <div style="display:flex;gap:.5rem">
+        <button class="btn-ghost" id="btn-restart-failed" style="display:none">Restart failed</button>
+        <button class="btn-ghost" id="btn-clr">Clear done</button>
+      </div>
     </div>
     <div class="search-wrap">
       <span class="material-icons">search</span>
@@ -912,6 +915,10 @@ function updateJobCounts() {
   if (c.done)  parts.push(`${c.done} done`);
   if (c.error) parts.push(`${c.error} failed`);
   el.textContent = parts.join(' · ');
+  const hasRetryable = _allJobs.some(j =>
+    j.status === 'error' || j.status === 'cancelled' || (j.status === 'done' && j.fail_count > 0)
+  );
+  document.getElementById('btn-restart-failed').style.display = hasRetryable ? '' : 'none';
 }
 
 function updateBulkBar() {
@@ -1131,6 +1138,59 @@ document.getElementById('btn-dl').addEventListener('click', async () => {
 });
 
 document.getElementById('btn-clr').addEventListener('click', async () => { await fetch('/api/jobs', {method: 'DELETE'}); refreshJobs(); });
+
+document.getElementById('btn-restart-failed').addEventListener('click', async () => {
+  const retryable = _allJobs.filter(j =>
+    j.status === 'error' || j.status === 'cancelled' || (j.status === 'done' && j.fail_count > 0)
+  );
+  if (!retryable.length) return;
+
+  // Fetch history once for partial-failure jobs that need track_results
+  const partials = retryable.filter(j => j.status === 'done' && j.fail_count > 0);
+  const histData = partials.length
+    ? await fetch('/api/history').then(r => r.json()).catch(() => [])
+    : [];
+
+  await Promise.all(retryable.map(async j => {
+    if (j.status === 'error' || j.status === 'cancelled') {
+      await fetch(`/api/history/${j.id}`, {method: 'DELETE'});
+      await fetch(`/api/jobs/${j.id}/retry`, {method: 'POST'});
+    } else {
+      // done + partial failures — same logic as per-job retry-partial
+      const entry  = histData.find(h => h.id === j.id);
+      const failed = (entry?.track_results || []).filter(r => !r.success && r.track_id);
+      await fetch(`/api/history/${j.id}`, {method: 'DELETE'});
+      await fetch(`/api/jobs/${j.id}`, {method: 'DELETE'});
+      if (failed.length && entry) {
+        const urls = failed.map(r => `https://open.spotify.com/track/${r.track_id}`).join('\n');
+        await fetch('/api/download', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            urls,
+            services:          getActiveServices(),
+            quality:           entry.quality || _quality,
+            qobuz_token:       document.getElementById('qobuz-token').value,
+            pre_success_count: entry.success_count || 0,
+            full_total:        entry.total || 0,
+            pre_title:         entry.title || '',
+          }),
+        });
+      } else {
+        await fetch('/api/download', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            urls:        j.url || '',
+            services:    getActiveServices(),
+            quality:     j.quality || _quality,
+            qobuz_token: document.getElementById('qobuz-token').value,
+          }),
+        });
+      }
+    }
+  }));
+
+  refreshJobs(); refreshHistory();
+});
 
 // Bulk actions
 async function bulkAction(action) {
