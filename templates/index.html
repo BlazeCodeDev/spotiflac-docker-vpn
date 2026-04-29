@@ -169,6 +169,11 @@ button:hover { opacity: .85; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
 @keyframes spin  { to { transform: rotate(360deg); } }
 .job-error { grid-column:1/-1; font-size:.75rem; color:#f87171; background:#450a0a22; border-radius:5px; padding:.3rem .6rem; font-family:monospace; }
+@keyframes job-enter { from { opacity:0; transform:translateY(-10px) scale(.98); } to { opacity:1; transform:none; } }
+@keyframes job-exit  { from { opacity:1; transform:translateX(0); }  to { opacity:0; transform:translateX(18px); } }
+.job-item.job-enter { animation: job-enter .24s cubic-bezier(.2,.8,.4,1) both; }
+.job-item.job-exit  { animation: job-exit  .18s ease-in both; pointer-events:none; }
+.badge { transition: background-color .3s ease, color .3s ease; }
 
 /* Material Icons baseline sizing */
 .material-icons { font-size: 18px; vertical-align: middle; line-height: 1; }
@@ -197,7 +202,7 @@ button:hover { opacity: .85; }
   box-shadow: 0 24px 64px rgba(0,0,0,.55);
   animation: modal-in .15s ease;
 }
-@keyframes modal-in { from { opacity:0; transform:scale(.97) translateY(6px); } to { opacity:1; transform:none; } }
+@keyframes modal-in { from { opacity:0; transform:scale(.96) translateY(10px); } to { opacity:1; transform:none; } }
 .modal-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: .9rem 1.2rem; border-bottom: 1px solid var(--border); flex-shrink: 0;
@@ -339,6 +344,14 @@ html[data-theme="light"] .type-artist   { background: #fdf4ff; color: #a21caf; }
 @keyframes toast-in  { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:none; } }
 .toast.out { animation: toast-out .2s ease forwards; }
 @keyframes toast-out { to { opacity:0; transform:translateX(20px); } }
+
+/* Theme transition */
+html.theme-transitioning,
+html.theme-transitioning *,
+html.theme-transitioning *::before,
+html.theme-transitioning *::after {
+  transition: background-color .25s ease, color .25s ease, border-color .25s ease, box-shadow .25s ease !important;
+}
 
 /* Theme toggle */
 #theme-toggle, #btn-settings {
@@ -889,6 +902,7 @@ document.getElementById('btn-search-dl').addEventListener('click', async () => {
 let _allJobs        = [];
 let _prevJobStates  = {};
 let _selectedJobIds = new Set();
+let _prevJobIds     = new Set();
 let _jobDragSrc     = null;
 let _jobsLoaded     = false;
 
@@ -936,6 +950,8 @@ function renderJobs() {
   if (!_allJobs.length) { if (_jobsLoaded) el.innerHTML = '<div class="jobs-empty">No downloads yet</div>'; return; }
   if (!jobs.length)     { el.innerHTML = '<div class="jobs-empty">No matches</div>'; return; }
 
+  const _seenIds = new Set(jobs.map(j => j.id));
+
   el.innerHTML = jobs.map(j => {
     const label = j.title || j.url;
     const cover = j.cover_url
@@ -970,6 +986,12 @@ function renderJobs() {
     </div>`;
   }).join('');
 
+  // Animate newly added items
+  el.querySelectorAll('.job-item[data-id]').forEach(item => {
+    if (!_prevJobIds.has(item.dataset.id)) item.classList.add('job-enter');
+  });
+  _prevJobIds = _seenIds;
+
   // Checkboxes
   el.querySelectorAll('.job-cb').forEach(cb => {
     cb.addEventListener('change', () => {
@@ -993,6 +1015,9 @@ function renderJobs() {
         await fetch(`/api/jobs/${id}/retry`, {method: 'POST'});
         refreshJobs(); refreshHistory();
       } else if (action === 'remove') {
+        const item = btn.closest('.job-item');
+        item.classList.add('job-exit'); _prevJobIds.delete(id);
+        await new Promise(r => setTimeout(r, 200));
         await fetch(`/api/jobs/${id}`, {method: 'DELETE'});
         refreshJobs();
       } else if (action === 'retry-partial') {
@@ -1002,7 +1027,9 @@ function renderJobs() {
         const job   = _allJobs.find(j => j.id === id);
         const failed = (entry?.track_results || []).filter(r => !r.success && r.track_id);
 
-        // Remove history entry and the done job first
+        // Animate out, then remove history entry and the done job
+        btn.closest('.job-item').classList.add('job-exit'); _prevJobIds.delete(id);
+        await new Promise(r => setTimeout(r, 200));
         await fetch(`/api/history/${id}`, {method: 'DELETE'});
         await fetch(`/api/jobs/${id}`, {method: 'DELETE'});
 
@@ -1137,7 +1164,17 @@ document.getElementById('btn-dl').addEventListener('click', async () => {
   if (res.ok) { _urlsEl.value=''; _urlsClear.style.display='none'; refreshJobs(); }
 });
 
-document.getElementById('btn-clr').addEventListener('click', async () => { await fetch('/api/jobs', {method: 'DELETE'}); refreshJobs(); });
+document.getElementById('btn-clr').addEventListener('click', async () => {
+  document.querySelectorAll('.job-item[data-id]').forEach(item => {
+    const job = _allJobs.find(j => j.id === item.dataset.id);
+    if (job && job.status === 'done' && !job.fail_count) {
+      item.classList.add('job-exit'); _prevJobIds.delete(job.id);
+    }
+  });
+  await new Promise(r => setTimeout(r, 200));
+  await fetch('/api/jobs', {method: 'DELETE'});
+  refreshJobs();
+});
 
 document.getElementById('btn-restart-failed').addEventListener('click', async () => {
   const retryable = _allJobs.filter(j =>
@@ -1145,11 +1182,19 @@ document.getElementById('btn-restart-failed').addEventListener('click', async ()
   );
   if (!retryable.length) return;
 
+  // Animate out the partial-failure jobs that will be replaced by new ones
+  retryable.filter(j => j.status === 'done' && j.fail_count > 0).forEach(j => {
+    const item = document.querySelector(`.job-item[data-id="${j.id}"]`);
+    if (item) { item.classList.add('job-exit'); _prevJobIds.delete(j.id); }
+  });
+
   // Fetch history once for partial-failure jobs that need track_results
   const partials = retryable.filter(j => j.status === 'done' && j.fail_count > 0);
   const histData = partials.length
     ? await fetch('/api/history').then(r => r.json()).catch(() => [])
     : [];
+
+  if (partials.length) await new Promise(r => setTimeout(r, 200));
 
   await Promise.all(retryable.map(async j => {
     if (j.status === 'error' || j.status === 'cancelled') {
@@ -1437,9 +1482,14 @@ const _sysDark = window.matchMedia('(prefers-color-scheme: dark)');
 
 function _sysTheme() { return _sysDark.matches ? 'dark' : 'light'; }
 
-function applyTheme(stored) {
+function applyTheme(stored, animate = true) {
+  const html = document.documentElement;
+  if (animate) {
+    html.classList.add('theme-transitioning');
+    setTimeout(() => html.classList.remove('theme-transitioning'), 300);
+  }
   const effective = (stored === 'dark' || stored === 'light') ? stored : _sysTheme();
-  document.documentElement.dataset.theme = effective;
+  html.dataset.theme = effective;
   const icon = stored === 'dark' ? 'dark_mode' : stored === 'light' ? 'light_mode' : 'brightness_auto';
   const tip  = stored === 'dark' ? 'Dark mode' : stored === 'light' ? 'Light mode' : 'Auto (follows browser)';
   themeToggle.innerHTML = `<span class="material-icons">${icon}</span>`;
@@ -1455,7 +1505,7 @@ themeToggle.addEventListener('click', () => {
   applyTheme(next);
 });
 
-applyTheme(localStorage.getItem('theme'));
+applyTheme(localStorage.getItem('theme'), false);
 
 _sysDark.addEventListener('change', () => {
   if (!localStorage.getItem('theme')) applyTheme(null);
