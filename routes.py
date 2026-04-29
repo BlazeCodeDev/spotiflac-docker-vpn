@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 bp = Blueprint("main", __name__)
 
 _VALID_SERVICES   = {"tidal", "qobuz", "amazon", "deezer", "youtube"}
-_VALID_QUALITIES  = {"lossless", "hires"}
+_VALID_QUALITIES  = {"high", "lossless", "hires"}
 
 
 def _safe_int(value, default: int) -> int:

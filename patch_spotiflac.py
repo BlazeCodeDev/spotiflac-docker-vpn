@@ -10,7 +10,7 @@ Build-time patches for SpotiFLAC:
 import pathlib, sys
 
 _BASE = pathlib.Path(
-    f"/usr/local/lib/python{sys.version_info.major}.{sys.version_info.minor}"
+    f"/home/coder/.local/lib/python{sys.version_info.major}.{sys.version_info.minor}"
     "/site-packages/SpotiFLAC"
 )
 
@@ -46,8 +46,8 @@ _DOWNLOADER = _BASE / "downloader.py"
 _DL_INSERT_BEFORE = "def _provider_extension(name: str) -> str:\n"
 _DL_QUALITY_MAP = (
     "_QUALITY_MAP: dict[str, dict[str, str]] = {\n"
-    "    \"tidal\":  {\"lossless\": \"LOSSLESS\", \"hires\": \"HI_RES\"},\n"
-    "    \"qobuz\":  {\"lossless\": \"6\",        \"hires\": \"27\"},\n"
+    "    \"tidal\":  {\"high\": \"LOSSLESS\", \"lossless\": \"LOSSLESS\", \"hires\": \"HI_RES\"},\n"
+    "    \"qobuz\":  {\"high\": \"6\",        \"lossless\": \"7\",        \"hires\": \"27\"},\n"
     "}\n"
     "\n"
     "def _resolve_quality(provider_name: str, quality: str) -> str:\n"

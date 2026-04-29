@@ -405,6 +405,7 @@ html.theme-transitioning *::after {
       <span id="msg"></span>
       <div style="flex:1"></div>
       <div class="quality-sel" id="quality-selector">
+        <button class="quality-opt" data-quality="high" title="320 kbps MP3 (Qobuz) / FLAC (Tidal)">High</button>
         <button class="quality-opt active" data-quality="lossless" title="CD quality · 16-bit FLAC">Lossless</button>
         <button class="quality-opt" data-quality="hires" title="24-bit FLAC where available">Hi-Res</button>
       </div>
@@ -978,7 +979,7 @@ function renderJobs() {
         : j.status === 'done' && j.fail_count > 0 && j.total > 1 ? j.success_count + '/' + j.total
         : j.status
       }</span>
-      <span class="quality-badge">${j.quality === 'hires' ? 'Hi-Res' : 'Lossless'}</span>
+      <span class="quality-badge">${j.quality === 'hires' ? 'Hi-Res' : j.quality === 'high' ? 'High' : 'Lossless'}</span>
       ${actionBtn}
       <button class="job-btn remove" data-action="remove" data-id="${esc(j.id)}" title="Remove"><span class="material-icons">close</span></button>
       ${j.error ? `<div class="job-error">${esc(j.error)}</div>` : ''}
@@ -1377,7 +1378,7 @@ function renderHistory() {
         </div>
         ${countsHtml}
         <span class="badge ${badgeClass}">${badgeText}</span>
-        <span class="quality-badge">${h.quality === 'hires' ? 'Hi-Res' : 'Lossless'}</span>
+        <span class="quality-badge">${h.quality === 'hires' ? 'Hi-Res' : h.quality === 'high' ? 'High' : 'Lossless'}</span>
         ${restartBtn}
       </div>
       ${hasDetail ? `<div class="history-expand">${trackHtml}</div>` : ''}
