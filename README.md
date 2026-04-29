@@ -6,6 +6,14 @@ A self-hosted web UI for downloading lossless audio from Spotify links, running 
 
 ---
 
+## Disclaimer
+
+This project is intended for **educational purposes only**. It is not affiliated with, endorsed by, or in any way connected to Spotify, Tidal, Qobuz, Amazon Music, Deezer, YouTube, or any other music streaming service. All product names, logos, and trademarks are the property of their respective owners.
+
+This software does not condone, facilitate, or encourage copyright infringement or piracy. Downloading copyrighted music without the authorisation of the rights holder may be illegal in your country. You are solely responsible for ensuring that your use of this software complies with all applicable laws and the terms of service of any platform you interact with.
+
+---
+
 ## What this is
 
 SpotiFLAC Docker wraps the [SpotiFLAC](https://github.com/streamingflac/spotiflac) Python library in a small Flask web server so you can queue downloads from a browser instead of running a CLI. You paste Spotify URLs (tracks, albums, or playlists), pick a quality level and which streaming services to try, and the container downloads the audio in the background.
