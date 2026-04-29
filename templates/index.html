@@ -9,8 +9,8 @@
 <script>
 (function(){
   const s = localStorage.getItem('theme');
-  const t = s || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  document.documentElement.dataset.theme = t;
+  const sys = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  document.documentElement.dataset.theme = (s === 'dark' || s === 'light') ? s : sys;
 })();
 </script>
 <style>
@@ -1371,20 +1371,34 @@ setInterval(() => {
   if (_vpnConnectedSince) document.getElementById('tt-uptime').textContent = fmtUptime(_vpnConnectedSince);
 }, 1000);
 
-// Theme toggle
+// Theme toggle — three states: auto (follow browser) → dark → light → auto
 const themeToggle = document.getElementById('theme-toggle');
-function applyTheme(t) {
-  document.documentElement.dataset.theme = t;
-  themeToggle.innerHTML = `<span class="material-icons">${t === 'dark' ? 'dark_mode' : 'light_mode'}</span>`;
+const _sysDark = window.matchMedia('(prefers-color-scheme: dark)');
+
+function _sysTheme() { return _sysDark.matches ? 'dark' : 'light'; }
+
+function applyTheme(stored) {
+  const effective = (stored === 'dark' || stored === 'light') ? stored : _sysTheme();
+  document.documentElement.dataset.theme = effective;
+  const icon = stored === 'dark' ? 'dark_mode' : stored === 'light' ? 'light_mode' : 'brightness_auto';
+  const tip  = stored === 'dark' ? 'Dark mode' : stored === 'light' ? 'Light mode' : 'Auto (follows browser)';
+  themeToggle.innerHTML = `<span class="material-icons">${icon}</span>`;
+  themeToggle.title = tip;
 }
+
 themeToggle.addEventListener('click', () => {
-  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-  localStorage.setItem('theme', next);
+  const cur = localStorage.getItem('theme');
+  // cycle: auto → dark → light → auto
+  const next = !cur ? 'dark' : cur === 'dark' ? 'light' : null;
+  if (next) localStorage.setItem('theme', next);
+  else      localStorage.removeItem('theme');
   applyTheme(next);
 });
-applyTheme(document.documentElement.dataset.theme || 'dark');
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
-  if (!localStorage.getItem('theme')) applyTheme(e.matches ? 'dark' : 'light');
+
+applyTheme(localStorage.getItem('theme'));
+
+_sysDark.addEventListener('change', () => {
+  if (!localStorage.getItem('theme')) applyTheme(null);
 });
 </script>
 <div id="toast-wrap"></div>
