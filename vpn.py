@@ -7,6 +7,14 @@ import urllib.request
 log               = logging.getLogger(__name__)
 _ip_cache:  dict  = {}
 _connected_since: float | None = None
+_VPN_UPTIME_FILE = "/vpn/tunnel_up_since"
+
+
+def _read_tunnel_start() -> float:
+    try:
+        return float(open(_VPN_UPTIME_FILE).read().strip())
+    except Exception:
+        return time.time()
 
 
 def tunnel_status() -> dict:
@@ -16,7 +24,7 @@ def tunnel_status() -> dict:
             r = subprocess.run(["ip", "link", "show", iface], capture_output=True)
             if r.returncode == 0:
                 if _connected_since is None:
-                    _connected_since = time.time()
+                    _connected_since = _read_tunnel_start()
                 return dict(connected=True, interface=iface, connected_since=_connected_since)
     except FileNotFoundError:
         pass

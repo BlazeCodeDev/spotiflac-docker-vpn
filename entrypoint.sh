@@ -298,6 +298,7 @@ wait_for_tunnel() {
     i=0
     while [ "$i" -lt "$max" ]; do
         if ip link show "$VPN_IFACE" > /dev/null 2>&1; then
+            date +%s > /vpn/tunnel_up_since
             log "Tunnel $VPN_IFACE is up"
             if [ "$LOG_LEVEL" = "debug" ]; then
                 echo "[vpn] ══════════════ Network after VPN start ══════════"
