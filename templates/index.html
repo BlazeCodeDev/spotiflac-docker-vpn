@@ -520,6 +520,26 @@ button { cursor: pointer; font-family: inherit; border: none; }
 .sort-pill:hover::before { opacity: .08; }
 .sort-pill.active { background: var(--md-surface-container-highest); border-color: var(--md-outline-variant); color: var(--md-on-surface); }
 
+/* ─── Modal search form ───────────────────────────────────────────── */
+.modal-search-form { padding: 0 20px 12px; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--md-outline-variant); flex-shrink: 0; }
+.msf-row { display: flex; gap: 6px; align-items: center; }
+.msf-field { position: relative; flex: 1; min-width: 0; }
+.msf-field .material-icons { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); font-size: 16px; color: var(--md-on-surface-variant); pointer-events: none; z-index: 1; }
+.msf-field input { width: 100%; padding: 6px 8px 6px 28px; border-radius: 8px; }
+.msf-field.autofilled input { border-color: var(--md-primary) !important; border-width: 2px; transition: border-color 0s; }
+#btn-msf-go {
+  background: var(--md-primary); color: var(--md-on-primary);
+  border: none; border-radius: 8px; width: 34px; height: 34px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; flex-shrink: 0; position: relative; overflow: hidden;
+}
+#btn-msf-go::before { content: ''; position: absolute; inset: 0; background: var(--md-on-primary); opacity: 0; transition: opacity .15s; }
+#btn-msf-go:hover::before { opacity: .1; }
+.msf-parsed-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: .72rem; color: var(--md-primary); padding: 2px 0;
+}
+
 /* ─── M3 Snackbar ─────────────────────────────────────────────────── */
 #toast-wrap { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 9999; display: flex; flex-direction: column; gap: 8px; pointer-events: none; align-items: center; }
 .toast {
@@ -742,8 +762,31 @@ html.theme-transitioning *::after {
 <div id="search-modal" class="modal-overlay" role="dialog" aria-modal="true">
   <div class="modal">
     <div class="modal-header">
-      <span class="modal-title" id="modal-title">Search results</span>
+      <span class="modal-title">Search</span>
       <button class="modal-close" id="btn-modal-close" title="Close"><span class="material-icons">close</span></button>
+    </div>
+    <div class="modal-search-form">
+      <div class="msf-row">
+        <div class="msf-field" style="flex:2">
+          <span class="material-icons">music_note</span>
+          <input type="text" id="msf-track" placeholder="Track or keywords" autocomplete="off">
+        </div>
+        <div class="msf-field">
+          <span class="material-icons">person</span>
+          <input type="text" id="msf-artist" placeholder="Artist" autocomplete="off">
+        </div>
+      </div>
+      <div class="msf-row">
+        <div class="msf-field" style="flex:2">
+          <span class="material-icons">album</span>
+          <input type="text" id="msf-album" placeholder="Album" autocomplete="off">
+        </div>
+        <div class="msf-field" style="max-width:96px">
+          <span class="material-icons">event</span>
+          <input type="text" id="msf-year" placeholder="Year" autocomplete="off">
+        </div>
+        <button id="btn-msf-go" title="Search"><span class="material-icons" style="font-size:18px;position:relative">search</span></button>
+      </div>
     </div>
     <div class="modal-filter">
       <button class="filter-pill active" data-filter="all">All</button>
@@ -1001,10 +1044,67 @@ function closeSettingsModal() {
   document.body.style.overflow = '';
 }
 
-function openModal(title) {
-  document.getElementById('modal-title').textContent = title;
+function openModal() {
   document.getElementById('search-modal').classList.add('open');
   document.body.style.overflow = 'hidden';
+}
+
+// ── Search form helpers ───────────────────────────────────────────────
+
+function _parseSearchInput(raw) {
+  if (!raw) return null;
+  // "X by Y" → track + artist
+  const byMatch = raw.match(/^(.+?)\s+by\s+(.+)$/i);
+  if (byMatch) return { track: byMatch[1].trim(), artist: byMatch[2].trim(), album: '', year: '' };
+  // "Y - X" or "Y – X" → artist + track  (skip URLs)
+  if (!raw.startsWith('http')) {
+    const dashMatch = raw.match(/^(.+?)\s*[–—-]\s*(.+)$/);
+    if (dashMatch) return { track: dashMatch[2].trim(), artist: dashMatch[1].trim(), album: '', year: '' };
+  }
+  // "X from album Y" or "X from Y" → track + album
+  const fromMatch = raw.match(/^(.+?)\s+from(?:\s+album)?\s+(.+)$/i);
+  if (fromMatch) return { track: fromMatch[1].trim(), artist: '', album: fromMatch[2].trim(), year: '' };
+  return null;
+}
+
+function _populateSearchForm(raw) {
+  const parsed = _parseSearchInput(raw);
+  if (parsed) {
+    document.getElementById('msf-track').value  = parsed.track;
+    document.getElementById('msf-artist').value = parsed.artist;
+    document.getElementById('msf-album').value  = parsed.album;
+    document.getElementById('msf-year').value   = parsed.year;
+    // Briefly highlight auto-filled fields
+    ['msf-artist', 'msf-album'].forEach(id => {
+      const val = document.getElementById(id).value;
+      if (!val) return;
+      const field = document.getElementById(id).closest('.msf-field');
+      field.classList.add('autofilled');
+      setTimeout(() => field.classList.remove('autofilled'), 800);
+    });
+  } else {
+    document.getElementById('msf-track').value  = raw;
+    document.getElementById('msf-artist').value = '';
+    document.getElementById('msf-album').value  = '';
+    document.getElementById('msf-year').value   = '';
+  }
+}
+
+function _buildSearchQuery() {
+  const track  = document.getElementById('msf-track').value.trim();
+  const artist = document.getElementById('msf-artist').value.trim();
+  const album  = document.getElementById('msf-album').value.trim();
+  const year   = document.getElementById('msf-year').value.trim();
+  if (!track && !artist && !album && !year) return '';
+  // Plain keyword search when only the track/keywords field is used
+  if (!artist && !album && !year) return track;
+  // Structured field search
+  const parts = [];
+  if (track)  parts.push(track.includes(' ')  ? `track:"${track}"`  : `track:${track}`);
+  if (artist) parts.push(artist.includes(' ') ? `artist:"${artist}"` : `artist:${artist}`);
+  if (album)  parts.push(album.includes(' ')  ? `album:"${album}"`  : `album:${album}`);
+  if (year)   parts.push(`year:${year}`);
+  return parts.join(' ');
 }
 function closeModal() {
   document.getElementById('search-modal').classList.remove('open');
@@ -1026,14 +1126,13 @@ function fmtSubtitle(r) {
 
 async function doSearch(append = false) {
   if (_searchLoading) return;
-  const q = document.getElementById('urls').value.trim();
-  if (!q && !append) return;
   if (!append) {
+    const q = _buildSearchQuery();
+    if (!q) return;
     _searchResults  = [];
     _searchOffset   = 0;
     _searchQuery    = q;
     _searchFilter   = 'all';
-    _selectedArtist = '';
     _searchSort     = 'relevance';
     _selectedUrls.clear();
     document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p.dataset.filter === 'all'));
@@ -1041,7 +1140,7 @@ async function doSearch(append = false) {
     document.getElementById('search-results').innerHTML = '<div class="jobs-empty">Searching…</div>';
     document.getElementById('btn-search-dl').style.display = 'none';
     document.getElementById('search-msg').textContent = '';
-    openModal(`Results for "${q}"`);
+    if (!document.getElementById('search-modal').classList.contains('open')) openModal();
   }
   _searchLoading = true;
   const loadMore = document.getElementById('btn-load-more');
@@ -1129,7 +1228,16 @@ function updateSearchDlBtn() {
   btn.style.display = n ? 'inline-block' : 'none';
 }
 
-document.getElementById('btn-search').addEventListener('click', () => doSearch());
+document.getElementById('btn-search').addEventListener('click', () => {
+  _populateSearchForm(document.getElementById('urls').value.trim());
+  openModal();
+  doSearch();
+});
+
+document.getElementById('btn-msf-go').addEventListener('click', () => doSearch());
+['msf-track', 'msf-artist', 'msf-album', 'msf-year'].forEach(id => {
+  document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+});
 document.getElementById('btn-settings').addEventListener('click', openSettingsModal);
 document.getElementById('btn-settings-close').addEventListener('click', closeSettingsModal);
 
