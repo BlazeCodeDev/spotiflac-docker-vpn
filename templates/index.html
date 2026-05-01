@@ -154,6 +154,7 @@ header {
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--md-outline); flex-shrink: 0; transition: background .3s, box-shadow .3s; }
 #vpn-badge.connected    .dot { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 2s ease-in-out infinite; }
 #vpn-badge.disconnected .dot { background: var(--red); }
+#vpn-badge.mismatch     .dot { background: #fbbf24; box-shadow: 0 0 6px #fbbf24; animation: none; }
 @keyframes pulse { 0%,100%{box-shadow:0 0 4px var(--green)} 50%{box-shadow:0 0 10px var(--green)} }
 
 /* ─── Tooltip / Surface popup ────────────────────────────────────── */
@@ -615,6 +616,10 @@ html.theme-transitioning *::after {
         <div class="tt-row"><span class="tt-label">Country</span><span class="tt-val" id="tt-country">–</span></div>
         <div class="tt-row"><span class="tt-label">City</span><span class="tt-val" id="tt-city">–</span></div>
         <div class="tt-row"><span class="tt-label">ISP</span><span class="tt-val" id="tt-isp">–</span></div>
+        <div id="tt-mismatch-row" style="display:none">
+          <hr class="tt-div">
+          <div class="tt-row"><span class="tt-label" style="color:#fbbf24">⚠ Expected</span><span class="tt-val" id="tt-expected" style="color:#fbbf24">–</span></div>
+        </div>
       </div>
     </div>
 </header>
@@ -968,6 +973,7 @@ requestAnimationFrame(() => {
 // VPN
 let _ipData = null;
 let _vpnConnectedSince = null;
+let _vpnConfiguredCountry = null;
 
 function fmtUptime(since) {
   const s = Math.floor(Date.now() / 1000 - since);
@@ -978,38 +984,72 @@ function fmtUptime(since) {
   return `${h}h ${m % 60}m`;
 }
 
-async function refreshVPN() {
-  try {
-    const d = await fetch('/api/vpn').then(r=>r.json());
-    const badge = document.getElementById('vpn-badge');
-    const label = document.getElementById('vpn-label');
-    badge.classList.toggle('connected',    d.connected);
-    badge.classList.toggle('disconnected', !d.connected);
-    label.textContent = d.connected
-      ? [d.protocol?.toUpperCase(), d.country, d.interface].filter(Boolean).join(' · ')
-      : 'Disconnected';
-    document.getElementById('tt-status').textContent = d.connected ? '● Connected' : '○ Disconnected';
-    _vpnConnectedSince = d.connected_since || null;
-    document.getElementById('tt-uptime').textContent = _vpnConnectedSince ? fmtUptime(_vpnConnectedSince) : '–';
-  } catch { document.getElementById('vpn-label').textContent = 'VPN ?'; }
+function _countryMismatch(configured, ipData) {
+  if (!configured || !ipData) return false;
+  const cfg = configured.trim().toLowerCase();
+  return cfg !== (ipData.country || '').toLowerCase() &&
+         cfg !== (ipData.countryCode || '').toLowerCase();
 }
 
-document.querySelector('.vpn-wrap').addEventListener('mouseenter', async () => {
-  if (_vpnConnectedSince) document.getElementById('tt-uptime').textContent = fmtUptime(_vpnConnectedSince);
-  if (_ipData) return populate(_ipData);
-  try {
-    _ipData = await fetch('/api/ip').then(r=>r.json());
-    setTimeout(()=>{ _ipData=null; }, 30_000);
-    populate(_ipData);
-  } catch {}
-});
 function populate(d) {
   if (!d || d.error) return;
   document.getElementById('tt-ip').textContent      = d.query   || '–';
   document.getElementById('tt-country').textContent = d.country ? `${d.countryCode}  ${d.country}` : '–';
   document.getElementById('tt-city').textContent    = [d.city, d.regionName].filter(Boolean).join(', ') || '–';
   document.getElementById('tt-isp').textContent     = d.isp     || '–';
+  const mismatch = _countryMismatch(_vpnConfiguredCountry, d);
+  document.getElementById('tt-mismatch-row').style.display = mismatch ? '' : 'none';
+  if (mismatch) document.getElementById('tt-expected').textContent = _vpnConfiguredCountry;
 }
+
+async function _fetchIpData() {
+  try {
+    const d = await fetch('/api/ip').then(r => r.json());
+    if (d.error) return null;
+    return d;
+  } catch { return null; }
+}
+
+async function refreshVPN() {
+  try {
+    const d = await fetch('/api/vpn').then(r=>r.json());
+    const badge = document.getElementById('vpn-badge');
+    const label = document.getElementById('vpn-label');
+
+    const prevSince = _vpnConnectedSince;
+    _vpnConnectedSince     = d.connected_since || null;
+    _vpnConfiguredCountry  = d.country || null;
+
+    badge.classList.toggle('connected',    d.connected);
+    badge.classList.toggle('disconnected', !d.connected);
+
+    if (d.connected) {
+      // Fetch real exit IP on first connect or after reconnect
+      if (!_ipData || prevSince !== _vpnConnectedSince) {
+        _ipData = await _fetchIpData();
+      }
+      const realCountry = _ipData?.countryCode || d.country || '';
+      const mismatch    = _countryMismatch(d.country, _ipData);
+      badge.classList.toggle('mismatch', mismatch);
+      label.textContent = [d.protocol?.toUpperCase(), realCountry, d.interface].filter(Boolean).join(' · ');
+    } else {
+      _ipData = null;
+      badge.classList.remove('mismatch');
+      label.textContent = 'Disconnected';
+    }
+
+    document.getElementById('tt-status').textContent = d.connected ? '● Connected' : '○ Disconnected';
+    document.getElementById('tt-uptime').textContent = _vpnConnectedSince ? fmtUptime(_vpnConnectedSince) : '–';
+    if (_ipData) populate(_ipData);
+  } catch { document.getElementById('vpn-label').textContent = 'VPN ?'; }
+}
+
+document.querySelector('.vpn-wrap').addEventListener('mouseenter', async () => {
+  if (_vpnConnectedSince) document.getElementById('tt-uptime').textContent = fmtUptime(_vpnConnectedSince);
+  if (_ipData) { populate(_ipData); return; }
+  const fresh = await _fetchIpData();
+  if (fresh) { _ipData = fresh; populate(fresh); }
+});
 
 // Toast
 function showToast(text, type = 'done') {

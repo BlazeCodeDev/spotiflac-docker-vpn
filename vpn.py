@@ -34,7 +34,7 @@ def tunnel_status() -> dict:
 
 def ip_info() -> dict:
     now = time.time()
-    if _ip_cache.get("ts", 0) > now - 30:
+    if _ip_cache.get("ts", 0) > now - 300:
         return _ip_cache["data"]
     try:
         req = urllib.request.Request(
