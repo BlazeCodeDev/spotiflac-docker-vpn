@@ -588,6 +588,12 @@ button { cursor: pointer; font-family: inherit; border: none; }
 .color-swatch .material-icons { font-size: 16px; color: rgba(255,255,255,.9); position: absolute; top:50%; left:50%; transform:translate(-50%,-50%); display:none; }
 .color-swatch.active .material-icons { display:block; }
 
+/* ─── Input validation ────────────────────────────────────────────── */
+@keyframes shake { 0%,100%{transform:none} 20%,60%{transform:translateX(-4px)} 40%,80%{transform:translateX(4px)} }
+.field-error textarea, .field-error { animation: shake .3s ease; }
+textarea.field-error { border-color: var(--red) !important; border-width: 2px; }
+#msg.error { color: var(--red); }
+
 /* ─── Theme transition ────────────────────────────────────────────── */
 html.theme-transitioning,
 html.theme-transitioning *,
