@@ -601,6 +601,67 @@ html.theme-transitioning *::before,
 html.theme-transitioning *::after {
   transition: background-color .25s ease, color .25s ease, border-color .25s ease, box-shadow .25s ease !important;
 }
+
+/* ─── Library ─────────────────────────────────────────────────────── */
+.lib-crumbs { display: flex; align-items: center; flex-wrap: wrap; margin-bottom: 8px; min-height: 28px; gap: 0; }
+.lib-crumb {
+  background: none; border: none; color: var(--md-primary);
+  font-size: .82rem; font-weight: 500; cursor: pointer;
+  padding: 3px 6px; border-radius: 4px;
+  position: relative; overflow: hidden; line-height: 1.4;
+}
+.lib-crumb::before { content: ''; position: absolute; inset: 0; background: var(--md-primary); opacity: 0; transition: opacity .15s; border-radius: inherit; }
+.lib-crumb:hover::before { opacity: .08; }
+.lib-crumb-root { color: var(--md-on-surface-variant); }
+.lib-crumb-root::before { background: var(--md-on-surface); }
+.lib-crumb-sep { color: var(--md-on-surface-variant); display: flex; align-items: center; }
+.lib-crumb-sep .material-icons { font-size: 14px; }
+
+.lib-entry {
+  display: grid;
+  grid-template-columns: 18px 1fr auto auto auto;
+  align-items: center; gap: 4px 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--md-outline-variant);
+}
+.lib-entry:last-child { border-bottom: none; }
+.lib-icon { font-size: 18px !important; color: var(--md-on-surface-variant); flex-shrink: 0; line-height: 1; }
+.lib-entry.dir .lib-icon { color: var(--md-primary); opacity: .8; cursor: pointer; }
+.lib-entry.dir .lib-name { cursor: pointer; }
+.lib-entry.dir .lib-name:hover,
+.lib-entry.dir .lib-icon:hover { color: var(--md-primary); opacity: 1; }
+.lib-name  { font-size: .875rem; color: var(--md-on-surface); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.lib-size  { font-size: .75rem; color: var(--md-on-surface-variant); white-space: nowrap; text-align: right; min-width: 54px; }
+.lib-mtime { font-size: .75rem; color: var(--md-on-surface-variant); white-space: nowrap; text-align: right; min-width: 96px; }
+.lib-actions { display: flex; justify-content: flex-end; flex-shrink: 0; }
+
+.lib-stale-bar {
+  display: none; align-items: center; gap: 6px;
+  padding: 6px 10px; margin-bottom: 8px;
+  background: color-mix(in srgb, var(--md-primary) 10%, transparent);
+  border-radius: 8px; font-size: .78rem; color: var(--md-primary);
+}
+.lib-stale-bar.visible { display: flex; }
+
+#lib-dialog-ok {
+  background: var(--md-primary); color: var(--md-on-primary);
+  border-radius: 999px; height: 32px; padding: 0 20px;
+  font-size: .875rem; font-weight: 500; letter-spacing: .006em;
+  position: relative; overflow: hidden; transition: box-shadow .2s;
+}
+#lib-dialog-ok::before { content: ''; position: absolute; inset: 0; background: var(--md-on-primary); opacity: 0; transition: opacity .2s; }
+#lib-dialog-ok:hover { box-shadow: 0 1px 2px rgba(0,0,0,.3),0 1px 3px 1px rgba(0,0,0,.15); }
+#lib-dialog-ok:hover::before  { opacity: .08; }
+#lib-dialog-ok:active::before { opacity: .12; }
+
+@media (max-width: 580px) {
+  .lib-entry { grid-template-columns: 18px 1fr auto auto; }
+  .lib-mtime { display: none; }
+}
+@media (max-width: 400px) {
+  .lib-entry { grid-template-columns: 18px 1fr auto; }
+  .lib-size  { display: none; }
+}
 </style>
 </head>
 <body>
@@ -690,6 +751,21 @@ html.theme-transitioning *::after {
       <button class="btn-ghost" id="btn-bulk-remove" style="padding:.25rem .6rem;font-size:.75rem">Remove</button>
     </div>
     <div id="jobs-list"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="section-title">Library</span>
+      <button class="btn-ghost" id="btn-lib-refresh">Refresh</button>
+    </div>
+    <div id="lib-stale-bar" class="lib-stale-bar">
+      <span class="material-icons" style="font-size:16px">update</span>
+      Directory changed since last refresh
+      <div style="flex:1"></div>
+      <button class="btn-ghost" style="height:24px;padding:0 8px;font-size:.75rem" onclick="loadLibrary(_libPath)">Refresh now</button>
+    </div>
+    <div id="lib-crumbs" class="lib-crumbs"></div>
+    <div id="lib-list"></div>
   </div>
 
 </main>
@@ -818,6 +894,24 @@ html.theme-transitioning *::after {
     <div class="modal-footer">
       <button id="btn-search-dl" style="display:none">Download 0 selected</button>
       <span id="search-msg"></span>
+    </div>
+  </div>
+</div>
+
+<!-- Library action dialog (rename / move) -->
+<div id="lib-dialog" class="modal-overlay" role="dialog" aria-modal="true">
+  <div class="modal" style="max-width:400px">
+    <div class="modal-header">
+      <span id="lib-dialog-title" class="modal-title">Rename</span>
+      <button class="modal-close" id="lib-dialog-close" title="Close"><span class="material-icons">close</span></button>
+    </div>
+    <div class="modal-body" style="padding-top:4px">
+      <input type="text" id="lib-dialog-input" style="width:100%">
+      <div id="lib-dialog-hint" class="hint" style="margin-top:6px"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" id="lib-dialog-cancel">Cancel</button>
+      <button id="lib-dialog-ok">OK</button>
     </div>
   </div>
 </div>
@@ -1774,6 +1868,193 @@ function fmtTrackError(raw) {
   // Fallback: just truncate
   return esc(raw.length > 200 ? raw.slice(0, 200) + '…' : raw);
 }
+
+// ── Library ───────────────────────────────────────────────────────────
+let _libPath  = '';
+let _libStamp = '';
+
+function _libFileIcon(e) {
+  if (e.type === 'dir') return 'folder';
+  const ext = (e.name.split('.').pop() || '').toLowerCase();
+  if (['flac','mp3','m4a','wav','ogg','opus','aac','wma'].includes(ext)) return 'audio_file';
+  return 'insert_drive_file';
+}
+
+function _fmtSize(bytes) {
+  if (!bytes) return '';
+  if (bytes < 1024)       return bytes + ' B';
+  if (bytes < 1048576)    return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+  return (bytes / 1073741824).toFixed(2) + ' GB';
+}
+
+function _fmtMtime(ts) {
+  if (!ts) return '';
+  const d    = new Date(ts * 1000);
+  const diff = Math.floor((Date.now() - d) / 86400000);
+  if (diff === 0) return 'Today ' + d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  if (diff === 1) return 'Yesterday';
+  if (diff < 7)   return d.toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'});
+  return d.toLocaleDateString([], {month:'short', day:'numeric', year: diff < 365 ? undefined : 'numeric'});
+}
+
+function _renderLibCrumbs(relPath) {
+  const el    = document.getElementById('lib-crumbs');
+  const parts = relPath ? relPath.split('/').filter(Boolean) : [];
+  let html    = `<button class="lib-crumb lib-crumb-root" data-path="">Library</button>`;
+  let cum     = '';
+  for (const part of parts) {
+    cum  = cum ? cum + '/' + part : part;
+    html += `<span class="lib-crumb-sep"><span class="material-icons">chevron_right</span></span>`;
+    html += `<button class="lib-crumb" data-path="${esc(cum)}">${esc(part)}</button>`;
+  }
+  el.innerHTML = html;
+  el.querySelectorAll('[data-path]').forEach(btn =>
+    btn.addEventListener('click', () => loadLibrary(btn.dataset.path))
+  );
+}
+
+function _renderLibEntries(entries) {
+  const el = document.getElementById('lib-list');
+  if (!entries.length) {
+    el.innerHTML = '<div class="jobs-empty">Empty folder</div>';
+    return;
+  }
+  el.innerHTML = entries.map(e => `
+    <div class="lib-entry ${e.type}" data-path="${esc(e.path)}" data-type="${e.type}" data-name="${esc(e.name)}">
+      <span class="lib-icon material-icons">${_libFileIcon(e)}</span>
+      <span class="lib-name">${esc(e.name)}</span>
+      <span class="lib-size">${_fmtSize(e.size)}</span>
+      <span class="lib-mtime">${_fmtMtime(e.mtime)}</span>
+      <div class="lib-actions">
+        ${e.type === 'file' ? `<button class="job-btn lib-dl" title="Download to browser"><span class="material-icons">download</span></button>` : ''}
+        <button class="job-btn lib-rename" title="Rename"><span class="material-icons">drive_file_rename_outline</span></button>
+        <button class="job-btn lib-move"   title="Move"><span class="material-icons">drive_file_move</span></button>
+        <button class="job-btn lib-del remove" title="Delete"><span class="material-icons">delete_outline</span></button>
+      </div>
+    </div>`).join('');
+
+  el.querySelectorAll('.lib-entry').forEach(row => {
+    const {path, type, name} = row.dataset;
+    if (type === 'dir') {
+      row.querySelector('.lib-name').addEventListener('click', () => loadLibrary(path));
+      row.querySelector('.lib-icon').addEventListener('click', () => loadLibrary(path));
+    }
+    row.querySelector('.lib-dl')    ?.addEventListener('click', () => {
+      const a = document.createElement('a');
+      a.href = '/api/library/download?path=' + encodeURIComponent(path);
+      a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+    });
+    row.querySelector('.lib-rename')?.addEventListener('click', () => _libShowDialog('rename', path, name));
+    row.querySelector('.lib-move')  ?.addEventListener('click', () => _libShowDialog('move', path, name));
+    row.querySelector('.lib-del')   ?.addEventListener('click', () => _libDelete(path, name, type));
+  });
+}
+
+async function loadLibrary(relPath) {
+  _libPath = relPath || '';
+  document.getElementById('lib-stale-bar').classList.remove('visible');
+  _renderLibCrumbs(_libPath);
+  const el = document.getElementById('lib-list');
+  el.innerHTML = '<div class="jobs-empty" style="padding:12px 0">Loading…</div>';
+  try {
+    const res  = await fetch('/api/library?path=' + encodeURIComponent(_libPath));
+    const data = await res.json();
+    if (!res.ok) { el.innerHTML = `<div class="jobs-empty">${esc(data.error || 'Error')}</div>`; return; }
+    _renderLibEntries(data.entries);
+    _libFreshStamp();
+  } catch { el.innerHTML = '<div class="jobs-empty">Failed to load</div>'; }
+}
+
+async function _libFreshStamp() {
+  try {
+    const d = await fetch('/api/library/stamp?path=' + encodeURIComponent(_libPath)).then(r => r.json());
+    _libStamp = d.stamp || '';
+  } catch {}
+}
+
+setInterval(async () => {
+  if (!_libStamp) return;
+  try {
+    const d = await fetch('/api/library/stamp?path=' + encodeURIComponent(_libPath)).then(r => r.json());
+    if (d.stamp && d.stamp !== _libStamp)
+      document.getElementById('lib-stale-bar').classList.add('visible');
+  } catch {}
+}, 30000);
+
+// ── Library dialog (rename / move) ────────────────────────────────────
+let _libDialogAction = null;
+let _libDialogPath   = null;
+
+function _libShowDialog(action, path, name) {
+  _libDialogAction = action;
+  _libDialogPath   = path;
+  const inp  = document.getElementById('lib-dialog-input');
+  const hint = document.getElementById('lib-dialog-hint');
+  document.getElementById('lib-dialog-title').textContent = action === 'rename' ? 'Rename' : 'Move to…';
+  if (action === 'rename') {
+    inp.value       = name;
+    inp.placeholder = '';
+    hint.textContent = 'New name within the same folder';
+  } else {
+    inp.value       = '';
+    inp.placeholder = 'e.g. Artist/Album';
+    hint.textContent = 'Destination folder path relative to library root. Created automatically if it doesn\'t exist.';
+  }
+  document.getElementById('lib-dialog').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  requestAnimationFrame(() => { inp.focus(); if (action === 'rename') inp.select(); });
+}
+
+function _libCloseDialog() {
+  document.getElementById('lib-dialog').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+async function _libExecDialog() {
+  const val = document.getElementById('lib-dialog-input').value.trim();
+  if (!val) return;
+  _libCloseDialog();
+  if (_libDialogAction === 'rename') {
+    const res  = await fetch('/api/library/rename', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path: _libDialogPath, name: val}),
+    });
+    const data = await res.json();
+    showToast(res.ok ? 'Renamed' : (data.error || 'Rename failed'));
+    if (res.ok) loadLibrary(_libPath);
+  } else {
+    const res  = await fetch('/api/library/move', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path: _libDialogPath, dest: val}),
+    });
+    const data = await res.json();
+    showToast(res.ok ? 'Moved' : (data.error || 'Move failed'));
+    if (res.ok) loadLibrary(_libPath);
+  }
+}
+
+async function _libDelete(path, name, type) {
+  const extra = type === 'dir' ? ' This will also delete all its contents.' : '';
+  if (!confirm(`Delete "${name}"?${extra}`)) return;
+  const res  = await fetch('/api/library/file?path=' + encodeURIComponent(path), {method: 'DELETE'});
+  const data = await res.json();
+  showToast(res.ok ? 'Deleted' : (data.error || 'Delete failed'));
+  if (res.ok) loadLibrary(_libPath);
+}
+
+document.getElementById('lib-dialog-ok')    .addEventListener('click', _libExecDialog);
+document.getElementById('lib-dialog-cancel').addEventListener('click', _libCloseDialog);
+document.getElementById('lib-dialog-close') .addEventListener('click', _libCloseDialog);
+document.getElementById('lib-dialog')       .addEventListener('click', e => { if (e.target === e.currentTarget) _libCloseDialog(); });
+document.getElementById('lib-dialog-input') .addEventListener('keydown', e => {
+  if (e.key === 'Enter')  _libExecDialog();
+  if (e.key === 'Escape') _libCloseDialog();
+});
+document.getElementById('btn-lib-refresh').addEventListener('click', () => loadLibrary(_libPath));
+
+loadLibrary('');
 
 renderSkeleton();
 refreshVPN(); refreshJobs();

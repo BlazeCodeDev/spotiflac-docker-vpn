@@ -1,7 +1,9 @@
+import hashlib
 import logging
 import os
+import shutil
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, render_template, request, send_file
 
 import worker
 import vpn
@@ -246,3 +248,172 @@ def api_search():
     except Exception as exc:
         log.warning("Search failed: %s", exc)
         return jsonify(error="Search failed"), 502
+
+
+# ── Library ───────────────────────────────────────────────────────────────────
+
+def _lib_root() -> str:
+    return os.path.realpath(os.path.abspath(Config.OUTPUT_DIR))
+
+
+def _safe_lib_path(rel: str = "") -> str:
+    root = _lib_root()
+    rel  = (rel or "").lstrip("/")
+    if not rel:
+        return root
+    target = os.path.realpath(os.path.join(root, rel))
+    if target != root and not target.startswith(root + os.sep):
+        raise ValueError("Path is outside the library")
+    return target
+
+
+def _lib_rel(abs_path: str) -> str:
+    root = _lib_root()
+    if abs_path == root:
+        return ""
+    return os.path.relpath(abs_path, root).replace(os.sep, "/")
+
+
+@bp.get("/api/library")
+def api_library():
+    rel = request.args.get("path", "")
+    try:
+        target = _safe_lib_path(rel)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    if not os.path.isdir(target):
+        return jsonify(error="Not a directory"), 404
+    entries = []
+    try:
+        names = sorted(os.listdir(target),
+                       key=lambda n: (not os.path.isdir(os.path.join(target, n)), n.lower()))
+    except PermissionError:
+        return jsonify(error="Permission denied"), 403
+    for name in names:
+        p = os.path.join(target, name)
+        try:
+            st    = os.stat(p)
+            is_dir = os.path.isdir(p)
+            entries.append({
+                "name":  name,
+                "type":  "dir" if is_dir else "file",
+                "size":  0 if is_dir else st.st_size,
+                "mtime": st.st_mtime,
+                "path":  _lib_rel(p),
+            })
+        except OSError:
+            pass
+    return jsonify(path=rel, entries=entries)
+
+
+@bp.get("/api/library/stamp")
+def api_library_stamp():
+    rel = request.args.get("path", "")
+    try:
+        target = _safe_lib_path(rel)
+    except ValueError:
+        return jsonify(stamp=""), 200
+    try:
+        parts = []
+        for name in sorted(os.listdir(target)):
+            p = os.path.join(target, name)
+            try:
+                st = os.stat(p)
+                parts.append(f"{name}:{st.st_mtime:.0f}:{st.st_size}")
+            except OSError:
+                pass
+        stamp = hashlib.md5("\n".join(parts).encode()).hexdigest()[:12]
+    except Exception:
+        stamp = ""
+    return jsonify(stamp=stamp)
+
+
+@bp.delete("/api/library/file")
+def api_library_delete():
+    rel = request.args.get("path", "")
+    if not rel:
+        return jsonify(error="No path provided"), 400
+    try:
+        target = _safe_lib_path(rel)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    if not os.path.exists(target):
+        return jsonify(error="Not found"), 404
+    try:
+        if os.path.isdir(target):
+            shutil.rmtree(target)
+        else:
+            os.remove(target)
+        return jsonify(ok=True)
+    except Exception as exc:
+        log.error("Library delete failed: %s", exc)
+        return jsonify(error=str(exc)), 500
+
+
+@bp.post("/api/library/rename")
+def api_library_rename():
+    body     = request.get_json(silent=True) or {}
+    rel      = body.get("path", "")
+    new_name = body.get("name", "").strip()
+    if not rel or not new_name:
+        return jsonify(error="Missing path or name"), 400
+    if "/" in new_name or "\\" in new_name:
+        return jsonify(error="Name must not contain path separators"), 400
+    try:
+        target = _safe_lib_path(rel)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    if not os.path.exists(target):
+        return jsonify(error="Not found"), 404
+    dest = os.path.join(os.path.dirname(target), new_name)
+    if os.path.exists(dest):
+        return jsonify(error="A file or folder with that name already exists"), 409
+    try:
+        os.rename(target, dest)
+        return jsonify(ok=True)
+    except Exception as exc:
+        log.error("Library rename failed: %s", exc)
+        return jsonify(error=str(exc)), 500
+
+
+@bp.post("/api/library/move")
+def api_library_move():
+    body    = request.get_json(silent=True) or {}
+    rel_src = body.get("path", "")
+    rel_dst = body.get("dest", "").strip("/")
+    if not rel_src:
+        return jsonify(error="Missing source path"), 400
+    try:
+        src     = _safe_lib_path(rel_src)
+        dst_dir = _safe_lib_path(rel_dst)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    if not os.path.exists(src):
+        return jsonify(error="Source not found"), 404
+    try:
+        os.makedirs(dst_dir, exist_ok=True)
+    except Exception as exc:
+        return jsonify(error=f"Cannot create destination: {exc}"), 500
+    dest = os.path.join(dst_dir, os.path.basename(src))
+    if os.path.exists(dest):
+        return jsonify(error=f'"{os.path.basename(src)}" already exists at destination'), 409
+    try:
+        shutil.move(src, dest)
+        return jsonify(ok=True)
+    except Exception as exc:
+        log.error("Library move failed: %s", exc)
+        return jsonify(error=str(exc)), 500
+
+
+@bp.get("/api/library/download")
+def api_library_download():
+    rel = request.args.get("path", "")
+    if not rel:
+        return jsonify(error="No path provided"), 400
+    try:
+        target = _safe_lib_path(rel)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    if not os.path.isfile(target):
+        return jsonify(error="Not a file"), 404
+    return send_file(target, as_attachment=True, download_name=os.path.basename(target))
