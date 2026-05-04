@@ -654,6 +654,25 @@ html.theme-transitioning *::after {
 #lib-dialog-ok:hover::before  { opacity: .08; }
 #lib-dialog-ok:active::before { opacity: .12; }
 
+.lib-search-form { padding: 8px 0 4px; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--md-outline-variant); margin-bottom: 6px; }
+#btn-lsf-go {
+  background: var(--md-primary); color: var(--md-on-primary);
+  border: none; border-radius: 8px; width: 34px; height: 34px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; flex-shrink: 0; position: relative; overflow: hidden;
+}
+#btn-lsf-go::before { content: ''; position: absolute; inset: 0; background: var(--md-on-primary); opacity: 0; transition: opacity .15s; }
+#btn-lsf-go:hover::before { opacity: .1; }
+.lib-sr {
+  display: grid; grid-template-columns: 18px 1fr auto;
+  align-items: center; gap: 4px 8px;
+  padding: 5px 0; border-bottom: 1px solid var(--md-outline-variant);
+}
+.lib-sr:last-child { border-bottom: none; }
+.lib-sr-info { min-width: 0; }
+.lib-sr-name { font-size: .875rem; color: var(--md-on-surface); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-sr-dir  { font-size: .72rem; color: var(--md-on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 @media (max-width: 580px) {
   .lib-entry { grid-template-columns: 18px 1fr auto auto; }
   .lib-mtime { display: none; }
@@ -756,7 +775,31 @@ html.theme-transitioning *::after {
   <div class="card">
     <div class="card-header">
       <span class="section-title">Library</span>
+      <button class="btn-ghost" id="btn-lib-search">Search</button>
       <button class="btn-ghost" id="btn-lib-refresh">Refresh</button>
+    </div>
+    <div id="lib-search-form" class="lib-search-form" style="display:none">
+      <div class="msf-row">
+        <div class="msf-field" style="flex:2">
+          <span class="material-icons">music_note</span>
+          <input type="text" id="lsf-track" placeholder="Track or keywords" autocomplete="off">
+        </div>
+        <div class="msf-field">
+          <span class="material-icons">person</span>
+          <input type="text" id="lsf-artist" placeholder="Artist" autocomplete="off">
+        </div>
+      </div>
+      <div class="msf-row">
+        <div class="msf-field" style="flex:2">
+          <span class="material-icons">album</span>
+          <input type="text" id="lsf-album" placeholder="Album" autocomplete="off">
+        </div>
+        <div class="msf-field" style="max-width:96px">
+          <span class="material-icons">event</span>
+          <input type="text" id="lsf-year" placeholder="Year" autocomplete="off">
+        </div>
+        <button id="btn-lsf-go" title="Search"><span class="material-icons" style="font-size:18px;position:relative">search</span></button>
+      </div>
     </div>
     <div id="lib-stale-bar" class="lib-stale-bar">
       <span class="material-icons" style="font-size:16px">update</span>
@@ -2053,6 +2096,90 @@ document.getElementById('lib-dialog-input') .addEventListener('keydown', e => {
   if (e.key === 'Escape') _libCloseDialog();
 });
 document.getElementById('btn-lib-refresh').addEventListener('click', () => loadLibrary(_libPath));
+
+// ── Library search ────────────────────────────────────────────────────
+let _lsfActive = false;
+
+function _lsfShowForm() {
+  _lsfActive = true;
+  document.getElementById('lib-search-form').style.display = '';
+  document.getElementById('btn-lib-search').textContent = 'Close';
+  document.getElementById('lsf-track').focus();
+}
+
+function _lsfHideForm(navigate = true) {
+  _lsfActive = false;
+  document.getElementById('lib-search-form').style.display = 'none';
+  document.getElementById('btn-lib-search').textContent = 'Search';
+  if (navigate) loadLibrary(_libPath);
+}
+
+async function _lsfSearch() {
+  const track  = document.getElementById('lsf-track').value.trim();
+  const artist = document.getElementById('lsf-artist').value.trim();
+  const album  = document.getElementById('lsf-album').value.trim();
+  const year   = document.getElementById('lsf-year').value.trim();
+  if (!track && !artist && !album && !year) return;
+  const el = document.getElementById('lib-list');
+  document.getElementById('lib-crumbs').innerHTML = '';
+  el.innerHTML = '<div class="jobs-empty" style="padding:12px 0">Searching…</div>';
+  const params = new URLSearchParams();
+  if (track)  params.set('track',  track);
+  if (artist) params.set('artist', artist);
+  if (album)  params.set('album',  album);
+  if (year)   params.set('year',   year);
+  try {
+    const res  = await fetch('/api/library/search?' + params);
+    const data = await res.json();
+    if (!res.ok) { el.innerHTML = `<div class="jobs-empty">${esc(data.error || 'Error')}</div>`; return; }
+    _renderLibSearchResults(data.results, data.capped);
+  } catch { el.innerHTML = '<div class="jobs-empty">Search failed</div>'; }
+}
+
+function _renderLibSearchResults(results, capped) {
+  const el = document.getElementById('lib-list');
+  if (!results.length) { el.innerHTML = '<div class="jobs-empty">No files found</div>'; return; }
+  let html = '';
+  if (capped) html += `<div class="hint" style="padding:4px 0 8px">Showing first 200 results</div>`;
+  for (const e of results) {
+    const ext = (e.name.split('.').pop() || '').toLowerCase();
+    const icon = ['flac','mp3','m4a','wav','ogg','opus','aac','wma'].includes(ext) ? 'audio_file' : 'insert_drive_file';
+    html += `
+      <div class="lib-sr" data-path="${esc(e.path)}" data-dir="${esc(e.dir)}" data-name="${esc(e.name)}">
+        <span class="lib-icon material-icons">${icon}</span>
+        <div class="lib-sr-info">
+          <div class="lib-sr-name">${esc(e.name)}</div>
+          <div class="lib-sr-dir">${esc(e.dir || '(root)')}</div>
+        </div>
+        <div class="lib-actions">
+          <button class="job-btn lib-sr-goto" title="Go to folder"><span class="material-icons">folder_open</span></button>
+          <button class="job-btn lib-dl"      title="Download to browser"><span class="material-icons">download</span></button>
+          <button class="job-btn lib-rename"  title="Rename"><span class="material-icons">drive_file_rename_outline</span></button>
+          <button class="job-btn lib-move"    title="Move"><span class="material-icons">drive_file_move</span></button>
+          <button class="job-btn lib-del remove" title="Delete"><span class="material-icons">delete_outline</span></button>
+        </div>
+      </div>`;
+  }
+  el.innerHTML = html;
+  el.querySelectorAll('.lib-sr').forEach(row => {
+    const path = row.dataset.path;
+    const dir  = row.dataset.dir;
+    const name = row.dataset.name;
+    row.querySelector('.lib-sr-goto')?.addEventListener('click', () => { _lsfHideForm(false); loadLibrary(dir); });
+    row.querySelector('.lib-dl')?.addEventListener('click', () => {
+      const a = document.createElement('a'); a.href = '/api/library/download?path=' + encodeURIComponent(path); a.click();
+    });
+    row.querySelector('.lib-rename')?.addEventListener('click', () => _libShowDialog('rename', path, name));
+    row.querySelector('.lib-move')  ?.addEventListener('click', () => _libShowDialog('move',   path, name));
+    row.querySelector('.lib-del')   ?.addEventListener('click', () => _libDelete(path, name, 'file'));
+  });
+}
+
+document.getElementById('btn-lib-search').addEventListener('click', () => _lsfActive ? _lsfHideForm() : _lsfShowForm());
+document.getElementById('btn-lsf-go').addEventListener('click', _lsfSearch);
+['lsf-track','lsf-artist','lsf-album','lsf-year'].forEach(id =>
+  document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') _lsfSearch(); })
+);
 
 loadLibrary('');
 

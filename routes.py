@@ -405,6 +405,58 @@ def api_library_move():
         return jsonify(error=str(exc)), 500
 
 
+@bp.get("/api/library/search")
+def api_library_search():
+    track  = request.args.get("track",  "").strip().lower()
+    artist = request.args.get("artist", "").strip().lower()
+    album  = request.args.get("album",  "").strip().lower()
+    year   = request.args.get("year",   "").strip().lower()
+    if not any([track, artist, album, year]):
+        return jsonify(error="No search terms provided"), 400
+
+    root = _lib_root()
+    if not os.path.isdir(root):
+        return jsonify(results=[], capped=False)
+
+    results = []
+    capped  = False
+    CAP     = 200
+
+    for dirpath, _dirs, files in os.walk(root):
+        rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
+        if rel_dir == ".":
+            rel_dir = ""
+        dir_lower  = rel_dir.lower()
+        dir_parts  = [p for p in dir_lower.split("/") if p]
+
+        for fname in sorted(files):
+            fname_lower = fname.lower()
+            if track  and track  not in fname_lower:                              continue
+            if artist and not any(artist in p for p in dir_parts):                continue
+            if album  and not any(album  in p for p in dir_parts):                continue
+            if year   and year not in fname_lower and year not in dir_lower:      continue
+            fpath = os.path.join(dirpath, fname)
+            try:
+                st = os.stat(fpath)
+            except OSError:
+                continue
+            results.append({
+                "name":  fname,
+                "type":  "file",
+                "size":  st.st_size,
+                "mtime": st.st_mtime,
+                "path":  _lib_rel(fpath),
+                "dir":   rel_dir,
+            })
+            if len(results) >= CAP:
+                capped = True
+                break
+        if capped:
+            break
+
+    return jsonify(results=results, capped=capped)
+
+
 @bp.get("/api/library/download")
 def api_library_download():
     rel = request.args.get("path", "")
