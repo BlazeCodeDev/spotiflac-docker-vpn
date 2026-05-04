@@ -75,7 +75,7 @@ def api_download():
     )
 
     # Partial batch retry: multiple track URLs with an offset → one job
-    if pre_success_count and full_total and len(urls) > 1:
+    if full_total and len(urls) > 1:
         ids = [worker.enqueue(
             url=urls[0],
             batch_urls=urls,
