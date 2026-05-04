@@ -1634,10 +1634,19 @@ _urlsClear.addEventListener('click', () => {
   _urlsEl.focus();
 });
 
+function _isSpotifyUrl(s) {
+  return /open\.spotify\.com\/(track|album|playlist)\//.test(s);
+}
+
 document.getElementById('btn-dl').addEventListener('click', async () => {
   const urls = document.getElementById('urls').value.trim();
   if (!urls) return;
   const msg = document.getElementById('msg');
+  const lines = urls.replace(/,/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
+  if (!lines.every(_isSpotifyUrl)) {
+    msg.textContent = 'Please enter valid Spotify URLs';
+    return;
+  }
   msg.textContent = '…';
   const res  = await fetch('/api/download', {
     method:'POST', headers:{'Content-Type':'application/json'},
