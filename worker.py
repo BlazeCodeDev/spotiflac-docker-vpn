@@ -275,11 +275,14 @@ class _TrackingWorker(DownloadWorker):
             result = download_one(track, out_dir, self._providers, self._opts, i + 1)
 
             if result.success:
-                size_mb = (
-                    os.path.getsize(result.file_path) / (1024 * 1024)
-                    if result.file_path and os.path.exists(result.file_path)
-                    else 0.0
-                )
+                try:
+                    size_mb = (
+                        os.path.getsize(result.file_path) / (1024 * 1024)
+                        if result.file_path and os.path.exists(result.file_path)
+                        else 0.0
+                    )
+                except OSError:
+                    size_mb = 0.0
                 manager.complete_download(track.id, result.file_path or "", size_mb)
                 if self._on_track_result:
                     self._on_track_result({
