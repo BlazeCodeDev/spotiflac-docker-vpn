@@ -79,6 +79,7 @@ resolv-retry infinite
 nobind
 persist-key
 persist-tun
+redirect-gateway def1 bypass-dhcp
 remote-cert-tls server
 ca ${CREDS_DIR}/ca.crt
 auth-nocache

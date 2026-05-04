@@ -10,11 +10,19 @@ _connected_since: float | None = None
 _VPN_UPTIME_FILE = "/vpn/tunnel_up_since"
 
 
-def _read_tunnel_start() -> float:
+def _read_tunnel_start() -> float | None:
     try:
         return float(open(_VPN_UPTIME_FILE).read().strip())
     except Exception:
-        return time.time()
+        return None
+
+
+# Read once at module load. The entrypoint writes this file before the app
+# starts, so it is available from the very first request. Caching here means
+# brief VPN blips (e.g. OpenVPN TLS renegotiation every ~1 h) that reset
+# _connected_since to None don't lose the original timestamp on recovery —
+# we reuse this value instead of re-reading (and risking a time.time() fallback).
+_TUNNEL_START: float | None = _read_tunnel_start()
 
 
 def tunnel_status() -> dict:
@@ -24,7 +32,7 @@ def tunnel_status() -> dict:
             r = subprocess.run(["ip", "link", "show", iface], capture_output=True)
             if r.returncode == 0:
                 if _connected_since is None:
-                    _connected_since = _read_tunnel_start()
+                    _connected_since = _TUNNEL_START
                 return dict(connected=True, interface=iface, connected_since=_connected_since)
     except FileNotFoundError:
         pass
