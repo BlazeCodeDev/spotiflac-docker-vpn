@@ -1411,8 +1411,8 @@ function renderJobs() {
   const jobs = q
     ? _allJobs.filter(j => (j.title || j.url).toLowerCase().includes(q) || (j.status || '').includes(q))
     : _allJobs;
-  if (!_allJobs.length) { if (_jobsLoaded) el.innerHTML = '<div class="jobs-empty">No downloads yet</div>'; return; }
-  if (!jobs.length)     { el.innerHTML = '<div class="jobs-empty">No matches</div>'; return; }
+  if (!_allJobs.length) { if (_jobsLoaded) el.innerHTML = '<div class="jobs-empty">No downloads yet</div>'; updateJobCounts(); updateBulkBar(); return; }
+  if (!jobs.length)     { el.innerHTML = '<div class="jobs-empty">No matches</div>'; updateJobCounts(); updateBulkBar(); return; }
 
   const _seenIds = new Set(jobs.map(j => j.id));
 
