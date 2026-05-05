@@ -156,6 +156,28 @@ def retry_job(job_id: str) -> bool:
     return True
 
 
+def retry_job_partial(job_id: str, batch_urls: list, pre_success_count: int,
+                      full_total: int) -> bool:
+    with _lock:
+        j = _jobs.get(job_id)
+        if not j or j["status"] not in ("done", "error", "cancelled"):
+            return False
+        j.update(
+            status="queued", started_at=_now(), finished_at=None, error=None,
+            progress=pre_success_count or None,
+            total=full_total or None,
+            track_results=None, success_count=None, fail_count=None,
+            pre_success_count=pre_success_count, full_total=full_total,
+            _batch_urls=batch_urls,
+        )
+        if batch_urls:
+            j["url"] = batch_urls[0]
+    _cancel[job_id] = threading.Event()
+    _save()
+    threading.Thread(target=_run, daemon=True, args=(job_id,)).start()
+    return True
+
+
 _seq = 0
 
 def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,

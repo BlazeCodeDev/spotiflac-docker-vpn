@@ -1545,9 +1545,10 @@ function updateBulkBar() {
 function renderJobs() {
   const el = document.getElementById('jobs-list');
   const q  = document.getElementById('job-search').value.trim().toLowerCase();
-  const jobs = q
+  const jobs = (q
     ? _allJobs.filter(j => (j.title || j.url).toLowerCase().includes(q) || (j.status || '').includes(q))
-    : _allJobs;
+    : _allJobs.slice()
+  ).sort((a, b) => (a.status === 'done' ? 1 : 0) - (b.status === 'done' ? 1 : 0));
   if (!_allJobs.length) { if (_jobsLoaded) el.innerHTML = '<div class="jobs-empty">No downloads yet</div>'; updateJobCounts(); updateBulkBar(); return; }
   if (!jobs.length)     { el.innerHTML = '<div class="jobs-empty">No matches</div>'; updateJobCounts(); updateBulkBar(); return; }
 
@@ -1599,6 +1600,7 @@ function renderJobs() {
       <span class="badge ${j.status === 'done' && j.fail_count > 0 ? 'partial' : j.status}">${
         j.status === 'running' && j.total > 1 ? j.progress + '/' + j.total
         : j.status === 'done' && j.fail_count > 0 && j.total > 1 ? j.success_count + '/' + j.total
+        : j.status === 'done' && j.fail_count > 0 ? 'partial'
         : j.status
       }</span>
       <span class="quality-badge">${j.quality === 'hires' ? 'Hi-Res' : j.quality === 'high' ? 'High' : 'Lossless'}</span>
@@ -1656,34 +1658,19 @@ function renderJobs() {
         const failed = (job?.track_results || []).filter(r => !r.success && r.track_id);
 
         _jobExpanded.delete(id); _jobShowAll.delete(id);
-        btn.closest('.job-item').classList.add('job-exit'); _prevJobIds.delete(id);
-        await new Promise(r => setTimeout(r, 200));
-        await fetch(`/api/jobs/${id}`, {method: 'DELETE'});
 
         if (failed.length && job) {
           const urls = failed.map(r => `https://open.spotify.com/track/${r.track_id}`).join('\n');
-          await fetch('/api/download', {
+          await fetch(`/api/jobs/${id}/retry-partial`, {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
               urls,
-              services:          getActiveServices(),
-              quality:           job.quality || _quality,
-              qobuz_token:       document.getElementById('qobuz-token').value,
               pre_success_count: job.success_count || 0,
               full_total:        job.total || 0,
-              pre_title:         job.title || '',
             }),
           });
         } else {
-          await fetch('/api/download', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-              urls:        job?.url || '',
-              services:    getActiveServices(),
-              quality:     job?.quality || _quality,
-              qobuz_token: document.getElementById('qobuz-token').value,
-            }),
-          });
+          await fetch(`/api/jobs/${id}/retry`, {method: 'POST'});
         }
         refreshJobs();
       }
@@ -1817,45 +1804,25 @@ document.getElementById('btn-restart-failed').addEventListener('click', async ()
   );
   if (!retryable.length) return;
 
-  retryable.filter(j => j.status === 'done' && j.fail_count > 0).forEach(j => {
-    _jobExpanded.delete(j.id); _jobShowAll.delete(j.id);
-    const item = document.querySelector(`.job-item[data-id="${j.id}"]`);
-    if (item) { item.classList.add('job-exit'); _prevJobIds.delete(j.id); }
-  });
-
-  const hasPartials = retryable.some(j => j.status === 'done' && j.fail_count > 0);
-  if (hasPartials) await new Promise(r => setTimeout(r, 200));
+  retryable.forEach(j => { _jobExpanded.delete(j.id); _jobShowAll.delete(j.id); });
 
   await Promise.all(retryable.map(async j => {
     if (j.status === 'error' || j.status === 'cancelled') {
       await fetch(`/api/jobs/${j.id}/retry`, {method: 'POST'});
     } else {
       const failed = (j.track_results || []).filter(r => !r.success && r.track_id);
-      await fetch(`/api/jobs/${j.id}`, {method: 'DELETE'});
       if (failed.length) {
         const urls = failed.map(r => `https://open.spotify.com/track/${r.track_id}`).join('\n');
-        await fetch('/api/download', {
+        await fetch(`/api/jobs/${j.id}/retry-partial`, {
           method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
             urls,
-            services:          getActiveServices(),
-            quality:           j.quality || _quality,
-            qobuz_token:       document.getElementById('qobuz-token').value,
             pre_success_count: j.success_count || 0,
             full_total:        j.total || 0,
-            pre_title:         j.title || '',
           }),
         });
       } else {
-        await fetch('/api/download', {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            urls:        j.url || '',
-            services:    getActiveServices(),
-            quality:     j.quality || _quality,
-            qobuz_token: document.getElementById('qobuz-token').value,
-          }),
-        });
+        await fetch(`/api/jobs/${j.id}/retry`, {method: 'POST'});
       }
     }
   }));

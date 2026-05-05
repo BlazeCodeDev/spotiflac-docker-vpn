@@ -130,6 +130,17 @@ def api_retry_job(job_id: str):
     return (jsonify(ok=True), 200) if ok else (jsonify(error="Not found or not retryable"), 400)
 
 
+@bp.post("/api/jobs/<job_id>/retry-partial")
+def api_retry_job_partial(job_id: str):
+    body = request.get_json(silent=True) or {}
+    urls_raw = str(body.get("urls", "")).strip().splitlines()
+    urls = [u.strip() for u in urls_raw if u.strip()]
+    pre_success_count = _safe_int(body.get("pre_success_count", 0), 0)
+    full_total        = _safe_int(body.get("full_total",        0), 0)
+    ok = worker.retry_job_partial(job_id, urls, pre_success_count, full_total)
+    return (jsonify(ok=True), 200) if ok else (jsonify(error="Not found or not retryable"), 400)
+
+
 @bp.post("/api/tidal/refresh")
 def api_tidal_refresh():
     try:
