@@ -224,6 +224,7 @@ textarea[readonly], input[readonly] { opacity: .38; cursor: default; }
 /* ─── Settings ───────────────────────────────────────────────────── */
 .settings-grid { display: grid; gap: 14px; }
 .setting-group label { display: block; font-size: .6875rem; font-weight: 500; letter-spacing: .063em; color: var(--md-on-surface-variant); text-transform: uppercase; margin-bottom: 8px; }
+.setting-inline-label { font-size: .82rem; font-weight: 400; color: var(--md-on-surface-variant); text-transform: none; letter-spacing: 0; margin-bottom: 0; display: inline; }
 .hint { font-size: .75rem; color: var(--md-on-surface-variant); margin-top: 4px; opacity: .8; }
 
 /* ─── M3 List items (services) ───────────────────────────────────── */
@@ -382,6 +383,8 @@ button { cursor: pointer; font-family: inherit; border: none; }
 .job-url a:hover { color: var(--md-primary); }
 .job-time { font-size: .75rem; color: var(--md-on-surface-variant); white-space: nowrap; }
 .job-error { grid-column: 1/-1; font-size: .75rem; color: var(--md-on-error-container, #F9DEDC); background: color-mix(in srgb, var(--red) 12%, transparent); border-radius: 4px; padding: 6px 12px; font-family: 'Roboto Mono', monospace; }
+.job-retry-bar { grid-column: 1/-1; font-size: .75rem; color: var(--md-primary); background: color-mix(in srgb, var(--md-primary) 10%, transparent); border-radius: 4px; padding: 5px 12px; display: flex; align-items: center; gap: 6px; }
+.job-retry-bar .material-icons { font-size: 14px; }
 
 @keyframes job-enter { from{opacity:0;transform:translateY(-6px);max-height:0;padding-top:0;padding-bottom:0;border-bottom-width:0} to{opacity:1;transform:none;max-height:400px;padding-top:6px;padding-bottom:6px;border-bottom-width:1px} }
 @keyframes job-exit  { 0%{opacity:1;transform:translateX(0);max-height:400px;padding-top:6px;padding-bottom:6px;border-bottom-width:1px} 45%{opacity:0;transform:translateX(14px);max-height:400px;padding-top:6px;padding-bottom:6px;border-bottom-width:1px} 100%{opacity:0;transform:translateX(14px);max-height:0;padding-top:0;padding-bottom:0;border-bottom-width:0} }
@@ -871,16 +874,42 @@ html.theme-transitioning *::after {
           </div>
         </div>
 
+        <hr style="border:none;border-top:1px solid var(--md-outline-variant);margin:0">
+
         <div class="setting-group">
-          <label>Retry (minutes) <span style="color:var(--md-on-surface-variant);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
-          <input type="number" value="{{ retry_min }}" min="0" max="1440" readonly style="opacity:.5;cursor:default;width:80px">
-          <div class="hint">via RETRY_MINUTES</div>
+          <label>Auto-retry on failure</label>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <div style="display:flex;align-items:center;gap:6px">
+              <label class="setting-inline-label">Every</label>
+              <input type="number" id="cfg-retry-interval" min="0" max="1440" style="width:72px">
+              <label class="setting-inline-label">min</label>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <label class="setting-inline-label">up to</label>
+              <input type="number" id="cfg-retry-max" min="0" max="100" style="width:60px">
+              <label class="setting-inline-label">times</label>
+            </div>
+          </div>
+          <div class="hint">Set interval to 0 to disable · set times to 0 for unlimited retries</div>
         </div>
 
         <div class="setting-group">
-          <label>Delay between tracks (seconds) <span style="color:var(--md-on-surface-variant);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
-          <input type="number" value="{{ track_delay_s }}" min="0" step="0.5" readonly style="opacity:.5;cursor:default;width:80px">
-          <div class="hint">Increase to reduce provider rate-limit errors · via TRACK_DELAY_SECONDS</div>
+          <label>Delay between tracks</label>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input type="number" id="cfg-track-delay" min="0" step="0.5" style="width:80px">
+            <label class="setting-inline-label">seconds</label>
+          </div>
+          <div class="hint">Increase to reduce provider rate-limit errors</div>
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:4px">
+          <span id="cfg-save-msg" style="font-size:.8rem;color:var(--md-on-surface-variant);align-self:center"></span>
+          <button id="btn-cfg-save" style="
+            background:var(--md-primary);color:var(--md-on-primary);
+            border:none;border-radius:999px;height:32px;padding:0 20px;
+            font-size:.875rem;font-weight:500;letter-spacing:.006em;
+            cursor:pointer;position:relative;overflow:hidden;transition:box-shadow .2s
+          ">Save</button>
         </div>
 
       </div>
@@ -1217,10 +1246,16 @@ let _searchHasMore  = false;
 let _searchLoading  = false;
 let _selectedUrls   = new Set();
 
-function openSettingsModal() {
+async function openSettingsModal() {
   document.getElementById('settings-modal').classList.add('open');
   document.body.style.overflow = 'hidden';
   buildColorPresets();
+  try {
+    const d = await fetch('/api/settings').then(r => r.json());
+    document.getElementById('cfg-retry-interval').value = d.retry_interval_min ?? 5;
+    document.getElementById('cfg-retry-max').value      = d.retry_max_count    ?? 3;
+    document.getElementById('cfg-track-delay').value    = d.track_delay_s      ?? 4;
+  } catch {}
 }
 function closeSettingsModal() {
   document.getElementById('settings-modal').classList.remove('open');
@@ -1423,6 +1458,24 @@ document.getElementById('btn-msf-go').addEventListener('click', () => doSearch()
 });
 document.getElementById('btn-settings').addEventListener('click', openSettingsModal);
 document.getElementById('btn-settings-close').addEventListener('click', closeSettingsModal);
+document.getElementById('btn-cfg-save').addEventListener('click', async () => {
+  const msg = document.getElementById('cfg-save-msg');
+  const payload = {
+    retry_interval_min: parseInt(document.getElementById('cfg-retry-interval').value, 10),
+    retry_max_count:    parseInt(document.getElementById('cfg-retry-max').value,      10),
+    track_delay_s:      parseFloat(document.getElementById('cfg-track-delay').value),
+  };
+  if (Object.values(payload).some(v => isNaN(v))) { msg.textContent = 'Invalid values'; return; }
+  try {
+    const res  = await fetch('/api/settings', {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (res.ok) { msg.textContent = 'Saved'; setTimeout(() => { msg.textContent = ''; }, 2000); }
+    else        { msg.textContent = data.error || 'Save failed'; }
+  } catch { msg.textContent = 'Save failed'; }
+});
 
 document.getElementById('btn-tidal-refresh').addEventListener('click', async () => {
   const btn = document.getElementById('btn-tidal-refresh');
@@ -1600,14 +1653,16 @@ function renderJobs() {
       <div class="job-time">${fmtTime(j.started_at)}${j.finished_at ? ' → ' + fmtTime(j.finished_at) : ''}</div>
       <span class="badge ${j.status === 'done' && j.fail_count > 0 ? 'partial' : j.status}">${
         j.status === 'running' && j.total > 1 ? j.progress + '/' + j.total
-        : j.status === 'done' && j.fail_count > 0 && j.total > 1 ? j.success_count + '/' + j.total
-        : j.status === 'done' && j.fail_count > 0 ? 'partial'
+        : j.status === 'done'  && j.fail_count > 0 && j.total > 1 ? j.success_count + '/' + j.total
+        : j.status === 'done'  && j.fail_count > 0 ? 'partial'
+        : j.status === 'queued' && j.next_retry_at ? 'retry ' + (j.retry_count || 1)
         : j.status
       }</span>
       <span class="quality-badge">${j.quality === 'hires' ? 'Hi-Res' : j.quality === 'high' ? 'High' : 'Lossless'}</span>
       ${actionBtn}
       <button class="job-btn remove" data-action="remove" data-id="${esc(j.id)}" title="Remove"><span class="material-icons">close</span></button>
       ${j.error ? `<div class="job-error">${esc(j.error)}</div>` : ''}
+      ${j.next_retry_at ? `<div class="job-retry-bar"><span class="material-icons">schedule</span>Retry ${j.retry_count || 1}${j.retry_max ? ' of ' + j.retry_max : ''} in <span class="retry-countdown" data-until="${esc(j.next_retry_at)}">…</span></div>` : ''}
       ${expandPanel}
     </div>`;
   }).join('');
@@ -2169,6 +2224,10 @@ setInterval(refreshVPN, 10_000);
 setInterval(refreshJobs, 3_000);
 setInterval(() => {
   if (_vpnConnectedSince) document.getElementById('tt-uptime').textContent = fmtUptime(_vpnConnectedSince);
+  document.querySelectorAll('.retry-countdown').forEach(el => {
+    const s = Math.max(0, Math.round((new Date(el.dataset.until) - Date.now()) / 1000));
+    el.textContent = s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+  });
 }, 1000);
 
 // Theme toggle — three states: auto (follow browser) → dark → light → auto

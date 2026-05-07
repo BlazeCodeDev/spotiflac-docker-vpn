@@ -4,7 +4,7 @@ import os
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from SpotiFLAC.downloader import SpotiflacDownloader, DownloadWorker, DownloadOptions, download_one
 from SpotiFLAC.core.progress import DownloadManager
@@ -149,7 +149,8 @@ def retry_job(job_id: str) -> bool:
             return False
         j.update(status="queued", started_at=_now(), finished_at=None, error=None,
                  progress=None, total=None, track_results=None,
-                 success_count=None, fail_count=None)
+                 success_count=None, fail_count=None,
+                 retry_count=0, retry_max=None, next_retry_at=None)
     _cancel[job_id] = threading.Event()
     _save()
     threading.Thread(target=_run, daemon=True, args=(job_id,)).start()
@@ -181,7 +182,7 @@ def retry_job_partial(job_id: str, batch_urls: list, pre_success_count: int,
 _seq = 0
 
 def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
-            artist_dirs: bool, album_dirs: bool, retry_min: int, qobuz_token: str,
+            artist_dirs: bool, album_dirs: bool, qobuz_token: str,
             quality: str = "lossless",
             pre_success_count: int = 0, full_total: int = 0,
             batch_urls: list | None = None, pre_title: str = "") -> str:
@@ -195,11 +196,12 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
             progress=pre_success_count if full_total else None,
             total=full_total if full_total else None,
             track_results=None, success_count=None, fail_count=None,
+            retry_count=0, retry_max=None, next_retry_at=None,
             pre_success_count=pre_success_count, full_total=full_total,
             _batch_urls=batch_urls or [],
             output_dir=output_dir, services=services, filename_fmt=filename_fmt,
             artist_dirs=artist_dirs, album_dirs=album_dirs,
-            retry_min=retry_min, quality=quality, _qobuz_token=qobuz_token,
+            quality=quality, _qobuz_token=qobuz_token,
             _seq=_seq,
         )
     _cancel[jid] = threading.Event()
@@ -390,7 +392,6 @@ def _run(job_id: str) -> None:
     filename_fmt      = j["filename_fmt"]
     artist_dirs       = j["artist_dirs"]
     album_dirs        = j["album_dirs"]
-    retry_min         = j["retry_min"]
     quality           = j.get("quality") or "lossless"
     qobuz_token       = j.get("_qobuz_token") or ""
     pre_success_count = j.get("pre_success_count") or 0
@@ -424,12 +425,12 @@ def _run(job_id: str) -> None:
                 return
 
             _update(job_id, status="running", started_at=_now(),
-                    finished_at=None, error=None,
+                    finished_at=None, error=None, next_retry_at=None,
                     progress=pre_success_count if full_total else None,
                     total=full_total if full_total else None,
                     track_results=None, success_count=None, fail_count=None)
 
-            from config import Config as _Cfg
+            import settings as _settings
             opts = DownloadOptions(
                 output_dir            = output_dir,
                 services              = services,
@@ -437,7 +438,7 @@ def _run(job_id: str) -> None:
                 use_artist_subfolders = artist_dirs,
                 use_album_subfolders  = album_dirs,
                 quality               = quality,
-                inter_track_delay_s   = _Cfg.TRACK_DELAY_S,
+                inter_track_delay_s   = _settings.load()["track_delay_s"],
                 use_track_numbers     = True,
             )
 
@@ -497,11 +498,34 @@ def _run(job_id: str) -> None:
         finally:
             _semaphore.release()
 
-        if succeeded or not retry_min or ev.is_set():
+        if succeeded or ev.is_set():
             break
 
-        # Sleep without holding the slot so other jobs can run.
-        for _ in range(retry_min * 60):
+        # Read retry settings live so UI changes take effect on the next cycle.
+        import settings as _settings
+        cfg          = _settings.load()
+        interval_min = cfg["retry_interval_min"]
+        max_retries  = cfg["retry_max_count"]
+
+        if not interval_min:
+            break  # auto-retry disabled
+
+        retry_count = (j.get("retry_count") or 0) + 1
+
+        if max_retries > 0 and retry_count > max_retries:
+            _update(job_id, status="error", finished_at=_now(),
+                    error=f"Failed after {max_retries} auto-retr{'y' if max_retries == 1 else 'ies'}")
+            break
+
+        next_retry_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=interval_min * 60)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        _update(job_id, status="queued", finished_at=None, error=None,
+                retry_count=retry_count, retry_max=max_retries,
+                next_retry_at=next_retry_at)
+
+        # Sleep without holding the concurrency slot so other jobs can run.
+        for _ in range(interval_min * 60):
             if ev.is_set():
                 break
             time.sleep(1)
@@ -510,6 +534,6 @@ def _run(job_id: str) -> None:
             _update(job_id, status="cancelled", finished_at=_now())
             break
 
-        _update(job_id, status="queued", started_at=_now(), finished_at=None, error=None)
+        _update(job_id, next_retry_at=None)
 
     _cancel.pop(job_id, None)

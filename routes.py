@@ -5,6 +5,7 @@ import shutil
 
 from flask import Blueprint, jsonify, render_template, request, send_file
 
+import settings as _settings
 import worker
 import vpn
 from config import Config
@@ -33,8 +34,6 @@ def index():
         filename_fmt=Config.FILENAME_FMT,
         artist_dirs=Config.ARTIST_DIRS,
         album_dirs=Config.ALBUM_DIRS,
-        retry_min=Config.RETRY_MIN,
-        track_delay_s=Config.TRACK_DELAY_S,
     )
 
 
@@ -71,7 +70,6 @@ def api_download():
         filename_fmt=Config.FILENAME_FMT,
         artist_dirs=Config.ARTIST_DIRS,
         album_dirs=Config.ALBUM_DIRS,
-        retry_min=Config.RETRY_MIN,
         qobuz_token=qobuz_token,
         quality=quality,
     )
@@ -480,3 +478,33 @@ def api_library_download():
     if not os.path.isfile(target):
         return jsonify(error="Not a file"), 404
     return send_file(target, as_attachment=True, download_name=os.path.basename(target))
+
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+
+@bp.get("/api/settings")
+def api_settings_get():
+    return jsonify(_settings.load())
+
+
+@bp.patch("/api/settings")
+def api_settings_patch():
+    body = request.get_json(silent=True) or {}
+    allowed = {"retry_interval_min", "retry_max_count", "track_delay_s"}
+    updates = {}
+    errors  = {}
+    for key in allowed:
+        if key not in body:
+            continue
+        val = body[key]
+        try:
+            if key == "track_delay_s":
+                updates[key] = float(val)
+            else:
+                updates[key] = int(val)
+        except (TypeError, ValueError):
+            errors[key] = f"must be a number"
+    if errors:
+        return jsonify(error="Invalid values", fields=errors), 400
+    _settings.save(updates)
+    return jsonify(ok=True, settings=_settings.load())
