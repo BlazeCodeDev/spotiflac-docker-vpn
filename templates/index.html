@@ -1708,11 +1708,14 @@ function renderJobs() {
 
   // Animate container height change
   if (prevH > 0 && newH !== prevH) {
-    el.style.height = prevH + 'px';
+    el.style.height   = prevH + 'px';
+    el.style.overflow = 'hidden';
     requestAnimationFrame(() => {
       el.style.transition = 'height .24s cubic-bezier(.4,0,.2,1)';
       el.style.height = newH + 'px';
-      el.addEventListener('transitionend', () => { el.style.height = ''; el.style.transition = ''; }, {once: true});
+      el.addEventListener('transitionend', () => {
+        el.style.height = el.style.transition = el.style.overflow = '';
+      }, {once: true});
     });
   }
 
@@ -1731,9 +1734,13 @@ function renderJobs() {
     btn.addEventListener('click', async () => {
       const {action, id} = btn.dataset;
       if (action === 'expand') {
-        if (_jobExpanded.has(id)) _jobExpanded.delete(id);
-        else _jobExpanded.add(id);
+        const opening = !_jobExpanded.has(id);
+        if (opening) _jobExpanded.add(id); else _jobExpanded.delete(id);
         renderJobs();
+        if (opening) setTimeout(() => {
+          document.querySelector(`.job-item[data-id="${id}"] .job-expand`)
+            ?.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+        }, 260);
       } else if (action === 'tracks-toggle') {
         if (_jobShowAll.has(id)) _jobShowAll.delete(id);
         else _jobShowAll.add(id);
