@@ -506,7 +506,8 @@ button { cursor: pointer; font-family: inherit; border: none; }
   transition: background .12s, border-color .12s, color .12s;
 }
 .result-item.sel .result-check { background: var(--md-primary); border-color: var(--md-primary); color: var(--md-on-primary); }
-.result-item.expandable .result-check { display: none; }
+.result-item.expandable { grid-template-columns: 48px 1fr auto auto auto; }
+.result-item.expandable .result-check { display: flex; }
 .result-item.expandable .result-chevron { color: var(--md-on-surface-variant); font-size: 20px; flex-shrink: 0; transition: color .12s; }
 .result-item.expandable:hover .result-chevron { color: var(--md-on-surface); }
 
@@ -1588,7 +1589,8 @@ function renderSearchResults() {
       ? `<img class="result-cover" src="${esc(r.cover_url)}" alt="" loading="lazy">`
       : `<div class="result-cover-ph"></div>`;
     const action = expandable(r.type)
-      ? `<span class="material-icons result-chevron">chevron_right</span>`
+      ? `<div class="result-check result-sel-whole" title="Select whole ${r.type}"><span class="material-icons" style="font-size:13px">check</span></div>
+         <span class="material-icons result-chevron" title="Browse tracks">chevron_right</span>`
       : `<div class="result-check"><span class="material-icons" style="font-size:13px">check</span></div>`;
     return `<div class="result-item${sel ? ' sel' : ''}${expandable(r.type) ? ' expandable' : ''}" data-url="${esc(r.url)}" data-type="${r.type}" data-title="${esc(r.title)}">
       ${cover}
@@ -1607,8 +1609,15 @@ function renderSearchResults() {
 
   el.innerHTML = html;
   el.querySelectorAll('.result-item').forEach(item => {
+    const {url, type, title} = item.dataset;
+    item.querySelector('.result-sel-whole')?.addEventListener('click', e => {
+      e.stopPropagation();
+      if (_selectedUrls.has(url)) _selectedUrls.delete(url);
+      else _selectedUrls.add(url);
+      renderSearchResults();
+      updateSearchDlBtn();
+    });
     item.addEventListener('click', () => {
-      const {url, type, title} = item.dataset;
       if (expandable(type)) {
         expandResult({url, type, title});
       } else {
