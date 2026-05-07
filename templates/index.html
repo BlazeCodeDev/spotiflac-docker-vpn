@@ -346,8 +346,8 @@ button { cursor: pointer; font-family: inherit; border: none; }
 .badge.partial   { background: color-mix(in srgb, #fbbf24 14%, transparent); color: #fbbf24; }
 .badge.running::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--md-primary); animation: blink 1s ease-in-out infinite; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
-@keyframes badge-pop { 0%{transform:scale(.7);opacity:.3} 65%{transform:scale(1.15)} 100%{transform:scale(1);opacity:1} }
-.badge-changed { animation: badge-pop .28s cubic-bezier(.34,1.56,.64,1) both; }
+@keyframes badge-fade { 0%{opacity:0} 100%{opacity:1} }
+.badge-changed { animation: badge-fade .4s ease both; }
 @keyframes spin  { to { transform: rotate(360deg); } }
 
 /* Quality badge */
@@ -1732,7 +1732,7 @@ function renderJobs() {
   const _prevBadges = new Map();
   el.querySelectorAll('.job-item[data-id]').forEach(item => {
     const b = item.querySelector('.badge');
-    if (b) _prevBadges.set(item.dataset.id, b.textContent.trim() + '|' + b.className);
+    if (b) _prevBadges.set(item.dataset.id, b.textContent.trim() + '|' + b.className.replace(/\bbadge-changed\b/g, '').trim());
   });
 
   const prevH = el.offsetHeight;
