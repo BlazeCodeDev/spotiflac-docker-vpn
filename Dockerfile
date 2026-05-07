@@ -31,7 +31,7 @@ ENV PYTHONUNBUFFERED=1
 RUN apk add --no-cache netcat-openbsd
 
 COPY entrypoint.sh /entrypoint.sh
-COPY app.py config.py worker.py vpn.py routes.py /app/
+COPY app.py config.py worker.py vpn.py routes.py settings.py /app/
 COPY templates/ /app/templates/
 COPY static/ /app/static/
 RUN chmod +x /entrypoint.sh
