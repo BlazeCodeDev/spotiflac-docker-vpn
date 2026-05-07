@@ -16,6 +16,19 @@
 })();
 </script>
 <style>
+/* ─── Fixed semantic status colors — never change with theme/preset ─ */
+:root {
+  --s-running:   #3B82F6;   /* blue   — active/in-progress */
+  --s-done:      #22C55E;   /* green  — success */
+  --s-error:     #EF4444;   /* red    — failure */
+  --s-cancelled: #F97316;   /* orange — stopped */
+  --s-partial:   #F59E0B;   /* amber  — mixed result / retrying */
+  --s-queued:    #64748B;   /* slate  — waiting */
+  /* Aliases kept for legacy JS template literals */
+  --green: var(--s-done);
+  --red:   var(--s-error);
+}
+
 /* ─── M3 Color tokens — dark (default) ─────────────────────────── */
 :root {
   --md-primary:                #D0BCFF;
@@ -49,9 +62,6 @@
   --md-surface-container:         #211F26;
   --md-surface-container-high:    #2B2930;
   --md-surface-container-highest: #36343B;
-  /* semantic shorthands kept for JS-generated HTML */
-  --green: #4ADE80;
-  --red:   #F2B8B5;
 }
 html[data-theme="light"] {
   --md-primary:                #6750A4;
@@ -85,8 +95,6 @@ html[data-theme="light"] {
   --md-surface-container:         #F3EDF7;
   --md-surface-container-high:    #ECE6F0;
   --md-surface-container-highest: #E6E0E9;
-  --green: #16A34A;
-  --red:   #B3261E;
 }
 
 /* ─── Reset ─────────────────────────────────────────────────────── */
@@ -152,10 +160,10 @@ header {
   white-space: nowrap;
 }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--md-outline); flex-shrink: 0; transition: background .3s, box-shadow .3s; }
-#vpn-badge.connected    .dot { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 2s ease-in-out infinite; }
-#vpn-badge.disconnected .dot { background: var(--red); }
-#vpn-badge.mismatch     .dot { background: #fbbf24; box-shadow: 0 0 6px #fbbf24; animation: none; }
-@keyframes pulse { 0%,100%{box-shadow:0 0 4px var(--green)} 50%{box-shadow:0 0 10px var(--green)} }
+#vpn-badge.connected    .dot { background: var(--s-done);    box-shadow: 0 0 6px var(--s-done);    animation: pulse 2s ease-in-out infinite; }
+#vpn-badge.disconnected .dot { background: var(--s-error);   }
+#vpn-badge.mismatch     .dot { background: var(--s-partial); box-shadow: 0 0 6px var(--s-partial); animation: none; }
+@keyframes pulse { 0%,100%{box-shadow:0 0 4px var(--s-done)} 50%{box-shadow:0 0 10px var(--s-done)} }
 
 /* ─── Tooltip / Surface popup ────────────────────────────────────── */
 .tooltip {
@@ -338,13 +346,13 @@ button { cursor: pointer; font-family: inherit; border: none; }
   padding: 3px 10px; border-radius: 8px; white-space: nowrap;
   transition: background-color .3s, color .3s;
 }
-.badge.queued    { background: color-mix(in srgb, var(--md-on-surface-variant) 12%, transparent); color: var(--md-on-surface-variant); }
-.badge.running   { background: color-mix(in srgb, var(--md-primary) 18%, transparent); color: var(--md-primary); }
-.badge.done      { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); }
-.badge.error     { background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red); }
-.badge.cancelled { background: color-mix(in srgb, #fb923c 14%, transparent); color: #fb923c; }
-.badge.partial   { background: color-mix(in srgb, #fbbf24 14%, transparent); color: #fbbf24; }
-.badge.running::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--md-primary); animation: blink 1s ease-in-out infinite; }
+.badge.queued    { background: color-mix(in srgb, var(--s-queued)    12%, transparent); color: var(--s-queued); }
+.badge.running   { background: color-mix(in srgb, var(--s-running)   18%, transparent); color: var(--s-running); }
+.badge.done      { background: color-mix(in srgb, var(--s-done)      16%, transparent); color: var(--s-done); }
+.badge.error     { background: color-mix(in srgb, var(--s-error)     16%, transparent); color: var(--s-error); }
+.badge.cancelled { background: color-mix(in srgb, var(--s-cancelled) 14%, transparent); color: var(--s-cancelled); }
+.badge.partial   { background: color-mix(in srgb, var(--s-partial)   14%, transparent); color: var(--s-partial); }
+.badge.running::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--s-running); animation: blink 1s ease-in-out infinite; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
 @keyframes badge-fade { 0%{opacity:0} 100%{opacity:1} }
 .badge-changed { animation: badge-fade .4s ease both; }
@@ -385,7 +393,7 @@ button { cursor: pointer; font-family: inherit; border: none; }
 .job-url a:hover { color: var(--md-primary); }
 .job-time { font-size: .75rem; color: var(--md-on-surface-variant); white-space: nowrap; }
 .job-error { grid-column: 1/-1; font-size: .75rem; color: var(--md-on-error-container, #F9DEDC); background: color-mix(in srgb, var(--red) 12%, transparent); border-radius: 4px; padding: 6px 12px; font-family: 'Roboto Mono', monospace; }
-.job-retry-bar { grid-column: 1/-1; font-size: .75rem; color: var(--md-primary); background: color-mix(in srgb, var(--md-primary) 10%, transparent); border-radius: 4px; padding: 5px 12px; display: flex; align-items: center; gap: 6px; }
+.job-retry-bar { grid-column: 1/-1; font-size: .75rem; color: var(--s-partial); background: color-mix(in srgb, var(--s-partial) 10%, transparent); border-radius: 4px; padding: 5px 12px; display: flex; align-items: center; gap: 6px; }
 .job-retry-bar .material-icons { font-size: 14px; }
 
 @keyframes job-enter { from{opacity:0;transform:translateY(-6px);max-height:0;padding-top:0;padding-bottom:0;border-bottom-width:0} to{opacity:1;transform:none;max-height:400px;padding-top:6px;padding-bottom:6px;border-bottom-width:1px} }
@@ -561,6 +569,8 @@ button { cursor: pointer; font-family: inherit; border: none; }
 @keyframes toast-in  { from{opacity:0;transform:translateY(8px) scale(.97)} to{opacity:1;transform:none} }
 .toast.out { animation: toast-out .15s ease forwards; }
 @keyframes toast-out { to{opacity:0;transform:translateY(4px) scale(.98)} }
+.toast.done  { border-left: 3px solid var(--s-done); }
+.toast.error { border-left: 3px solid var(--s-error); }
 
 /* ─── Job track expand ────────────────────────────────────────────── */
 .job-expand { grid-column: 1/-1; display: none; margin-top: 4px; padding: 8px 12px; background: var(--md-surface-container); border-radius: 8px; }
