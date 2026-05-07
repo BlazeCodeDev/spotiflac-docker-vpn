@@ -857,20 +857,20 @@ html.theme-transitioning *::after {
         <hr style="border:none;border-top:1px solid var(--md-outline-variant);margin:0">
 
         <div class="setting-group">
-          <label>Filename Format <span style="color:var(--md-on-surface-variant);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
-          <input type="text" value="{{ filename_fmt }}" readonly style="opacity:.5;cursor:default">
-          <div class="hint">Variables: {artist} {album} {title} {track} {year} · Use / to create subfolders · via FILENAME_FORMAT</div>
+          <label>Filename Format</label>
+          <input type="text" id="cfg-filename-fmt" value="{{ filename_fmt }}">
+          <div class="hint">Variables: {artist} {album} {title} {track} {year} · Use / to create subfolders</div>
         </div>
 
         <div class="setting-group">
-          <label>Folder Structure <span style="color:var(--md-on-surface-variant);font-weight:400;text-transform:none;letter-spacing:0">(env var)</span></label>
+          <label>Folder Structure</label>
           <div class="toggle-row">
             <span class="toggle-label">Artist subfolder</span>
-            <label class="switch"><input type="checkbox" {% if artist_dirs %}checked{% endif %} disabled><span class="slider" style="opacity:.5"></span></label>
+            <label class="switch"><input type="checkbox" id="cfg-artist-dirs" {% if artist_dirs %}checked{% endif %}><span class="slider"></span></label>
           </div>
           <div class="toggle-row">
             <span class="toggle-label">Album subfolder</span>
-            <label class="switch"><input type="checkbox" {% if album_dirs %}checked{% endif %} disabled><span class="slider" style="opacity:.5"></span></label>
+            <label class="switch"><input type="checkbox" id="cfg-album-dirs" {% if album_dirs %}checked{% endif %}><span class="slider"></span></label>
           </div>
         </div>
 
@@ -900,6 +900,15 @@ html.theme-transitioning *::after {
             <label class="setting-inline-label">seconds</label>
           </div>
           <div class="hint">Increase to reduce provider rate-limit errors</div>
+        </div>
+
+        <div class="setting-group">
+          <label>Parallel downloads</label>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input type="number" id="cfg-max-workers" min="1" max="20" style="width:72px">
+            <label class="setting-inline-label">workers</label>
+          </div>
+          <div class="hint">Number of jobs processed simultaneously</div>
         </div>
 
         <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:4px">
@@ -1005,6 +1014,7 @@ const ALL_SERVICES = [
   {id:'youtube', name:'YouTube'},
 ];
 const DEFAULT_ORDER = {{ services | tojson }};
+let _enabledSet = new Set(DEFAULT_ORDER);
 let svcOrder = ALL_SERVICES.slice().sort((a,b) => {
   const ia = DEFAULT_ORDER.indexOf(a.id), ib = DEFAULT_ORDER.indexOf(b.id);
   return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
@@ -1019,7 +1029,7 @@ function buildServicesList() {
     el.className  = 'svc-item';
     el.draggable  = true;
     el.dataset.id = svc.id;
-    const enabled = DEFAULT_ORDER.includes(svc.id);
+    const enabled = _enabledSet.has(svc.id);
     el.innerHTML = `
       <span class="svc-handle"><span class="material-icons">drag_indicator</span></span>
       <span class="svc-name">${svc.name}</span>
@@ -1252,9 +1262,23 @@ async function openSettingsModal() {
   buildColorPresets();
   try {
     const d = await fetch('/api/settings').then(r => r.json());
-    document.getElementById('cfg-retry-interval').value = d.retry_interval_min ?? 5;
-    document.getElementById('cfg-retry-max').value      = d.retry_max_count    ?? 3;
-    document.getElementById('cfg-track-delay').value    = d.track_delay_s      ?? 4;
+    document.getElementById('cfg-retry-interval').value  = d.retry_interval_min ?? 5;
+    document.getElementById('cfg-retry-max').value       = d.retry_max_count    ?? 3;
+    document.getElementById('cfg-track-delay').value     = d.track_delay_s      ?? 4;
+    document.getElementById('cfg-max-workers').value     = d.max_workers        ?? 3;
+    document.getElementById('cfg-filename-fmt').value    = d.filename_fmt       ?? '{artist}/{album}/{track} {title}';
+    document.getElementById('cfg-artist-dirs').checked   = !!d.artist_dirs;
+    document.getElementById('cfg-album-dirs').checked    = !!d.album_dirs;
+    document.getElementById('qobuz-token').value         = d.qobuz_token        ?? '';
+    if (Array.isArray(d.services) && d.services.length) {
+      _enabledSet = new Set(d.services);
+      const disabledSvcs = svcOrder.filter(s => !_enabledSet.has(s.id));
+      svcOrder = [
+        ...d.services.map(id => ALL_SERVICES.find(s => s.id === id)).filter(Boolean),
+        ...disabledSvcs,
+      ];
+      buildServicesList();
+    }
   } catch {}
 }
 function closeSettingsModal() {
@@ -1464,8 +1488,15 @@ document.getElementById('btn-cfg-save').addEventListener('click', async () => {
     retry_interval_min: parseInt(document.getElementById('cfg-retry-interval').value, 10),
     retry_max_count:    parseInt(document.getElementById('cfg-retry-max').value,      10),
     track_delay_s:      parseFloat(document.getElementById('cfg-track-delay').value),
+    max_workers:        parseInt(document.getElementById('cfg-max-workers').value,    10),
+    filename_fmt:       document.getElementById('cfg-filename-fmt').value,
+    artist_dirs:        document.getElementById('cfg-artist-dirs').checked,
+    album_dirs:         document.getElementById('cfg-album-dirs').checked,
+    qobuz_token:        document.getElementById('qobuz-token').value,
+    services:           getActiveServices(),
   };
-  if (Object.values(payload).some(v => isNaN(v))) { msg.textContent = 'Invalid values'; return; }
+  const numericFields = ['retry_interval_min', 'retry_max_count', 'track_delay_s', 'max_workers'];
+  if (numericFields.some(k => isNaN(payload[k]))) { msg.textContent = 'Invalid values'; return; }
   try {
     const res  = await fetch('/api/settings', {
       method: 'PATCH', headers: {'Content-Type': 'application/json'},

@@ -9,12 +9,21 @@ _log           = logging.getLogger(__name__)
 
 
 def _defaults() -> dict:
-    # Env vars are used as initial defaults; once the file is written they
-    # are ignored so the UI is the single source of truth going forward.
+    # Env vars are initial fallbacks — once the file is written they are
+    # ignored and the UI is the single source of truth going forward.
     return {
+        # Download behaviour
+        "services":    [s.strip() for s in os.environ.get("SPOTIFLAC_SERVICES", "tidal,qobuz,amazon,youtube").split(",") if s.strip()],
+        "filename_fmt": os.environ.get("FILENAME_FORMAT",       "{artist}/{album}/{track} {title}"),
+        "artist_dirs":  os.environ.get("USE_ARTIST_SUBFOLDERS", "false").lower() == "true",
+        "album_dirs":   os.environ.get("USE_ALBUM_SUBFOLDERS",  "false").lower() == "true",
+        "qobuz_token":  os.environ.get("QOBUZ_TOKEN",           ""),
+        # Retry
         "retry_interval_min": int(os.environ.get("RETRY_MINUTES",       "5")),
         "retry_max_count":    int(os.environ.get("RETRY_MAX_COUNT",      "3")),
-        "track_delay_s":      float(os.environ.get("TRACK_DELAY_SECONDS", "4.0")),
+        # Performance
+        "track_delay_s": float(os.environ.get("TRACK_DELAY_SECONDS", "4.0")),
+        "max_workers":   int(os.environ.get("MAX_WORKERS",           "3")),
     }
 
 

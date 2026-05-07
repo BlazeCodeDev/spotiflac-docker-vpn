@@ -28,12 +28,13 @@ def _safe_int(value, default: int) -> int:
 
 @bp.get("/")
 def index():
+    cfg = _settings.load()
     return render_template(
         "index.html",
-        services=Config.SERVICES,
-        filename_fmt=Config.FILENAME_FMT,
-        artist_dirs=Config.ARTIST_DIRS,
-        album_dirs=Config.ALBUM_DIRS,
+        services=cfg["services"],
+        filename_fmt=cfg["filename_fmt"],
+        artist_dirs=cfg["artist_dirs"],
+        album_dirs=cfg["album_dirs"],
     )
 
 
@@ -45,17 +46,17 @@ def api_download():
     if not urls:
         return jsonify(error="No URLs provided"), 400
 
+    cfg = _settings.load()
+
     # Whitelist services — reject unknown values
-    raw_services = body.get("services", Config.SERVICES)
+    raw_services = body.get("services", cfg["services"])
     services = [s for s in raw_services if s in _VALID_SERVICES]
     if not services:
         return jsonify(error="No valid services specified"), 400
 
-    # Filename format, folder structure and retry interval are always taken from
-    # env vars — the UI may display them but cannot override them.
     raw_quality = body.get("quality", "lossless")
     quality = raw_quality if raw_quality in _VALID_QUALITIES else "lossless"
-    qobuz_token = str(body.get("qobuz_token", Config.QOBUZ_TOKEN))
+    qobuz_token = str(body.get("qobuz_token") or cfg["qobuz_token"])
 
     # Optional offset fields for partial retries
     pre_success_count = _safe_int(body.get("pre_success_count", 0), 0)
@@ -67,9 +68,9 @@ def api_download():
     common = dict(
         output_dir=Config.OUTPUT_DIR,
         services=services,
-        filename_fmt=Config.FILENAME_FMT,
-        artist_dirs=Config.ARTIST_DIRS,
-        album_dirs=Config.ALBUM_DIRS,
+        filename_fmt=cfg["filename_fmt"],
+        artist_dirs=cfg["artist_dirs"],
+        album_dirs=cfg["album_dirs"],
         qobuz_token=qobuz_token,
         quality=quality,
     )
@@ -489,21 +490,50 @@ def api_settings_get():
 
 @bp.patch("/api/settings")
 def api_settings_patch():
-    body = request.get_json(silent=True) or {}
-    allowed = {"retry_interval_min", "retry_max_count", "track_delay_s"}
+    body    = request.get_json(silent=True) or {}
     updates = {}
     errors  = {}
-    for key in allowed:
+
+    for key in ("retry_interval_min", "retry_max_count", "max_workers"):
+        if key not in body:
+            continue
+        try:
+            updates[key] = int(body[key])
+        except (TypeError, ValueError):
+            errors[key] = "must be an integer"
+
+    if "track_delay_s" in body:
+        try:
+            updates["track_delay_s"] = float(body["track_delay_s"])
+        except (TypeError, ValueError):
+            errors["track_delay_s"] = "must be a number"
+
+    for key in ("filename_fmt", "qobuz_token"):
+        if key in body:
+            updates[key] = str(body[key])
+
+    for key in ("artist_dirs", "album_dirs"):
         if key not in body:
             continue
         val = body[key]
-        try:
-            if key == "track_delay_s":
-                updates[key] = float(val)
+        if isinstance(val, bool):
+            updates[key] = val
+        elif isinstance(val, str):
+            updates[key] = val.lower() == "true"
+        else:
+            errors[key] = "must be a boolean"
+
+    if "services" in body:
+        raw = body["services"]
+        if not isinstance(raw, list):
+            errors["services"] = "must be a list"
+        else:
+            cleaned = [s for s in raw if s in _VALID_SERVICES]
+            if not cleaned:
+                errors["services"] = "no valid service names"
             else:
-                updates[key] = int(val)
-        except (TypeError, ValueError):
-            errors[key] = f"must be a number"
+                updates["services"] = cleaned
+
     if errors:
         return jsonify(error="Invalid values", fields=errors), 400
     _settings.save(updates)

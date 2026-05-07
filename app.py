@@ -11,6 +11,7 @@ from functools import wraps
 
 from flask import Flask, Response, request
 
+import settings as _settings
 import worker
 from config import Config
 from routes import bp
@@ -22,12 +23,14 @@ logging.basicConfig(
 )
 
 os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
-worker.init(Config.MAX_WORKERS)
+_cfg = _settings.load()
+worker.init(_cfg["max_workers"])
 
 _log = logging.getLogger("startup")
 _log.info("OUTPUT_DIR  = %s", os.path.abspath(Config.OUTPUT_DIR))
 _log.info("PORT        = %s", Config.PORT)
-_log.info("SERVICES    = %s", Config.SERVICES)
+_log.info("SERVICES    = %s", _cfg["services"])
+_log.info("MAX_WORKERS = %s", _cfg["max_workers"])
 _log.info("VPN_PROTOCOL= %s", Config.VPN_PROTOCOL)
 _log.info("UI_PASSWORD = %s", "set" if Config.UI_PASSWORD else "not set (no protection)")
 if os.environ.get("LOG_LEVEL", "").lower() == "debug":
