@@ -260,6 +260,32 @@ def api_search():
         return jsonify(error="Search failed"), 502
 
 
+@bp.get("/api/search/expand")
+def api_search_expand():
+    url = request.args.get("url", "").strip()
+    if not url:
+        return jsonify(error="No URL provided"), 400
+    try:
+        from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient
+        client = SpotifyMetadataClient(timeout_s=15)
+        name, tracks = client.get_url(url)
+        return jsonify(
+            title=name,
+            tracks=[{
+                "title":        t.title,
+                "artists":      t.artists,
+                "duration_ms":  t.duration_ms,
+                "track_number": t.track_number,
+                "url":          t.external_url,
+                "cover_url":    t.cover_url,
+                "year":         t.year,
+            } for t in tracks],
+        )
+    except Exception as exc:
+        log.warning("Expand failed: %s", exc)
+        return jsonify(error=str(exc)), 502
+
+
 # ── Library ───────────────────────────────────────────────────────────────────
 
 def _lib_root() -> str:

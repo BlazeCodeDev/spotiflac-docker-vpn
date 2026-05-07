@@ -506,6 +506,31 @@ button { cursor: pointer; font-family: inherit; border: none; }
   transition: background .12s, border-color .12s, color .12s;
 }
 .result-item.sel .result-check { background: var(--md-primary); border-color: var(--md-primary); color: var(--md-on-primary); }
+.result-item.expandable .result-check { display: none; }
+.result-item.expandable .result-chevron { color: var(--md-on-surface-variant); font-size: 20px; flex-shrink: 0; transition: color .12s; }
+.result-item.expandable:hover .result-chevron { color: var(--md-on-surface); }
+
+/* ─── Expand drill-down ────────────────────────────────────────────── */
+.expand-header { display: flex; align-items: center; justify-content: space-between; padding: 2px 12px 8px; }
+.expand-selall { font-size: .8rem; color: var(--md-primary); cursor: pointer; user-select: none; }
+.expand-count  { font-size: .75rem; color: var(--md-on-surface-variant); }
+.expand-list   { display: flex; flex-direction: column; gap: 2px; }
+.expand-track {
+  display: grid; grid-template-columns: 28px 1fr auto auto;
+  align-items: center; gap: 6px 10px;
+  padding: 7px 12px; border-radius: 10px;
+  cursor: pointer; user-select: none; position: relative; transition: background .12s;
+}
+.expand-track::before { content: ''; position: absolute; inset: 0; border-radius: inherit; background: var(--md-on-surface); opacity: 0; transition: opacity .12s; pointer-events: none; }
+.expand-track:hover::before { opacity: .08; }
+.expand-track.sel { background: color-mix(in srgb, var(--md-primary) 14%, transparent); }
+.expand-track .track-num { font-size: .75rem; color: var(--md-on-surface-variant); text-align: right; }
+.expand-track .track-info { min-width: 0; }
+.expand-track .track-title { font-size: .875rem; color: var(--md-on-surface); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.expand-track .track-artists { font-size: .75rem; color: var(--md-on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
+.expand-track .track-dur { font-size: .75rem; color: var(--md-on-surface-variant); flex-shrink: 0; }
+.expand-track .result-check { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--md-outline); flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: transparent; transition: background .12s, border-color .12s, color .12s; }
+.expand-track.sel .result-check { background: var(--md-primary); border-color: var(--md-primary); color: var(--md-on-primary); }
 
 /* ─── Filter chips ────────────────────────────────────────────────── */
 .modal-filter { display: flex; gap: 8px; padding: 10px 20px; border-bottom: 1px solid var(--md-outline-variant); flex-shrink: 0; flex-wrap: wrap; }
@@ -961,7 +986,8 @@ html.theme-transitioning *::after {
 <div id="search-modal" class="modal-overlay" role="dialog" aria-modal="true">
   <div class="modal">
     <div class="modal-header">
-      <span class="modal-title">Search</span>
+      <button id="btn-modal-back" class="btn-ghost" style="display:none;width:32px;height:32px;padding:0;align-items:center;justify-content:center;flex-shrink:0" title="Back"><span class="material-icons" style="font-size:20px">arrow_back</span></button>
+      <span id="modal-title-text" class="modal-title" style="flex:1">Search</span>
       <button class="modal-close" id="btn-modal-close" title="Close"><span class="material-icons">close</span></button>
     </div>
     <div class="modal-search-form">
@@ -1374,6 +1400,7 @@ let _searchSort     = 'relevance';
 let _searchHasMore  = false;
 let _searchLoading  = false;
 let _selectedUrls   = new Set();
+let _expandedResult = null;  // album/playlist being drilled into
 
 async function openSettingsModal() {
   document.getElementById('settings-modal').classList.add('open');
@@ -1470,6 +1497,10 @@ function _buildSearchQuery() {
 function closeModal() {
   document.getElementById('search-modal').classList.remove('open');
   document.body.style.overflow = '';
+  if (_expandedResult) {
+    _expandedResult = null;
+    _setModalCollapsed();
+  }
 }
 
 function fmtDuration(ms) {
@@ -1550,19 +1581,23 @@ function renderSearchResults() {
     return;
   }
 
+  const expandable = (type) => type === 'album' || type === 'playlist';
   let html = '<div class="result-list">' + visible.map(r => {
     const sel   = _selectedUrls.has(r.url);
     const cover = r.cover_url
       ? `<img class="result-cover" src="${esc(r.cover_url)}" alt="" loading="lazy">`
       : `<div class="result-cover-ph"></div>`;
-    return `<div class="result-item${sel ? ' sel' : ''}" data-url="${esc(r.url)}">
+    const action = expandable(r.type)
+      ? `<span class="material-icons result-chevron">chevron_right</span>`
+      : `<div class="result-check"><span class="material-icons" style="font-size:13px">check</span></div>`;
+    return `<div class="result-item${sel ? ' sel' : ''}${expandable(r.type) ? ' expandable' : ''}" data-url="${esc(r.url)}" data-type="${r.type}" data-title="${esc(r.title)}">
       ${cover}
       <div class="result-info">
         <div class="result-title">${esc(r.title)}</div>
         <div class="result-sub">${esc(fmtSubtitle(r))}</div>
       </div>
       <span class="result-type type-${r.type}">${r.type}</span>
-      <div class="result-check"><span class="material-icons" style="font-size:13px">check</span></div>
+      ${action}
     </div>`;
   }).join('') + '</div>';
 
@@ -1573,11 +1608,15 @@ function renderSearchResults() {
   el.innerHTML = html;
   el.querySelectorAll('.result-item').forEach(item => {
     item.addEventListener('click', () => {
-      const url = item.dataset.url;
-      if (_selectedUrls.has(url)) _selectedUrls.delete(url);
-      else _selectedUrls.add(url);
-      renderSearchResults();
-      updateSearchDlBtn();
+      const {url, type, title} = item.dataset;
+      if (expandable(type)) {
+        expandResult({url, type, title});
+      } else {
+        if (_selectedUrls.has(url)) _selectedUrls.delete(url);
+        else _selectedUrls.add(url);
+        renderSearchResults();
+        updateSearchDlBtn();
+      }
     });
   });
 }
@@ -1588,6 +1627,85 @@ function updateSearchDlBtn() {
   btn.textContent   = `Download ${n} selected`;
   btn.style.display = n ? 'inline-block' : 'none';
 }
+
+function _setModalExpanded(title) {
+  document.getElementById('btn-modal-back').style.display = 'flex';
+  document.getElementById('modal-title-text').textContent = title;
+  document.getElementById('search-modal').querySelector('.modal-search-form').style.display = 'none';
+  document.getElementById('search-modal').querySelector('.modal-filter').style.display = 'none';
+  document.getElementById('search-modal').querySelector('.modal-sort').style.display = 'none';
+}
+
+function _setModalCollapsed() {
+  document.getElementById('btn-modal-back').style.display = 'none';
+  document.getElementById('modal-title-text').textContent = 'Search';
+  document.getElementById('search-modal').querySelector('.modal-search-form').style.display = '';
+  document.getElementById('search-modal').querySelector('.modal-filter').style.display = '';
+  document.getElementById('search-modal').querySelector('.modal-sort').style.display = '';
+}
+
+async function expandResult(r) {
+  _expandedResult = r;
+  _setModalExpanded(r.title);
+  const el = document.getElementById('search-results');
+  el.innerHTML = '<div class="jobs-empty" style="padding:16px 0">Loading tracks…</div>';
+  try {
+    const res  = await fetch('/api/search/expand?url=' + encodeURIComponent(r.url));
+    const data = await res.json();
+    if (!res.ok) { el.innerHTML = `<div class="jobs-empty">${esc(data.error || 'Error')}</div>`; return; }
+    renderExpandedTracks(data.tracks);
+  } catch { el.innerHTML = '<div class="jobs-empty">Failed to load tracks</div>'; }
+}
+
+function renderExpandedTracks(tracks) {
+  const el   = document.getElementById('search-results');
+  if (!tracks.length) { el.innerHTML = '<div class="jobs-empty">No tracks found</div>'; return; }
+  const allSel = tracks.every(t => _selectedUrls.has(t.url));
+
+  let html = `<div class="expand-header">
+    <span class="expand-count">${tracks.length} tracks</span>
+    <span class="expand-selall" id="btn-selall">${allSel ? 'Deselect all' : 'Select all'}</span>
+  </div>
+  <div class="expand-list">` +
+  tracks.map(t => {
+    const sel = _selectedUrls.has(t.url);
+    return `<div class="expand-track${sel ? ' sel' : ''}" data-url="${esc(t.url)}">
+      <span class="track-num">${t.track_number || ''}</span>
+      <div class="track-info">
+        <div class="track-title">${esc(t.title)}</div>
+        <div class="track-artists">${esc(t.artists)}</div>
+      </div>
+      <span class="track-dur">${fmtDuration(t.duration_ms)}</span>
+      <div class="result-check"><span class="material-icons" style="font-size:12px">check</span></div>
+    </div>`;
+  }).join('') + '</div>';
+
+  el.innerHTML = html;
+
+  el.querySelector('#btn-selall').addEventListener('click', () => {
+    if (allSel) tracks.forEach(t => _selectedUrls.delete(t.url));
+    else        tracks.forEach(t => _selectedUrls.add(t.url));
+    renderExpandedTracks(tracks);
+    updateSearchDlBtn();
+  });
+
+  el.querySelectorAll('.expand-track').forEach(row => {
+    row.addEventListener('click', () => {
+      const url = row.dataset.url;
+      if (_selectedUrls.has(url)) _selectedUrls.delete(url);
+      else _selectedUrls.add(url);
+      renderExpandedTracks(tracks);
+      updateSearchDlBtn();
+    });
+  });
+}
+
+document.getElementById('btn-modal-back').addEventListener('click', () => {
+  _expandedResult = null;
+  _setModalCollapsed();
+  renderSearchResults();
+  updateSearchDlBtn();
+});
 
 document.getElementById('btn-search').addEventListener('click', () => {
   _populateSearchForm(document.getElementById('urls').value.trim());
@@ -2009,7 +2127,9 @@ document.getElementById('btn-dl').addEventListener('click', async () => {
   const msg = document.getElementById('msg');
   const lines = urls.replace(/,/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
   if (!lines.every(_isSpotifyUrl)) {
-    msg.textContent = 'Please enter valid Spotify URLs';
+    _populateSearchForm(urls);
+    openModal();
+    doSearch();
     return;
   }
   msg.textContent = '…';
