@@ -659,15 +659,30 @@ html.theme-transitioning *::after {
 #lib-dialog-ok:hover::before  { opacity: .08; }
 #lib-dialog-ok:active::before { opacity: .12; }
 
-.lib-search-form { padding: 8px 0 4px; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--md-outline-variant); margin-bottom: 6px; }
+.lib-search-form {
+  display: flex; flex-direction: column; gap: 6px;
+  overflow: hidden; max-height: 0; opacity: 0;
+  transition: max-height .28s cubic-bezier(.4,0,.2,1), opacity .2s ease, margin .28s ease;
+  margin-bottom: 0;
+}
+.lib-search-form.open {
+  max-height: 200px; opacity: 1; margin-bottom: 10px;
+}
+.lib-search-inner {
+  background: var(--md-surface-container);
+  border-radius: 10px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 6px;
+}
 #btn-lsf-go {
   background: var(--md-primary); color: var(--md-on-primary);
-  border: none; border-radius: 8px; width: 34px; height: 34px;
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer; flex-shrink: 0; position: relative; overflow: hidden;
+  border: none; border-radius: 999px; height: 32px; padding: 0 14px;
+  display: flex; align-items: center; gap: 5px;
+  font-size: .8rem; font-weight: 500; letter-spacing: .025em;
+  cursor: pointer; flex-shrink: 0; position: relative; overflow: hidden; align-self: flex-end;
 }
 #btn-lsf-go::before { content: ''; position: absolute; inset: 0; background: var(--md-on-primary); opacity: 0; transition: opacity .15s; }
 #btn-lsf-go:hover::before { opacity: .1; }
+#btn-lib-search.lib-search-active { background: color-mix(in srgb, var(--md-primary) 14%, transparent); color: var(--md-primary); }
 .lib-sr {
   display: grid; grid-template-columns: 18px 1fr auto;
   align-items: center; gap: 4px 8px;
@@ -780,30 +795,34 @@ html.theme-transitioning *::after {
   <div class="card">
     <div class="card-header">
       <span class="section-title">Library</span>
-      <button class="btn-ghost" id="btn-lib-search">Search</button>
-      <button class="btn-ghost" id="btn-lib-refresh">Refresh</button>
-    </div>
-    <div id="lib-search-form" class="lib-search-form" style="display:none">
-      <div class="msf-row">
-        <div class="msf-field" style="flex:2">
-          <span class="material-icons">music_note</span>
-          <input type="text" id="lsf-track" placeholder="Track or keywords" autocomplete="off">
-        </div>
-        <div class="msf-field">
-          <span class="material-icons">person</span>
-          <input type="text" id="lsf-artist" placeholder="Artist" autocomplete="off">
-        </div>
+      <div style="display:flex;gap:4px">
+        <button class="btn-ghost" id="btn-lib-search" title="Search library" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">search</span></button>
+        <button class="btn-ghost" id="btn-lib-refresh" title="Refresh" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">refresh</span></button>
       </div>
-      <div class="msf-row">
-        <div class="msf-field" style="flex:2">
-          <span class="material-icons">album</span>
-          <input type="text" id="lsf-album" placeholder="Album" autocomplete="off">
+    </div>
+    <div id="lib-search-form" class="lib-search-form">
+      <div class="lib-search-inner">
+        <div class="msf-row">
+          <div class="msf-field" style="flex:2">
+            <span class="material-icons">music_note</span>
+            <input type="text" id="lsf-track" placeholder="Track or keywords" autocomplete="off">
+          </div>
+          <div class="msf-field">
+            <span class="material-icons">person</span>
+            <input type="text" id="lsf-artist" placeholder="Artist" autocomplete="off">
+          </div>
         </div>
-        <div class="msf-field" style="max-width:96px">
-          <span class="material-icons">event</span>
-          <input type="text" id="lsf-year" placeholder="Year" autocomplete="off">
+        <div class="msf-row">
+          <div class="msf-field" style="flex:2">
+            <span class="material-icons">album</span>
+            <input type="text" id="lsf-album" placeholder="Album" autocomplete="off">
+          </div>
+          <div class="msf-field" style="max-width:90px">
+            <span class="material-icons">event</span>
+            <input type="text" id="lsf-year" placeholder="Year" autocomplete="off">
+          </div>
+          <button id="btn-lsf-go"><span class="material-icons" style="font-size:16px;position:relative">search</span>Search</button>
         </div>
-        <button id="btn-lsf-go" title="Search"><span class="material-icons" style="font-size:18px;position:relative">search</span></button>
       </div>
     </div>
     <div id="lib-stale-bar" class="lib-stale-bar">
@@ -2281,15 +2300,17 @@ let _lsfActive = false;
 
 function _lsfShowForm() {
   _lsfActive = true;
-  document.getElementById('lib-search-form').style.display = '';
-  document.getElementById('btn-lib-search').textContent = 'Close';
-  document.getElementById('lsf-track').focus();
+  document.getElementById('lib-search-form').classList.add('open');
+  document.getElementById('btn-lib-search').classList.add('lib-search-active');
+  document.getElementById('btn-lib-search').title = 'Close search';
+  setTimeout(() => document.getElementById('lsf-track').focus(), 80);
 }
 
 function _lsfHideForm(navigate = true) {
   _lsfActive = false;
-  document.getElementById('lib-search-form').style.display = 'none';
-  document.getElementById('btn-lib-search').textContent = 'Search';
+  document.getElementById('lib-search-form').classList.remove('open');
+  document.getElementById('btn-lib-search').classList.remove('lib-search-active');
+  document.getElementById('btn-lib-search').title = 'Search library';
   if (navigate) loadLibrary(_libPath);
 }
 
