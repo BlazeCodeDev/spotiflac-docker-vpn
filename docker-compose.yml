@@ -1,35 +1,28 @@
 services:
   spotiflac:
     image: spotiflac-docker-vpn:latest
-    container_name: spotiflac-test
+    container_name: spotiflac
     pull_policy: never
     devices:
       - /dev/net/tun:/dev/net/tun
     environment:
       - TZ=Europe/Berlin
       - OUTPUT_DIR=/downloads
-      - SPOTIFLAC_SERVICES=tidal,qobuz,amazon,spoti,youtube
-      - FILENAME_FORMAT={artist}/{year} - {album}/{track}. {title}
-      - USE_ARTIST_SUBFOLDERS=true
-      - USE_ALBUM_SUBFOLDERS=true
-      - RETRY_MINUTES=5
-      - QOBUZ_TOKEN=
       - PORT=5000
       - UI_PASSWORD=
       - VPN_USER=
       - VPN_PASS=
       - VPN_CONFIG_FILE=/vpn/config.ovpn
-      - LOG_LEVEL=debug
     cap_add:
       - NET_ADMIN
       - NET_RAW
     ports:
       - 5000:5000
     volumes:
-      - music:/downloads
+      - /mnt/smb_share/Musik/tagged:/downloads
       - spotiflac_config:/vpn
     restart: unless-stopped
-    
+
 volumes:
-  music:
   spotiflac_config:
+    external: true
