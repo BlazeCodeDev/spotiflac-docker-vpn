@@ -346,6 +346,8 @@ button { cursor: pointer; font-family: inherit; border: none; }
 .badge.partial   { background: color-mix(in srgb, #fbbf24 14%, transparent); color: #fbbf24; }
 .badge.running::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--md-primary); animation: blink 1s ease-in-out infinite; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+@keyframes badge-pop { 0%{transform:scale(.7);opacity:.3} 65%{transform:scale(1.15)} 100%{transform:scale(1);opacity:1} }
+.badge-changed { animation: badge-pop .28s cubic-bezier(.34,1.56,.64,1) both; }
 @keyframes spin  { to { transform: rotate(360deg); } }
 
 /* Quality badge */
@@ -1638,6 +1640,13 @@ function renderJobs() {
 
   const _seenIds = new Set(jobs.map(j => j.id));
 
+  // Capture badge states before rebuild so we can animate changes
+  const _prevBadges = new Map();
+  el.querySelectorAll('.job-item[data-id]').forEach(item => {
+    const b = item.querySelector('.badge');
+    if (b) _prevBadges.set(item.dataset.id, b.textContent.trim() + '|' + b.className);
+  });
+
   const prevH = el.offsetHeight;
   el.innerHTML = jobs.map(j => {
     const label = j.title || j.url;
@@ -1682,10 +1691,10 @@ function renderJobs() {
         ${hasTracks ? `<button class="job-expand-btn" data-action="expand" data-id="${esc(j.id)}" title="Show tracks"><span class="material-icons" style="font-size:16px">expand_more</span></button>` : ''}
       </div>
       <div class="job-time">${fmtTime(j.started_at)}${j.finished_at ? ' → ' + fmtTime(j.finished_at) : ''}</div>
-      <span class="badge ${j.status === 'done' && j.fail_count > 0 ? 'partial' : j.status}">${
+      <span class="badge ${j.status === 'done' && j.fail_count > 0 && j.success_count > 0 ? 'partial' : j.status === 'done' && j.fail_count > 0 ? 'error' : j.status}">${
         j.status === 'running' && j.total > 1 ? j.progress + '/' + j.total
-        : j.status === 'done'  && j.fail_count > 0 && j.total > 1 ? j.success_count + '/' + j.total
-        : j.status === 'done'  && j.fail_count > 0 ? 'partial'
+        : j.status === 'done'  && j.fail_count > 0 && j.total > 1 && j.success_count > 0 ? j.success_count + '/' + j.total
+        : j.status === 'done'  && j.fail_count > 0 ? 'failed'
         : j.status === 'queued' && j.next_retry_at ? 'retry ' + (j.retry_count || 1)
         : j.status
       }</span>
@@ -1705,6 +1714,15 @@ function renderJobs() {
     if (!_prevJobIds.has(item.dataset.id)) item.classList.add('job-enter');
   });
   _prevJobIds = _seenIds;
+
+  // Pop-animate badges whose text or class changed
+  el.querySelectorAll('.job-item[data-id]').forEach(item => {
+    const b    = item.querySelector('.badge');
+    if (!b) return;
+    const prev = _prevBadges.get(item.dataset.id);
+    const curr = b.textContent.trim() + '|' + b.className;
+    if (prev !== undefined && prev !== curr) b.classList.add('badge-changed');
+  });
 
   // Animate container height change
   if (prevH > 0 && newH !== prevH) {

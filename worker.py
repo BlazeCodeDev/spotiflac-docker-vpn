@@ -491,7 +491,9 @@ def _run(job_id: str) -> None:
                 success_count = success_count if track_results else None,
                 fail_count    = fail_count    if track_results else None,
             )
-            succeeded = True
+            # Treat complete failure (all tracks failed) same as an exception so
+            # auto-retry kicks in.  Partial success (at least one track OK) is done.
+            succeeded = (new_success > 0) or not track_results
         except Exception as exc:
             log.error("Job %s failed: %s", job_id, exc)
             _update(job_id, status="error", error=str(exc), finished_at=_now())
