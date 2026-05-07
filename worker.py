@@ -1,3 +1,4 @@
+import heapq
 import json
 import logging
 import os
@@ -15,11 +16,57 @@ _cancel:  dict[str, threading.Event] = {}
 _lock     = threading.Lock()
 _semaphore = threading.BoundedSemaphore(3)  # replaced by init()
 
+# Priority queue for ordered dispatch: (−_seq, counter, job_id)
+_pq:     list  = []
+_pq_ctr: int   = 0
+_pq_cv         = threading.Condition(threading.Lock())
+
+
+def _push_pq(job_id: str, seq: int) -> None:
+    global _pq_ctr
+    with _pq_cv:
+        _pq_ctr += 1
+        heapq.heappush(_pq, (-seq, _pq_ctr, job_id))
+        _pq_cv.notify_all()
+
+
+def _dispatcher() -> None:
+    """Single thread: dispatches queued jobs in _seq order (highest = top of UI)."""
+    while True:
+        with _pq_cv:
+            while not _pq:
+                _pq_cv.wait()
+            # Skip cancelled / removed jobs at the front
+            while _pq:
+                _, _, jid = _pq[0]
+                with _lock:
+                    j = _jobs.get(jid)
+                ev = _cancel.get(jid)
+                if not j or (ev and ev.is_set()) or j.get("status") == "cancelled":
+                    heapq.heappop(_pq)
+                else:
+                    break
+            if not _pq:
+                continue
+            _, _, job_id = heapq.heappop(_pq)
+
+        # Wait for a concurrency slot, checking for cancellation each second
+        acquired = False
+        while not acquired:
+            ev = _cancel.get(job_id)
+            if ev and ev.is_set():
+                break
+            acquired = _semaphore.acquire(timeout=1)
+
+        if acquired:
+            threading.Thread(target=_run, daemon=True, args=(job_id,)).start()
+
 
 def init(max_workers: int) -> None:
     global _semaphore
     _semaphore = threading.BoundedSemaphore(max_workers)
     log.info("MAX_WORKERS = %d", max_workers)
+    threading.Thread(target=_dispatcher, daemon=True, name="job-dispatcher").start()
 
 _STATE_FILE = os.environ.get("STATE_FILE", "/vpn/jobs.json")
 
@@ -134,11 +181,23 @@ def cancel_job(job_id: str) -> bool:
 
 
 def reorder_jobs(ids: list) -> None:
+    global _pq_ctr
     with _lock:
         total = len(ids)
         for rank, jid in enumerate(ids):
             if jid in _jobs:
                 _jobs[jid]["_seq"] = total - rank
+    # Rebuild priority queue so the new order takes effect for pending jobs
+    with _pq_cv:
+        new_pq = []
+        for _, _, jid in _pq:
+            with _lock:
+                j = _jobs.get(jid)
+            if j:
+                _pq_ctr += 1
+                heapq.heappush(new_pq, (-j.get("_seq", 0), _pq_ctr, jid))
+        _pq[:] = new_pq
+        _pq_cv.notify_all()
     _save()
 
 
@@ -153,7 +212,9 @@ def retry_job(job_id: str) -> bool:
                  retry_count=0, retry_max=None, next_retry_at=None)
     _cancel[job_id] = threading.Event()
     _save()
-    threading.Thread(target=_run, daemon=True, args=(job_id,)).start()
+    with _lock:
+        seq = _jobs[job_id].get("_seq", 0)
+    _push_pq(job_id, seq)
     return True
 
 
@@ -175,7 +236,9 @@ def retry_job_partial(job_id: str, batch_urls: list, pre_success_count: int,
             j["url"] = batch_urls[0]
     _cancel[job_id] = threading.Event()
     _save()
-    threading.Thread(target=_run, daemon=True, args=(job_id,)).start()
+    with _lock:
+        seq = _jobs[job_id].get("_seq", 0)
+    _push_pq(job_id, seq)
     return True
 
 
@@ -206,7 +269,7 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
         )
     _cancel[jid] = threading.Event()
     _save()
-    threading.Thread(target=_run, daemon=True, args=(jid,)).start()
+    _push_pq(jid, _seq)
     return jid
 
 
@@ -377,51 +440,49 @@ class _TrackingDownloader(SpotiflacDownloader):
 
 
 def _run(job_id: str) -> None:
+    """Execute one dispatch of a job. Semaphore slot is already held by dispatcher."""
+    slot_held = True
     ev = _cancel.setdefault(job_id, threading.Event())
-    if ev.is_set():
-        return
 
-    with _lock:
-        j = _jobs.get(job_id)
-    if not j:
-        return
+    try:
+        if ev.is_set():
+            _update(job_id, status="cancelled", finished_at=_now())
+            _cancel.pop(job_id, None)
+            return
 
-    url               = j["url"]
-    output_dir        = j["output_dir"]
-    services          = j["services"]
-    filename_fmt      = j["filename_fmt"]
-    artist_dirs       = j["artist_dirs"]
-    album_dirs        = j["album_dirs"]
-    quality           = j.get("quality") or "lossless"
-    qobuz_token       = j.get("_qobuz_token") or ""
-    pre_success_count = j.get("pre_success_count") or 0
-    full_total        = j.get("full_total") or 0
-    batch_urls        = j.get("_batch_urls") or []
+        with _lock:
+            j = _jobs.get(job_id)
+        if not j:
+            return
 
-    # Skip metadata fetch if title already set (pre-filled batch jobs)
-    if not j.get("title"):
-        title, cover_url, artist = _fetch_metadata(url)
-        meta: dict = {}
-        if title:     meta["title"]     = title
-        if cover_url: meta["cover_url"] = cover_url
-        if artist:    meta["artist"]    = artist
-        if meta:
-            _update(job_id, **meta)
+        url               = j["url"]
+        output_dir        = j["output_dir"]
+        services          = j["services"]
+        filename_fmt      = j["filename_fmt"]
+        artist_dirs       = j["artist_dirs"]
+        album_dirs        = j["album_dirs"]
+        quality           = j.get("quality") or "lossless"
+        qobuz_token       = j.get("_qobuz_token") or ""
+        pre_success_count = j.get("pre_success_count") or 0
+        full_total        = j.get("full_total") or 0
+        batch_urls        = j.get("_batch_urls") or []
 
-    while True:
-        # Block here until a concurrency slot is free.
-        # Poll every second so cancel takes effect promptly.
-        while not _semaphore.acquire(timeout=1):
-            if ev.is_set():
-                _update(job_id, status="cancelled", finished_at=_now())
-                _cancel.pop(job_id, None)
-                return
+        # Skip metadata fetch if title already set (pre-filled batch or retry)
+        if not j.get("title"):
+            title, cover_url, artist = _fetch_metadata(url)
+            meta: dict = {}
+            if title:     meta["title"]     = title
+            if cover_url: meta["cover_url"] = cover_url
+            if artist:    meta["artist"]    = artist
+            if meta:
+                _update(job_id, **meta)
 
         track_results: list[dict] = []
         succeeded = False
         try:
             if ev.is_set():
                 _update(job_id, status="cancelled", finished_at=_now())
+                _cancel.pop(job_id, None)
                 return
 
             _update(job_id, status="running", started_at=_now(),
@@ -497,27 +558,28 @@ def _run(job_id: str) -> None:
         except Exception as exc:
             log.error("Job %s failed: %s", job_id, exc)
             _update(job_id, status="error", error=str(exc), finished_at=_now())
-        finally:
-            _semaphore.release()
 
         if succeeded or ev.is_set():
-            break
+            _cancel.pop(job_id, None)
+            return
 
-        # Read retry settings live so UI changes take effect on the next cycle.
+        # ── Retry logic ───────────────────────────────────────────────────────
         import settings as _settings
         cfg          = _settings.load()
         interval_min = cfg["retry_interval_min"]
         max_retries  = cfg["retry_max_count"]
 
         if not interval_min:
-            break  # auto-retry disabled
+            _cancel.pop(job_id, None)
+            return
 
         retry_count = (j.get("retry_count") or 0) + 1
 
         if max_retries > 0 and retry_count > max_retries:
             _update(job_id, status="error", finished_at=_now(),
                     error=f"Failed after {max_retries} auto-retr{'y' if max_retries == 1 else 'ies'}")
-            break
+            _cancel.pop(job_id, None)
+            return
 
         next_retry_at = (
             datetime.now(timezone.utc) + timedelta(seconds=interval_min * 60)
@@ -526,7 +588,12 @@ def _run(job_id: str) -> None:
                 retry_count=retry_count, retry_max=max_retries,
                 next_retry_at=next_retry_at)
 
-        # Sleep without holding the concurrency slot so other jobs can run.
+        # Release slot before sleeping so other jobs can run.
+        _semaphore.release()
+        slot_held = False
+        with _pq_cv:
+            _pq_cv.notify_all()
+
         for _ in range(interval_min * 60):
             if ev.is_set():
                 break
@@ -534,8 +601,18 @@ def _run(job_id: str) -> None:
 
         if ev.is_set():
             _update(job_id, status="cancelled", finished_at=_now())
-            break
+            _cancel.pop(job_id, None)
+            return
 
         _update(job_id, next_retry_at=None)
 
-    _cancel.pop(job_id, None)
+        # Re-enqueue via priority queue so ordering is respected on the next attempt.
+        with _lock:
+            seq = (_jobs.get(job_id) or {}).get("_seq", 0)
+        _push_pq(job_id, seq)
+
+    finally:
+        if slot_held:
+            _semaphore.release()
+            with _pq_cv:
+                _pq_cv.notify_all()

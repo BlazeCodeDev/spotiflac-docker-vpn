@@ -1400,7 +1400,9 @@ let _searchFilter   = 'all';
 let _searchSort     = 'relevance';
 let _searchHasMore  = false;
 let _searchLoading  = false;
-let _selectedUrls   = new Set();
+// Map<key, {kind:'url',url} | {kind:'batch',parentUrl,parentTitle,trackUrls[]}>
+// key = url for 'url' kind, parentUrl for 'batch' kind — one entry = one download job
+let _selectedItems  = new Map();
 let _expandedResult = null;  // album/playlist being drilled into
 
 async function openSettingsModal() {
@@ -1502,6 +1504,7 @@ function closeModal() {
     _expandedResult = null;
     _setModalCollapsed();
   }
+  _selectedItems.clear();
 }
 
 function fmtDuration(ms) {
@@ -1527,7 +1530,7 @@ async function doSearch(append = false) {
     _searchQuery    = q;
     _searchFilter   = 'all';
     _searchSort     = 'relevance';
-    _selectedUrls.clear();
+    _selectedItems.clear();
     document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p.dataset.filter === 'all'));
     document.querySelectorAll('.sort-pill').forEach(p => p.classList.toggle('active', p.dataset.sort === 'relevance'));
     document.getElementById('search-results').innerHTML = '<div class="jobs-empty">Searching…</div>';
@@ -1584,7 +1587,7 @@ function renderSearchResults() {
 
   const expandable = (type) => type === 'album' || type === 'playlist';
   let html = '<div class="result-list">' + visible.map(r => {
-    const sel   = _selectedUrls.has(r.url);
+    const sel   = _selectedItems.has(r.url);
     const cover = r.cover_url
       ? `<img class="result-cover" src="${esc(r.cover_url)}" alt="" loading="lazy">`
       : `<div class="result-cover-ph"></div>`;
@@ -1612,8 +1615,8 @@ function renderSearchResults() {
     const {url, type, title} = item.dataset;
     item.querySelector('.result-sel-whole')?.addEventListener('click', e => {
       e.stopPropagation();
-      if (_selectedUrls.has(url)) _selectedUrls.delete(url);
-      else _selectedUrls.add(url);
+      if (_selectedItems.has(url)) _selectedItems.delete(url);
+      else _selectedItems.set(url, { kind: 'url', url });
       renderSearchResults();
       updateSearchDlBtn();
     });
@@ -1621,8 +1624,8 @@ function renderSearchResults() {
       if (expandable(type)) {
         expandResult({url, type, title});
       } else {
-        if (_selectedUrls.has(url)) _selectedUrls.delete(url);
-        else _selectedUrls.add(url);
+        if (_selectedItems.has(url)) _selectedItems.delete(url);
+        else _selectedItems.set(url, { kind: 'url', url });
         renderSearchResults();
         updateSearchDlBtn();
       }
@@ -1632,7 +1635,7 @@ function renderSearchResults() {
 
 function updateSearchDlBtn() {
   const btn = document.getElementById('btn-search-dl');
-  const n   = _selectedUrls.size;
+  const n   = _selectedItems.size;
   btn.textContent   = `Download ${n} selected`;
   btn.style.display = n ? 'inline-block' : 'none';
 }
@@ -1667,42 +1670,69 @@ async function expandResult(r) {
 }
 
 function renderExpandedTracks(tracks) {
-  const el   = document.getElementById('search-results');
+  const el          = document.getElementById('search-results');
   if (!tracks.length) { el.innerHTML = '<div class="jobs-empty">No tracks found</div>'; return; }
-  const allSel = tracks.every(t => _selectedUrls.has(t.url));
+
+  const parentUrl   = _expandedResult?.url;
+  const parentTitle = _expandedResult?.title;
+  const parentItem  = _selectedItems.get(parentUrl);
+
+  const isTrackSel  = (trackUrl) =>
+    parentItem?.kind === 'url' ||
+    (parentItem?.kind === 'batch' && parentItem.trackUrls.includes(trackUrl));
+
+  const selCount = parentItem?.kind === 'url' ? tracks.length
+                 : parentItem?.kind === 'batch' ? parentItem.trackUrls.length : 0;
+  const allSel   = selCount === tracks.length && tracks.length > 0;
 
   let html = `<div class="expand-header">
-    <span class="expand-count">${tracks.length} tracks</span>
+    <span class="expand-count">${tracks.length} tracks${selCount > 0 ? ` · ${selCount} selected` : ''}</span>
     <span class="expand-selall" id="btn-selall">${allSel ? 'Deselect all' : 'Select all'}</span>
   </div>
   <div class="expand-list">` +
-  tracks.map(t => {
-    const sel = _selectedUrls.has(t.url);
-    return `<div class="expand-track${sel ? ' sel' : ''}" data-url="${esc(t.url)}">
-      <span class="track-num">${t.track_number || ''}</span>
-      <div class="track-info">
-        <div class="track-title">${esc(t.title)}</div>
-        <div class="track-artists">${esc(t.artists)}</div>
-      </div>
-      <span class="track-dur">${fmtDuration(t.duration_ms)}</span>
-      <div class="result-check"><span class="material-icons" style="font-size:12px">check</span></div>
-    </div>`;
-  }).join('') + '</div>';
+  tracks.map(t => `<div class="expand-track${isTrackSel(t.url) ? ' sel' : ''}" data-url="${esc(t.url)}">
+    <span class="track-num">${t.track_number || ''}</span>
+    <div class="track-info">
+      <div class="track-title">${esc(t.title)}</div>
+      <div class="track-artists">${esc(t.artists)}</div>
+    </div>
+    <span class="track-dur">${fmtDuration(t.duration_ms)}</span>
+    <div class="result-check"><span class="material-icons" style="font-size:12px">check</span></div>
+  </div>`).join('') + '</div>';
 
   el.innerHTML = html;
 
   el.querySelector('#btn-selall').addEventListener('click', () => {
-    if (allSel) tracks.forEach(t => _selectedUrls.delete(t.url));
-    else        tracks.forEach(t => _selectedUrls.add(t.url));
+    if (allSel) _selectedItems.delete(parentUrl);
+    else        _selectedItems.set(parentUrl, { kind: 'url', url: parentUrl });
     renderExpandedTracks(tracks);
     updateSearchDlBtn();
   });
 
   el.querySelectorAll('.expand-track').forEach(row => {
     row.addEventListener('click', () => {
-      const url = row.dataset.url;
-      if (_selectedUrls.has(url)) _selectedUrls.delete(url);
-      else _selectedUrls.add(url);
+      const trackUrl = row.dataset.url;
+      const cur      = _selectedItems.get(parentUrl);
+
+      let selected;
+      if (cur?.kind === 'url') {
+        // All selected — switching one off converts to batch
+        selected = new Set(tracks.map(t => t.url));
+        selected.delete(trackUrl);
+      } else {
+        selected = new Set(cur?.trackUrls || []);
+        if (selected.has(trackUrl)) selected.delete(trackUrl);
+        else selected.add(trackUrl);
+      }
+
+      if (selected.size === tracks.length) {
+        _selectedItems.set(parentUrl, { kind: 'url', url: parentUrl });
+      } else if (selected.size > 0) {
+        _selectedItems.set(parentUrl, { kind: 'batch', parentUrl, parentTitle, trackUrls: [...selected] });
+      } else {
+        _selectedItems.delete(parentUrl);
+      }
+
       renderExpandedTracks(tracks);
       updateSearchDlBtn();
     });
@@ -1800,30 +1830,41 @@ document.querySelectorAll('.sort-pill').forEach(pill => {
 });;
 
 document.getElementById('btn-search-dl').addEventListener('click', async () => {
-  if (!_selectedUrls.size) return;
+  if (!_selectedItems.size) return;
   const btn = document.getElementById('btn-search-dl');
   const msg = document.getElementById('search-msg');
   btn.disabled = true;
   msg.textContent = '…';
-  const res  = await fetch('/api/download', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      urls:        [..._selectedUrls].join('\n'),
-      services:    getActiveServices(),
-      quality:     _quality,
-      qobuz_token: document.getElementById('qobuz-token').value,
-    }),
-  });
-  const data = await res.json();
+
+  const common = {
+    services:    getActiveServices(),
+    quality:     _quality,
+    qobuz_token: document.getElementById('qobuz-token').value,
+  };
+
+  let errors = 0;
+  for (const item of _selectedItems.values()) {
+    const body = item.kind === 'batch'
+      ? { ...common, urls: item.trackUrls.join('\n'), full_total: item.trackUrls.length, pre_title: item.parentTitle }
+      : { ...common, urls: item.url };
+    try {
+      const res = await fetch('/api/download', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) errors++;
+    } catch { errors++; }
+  }
+
   btn.disabled = false;
-  if (res.ok) {
-    _selectedUrls.clear();
+  if (errors === 0) {
+    _selectedItems.clear();
     _urlsEl.value = '';
     _urlsClear.style.display = 'none';
     refreshJobs();
     closeModal();
   } else {
-    msg.textContent = data.error || 'Error';
+    msg.textContent = `${errors} error(s) queuing jobs`;
   }
 });
 
