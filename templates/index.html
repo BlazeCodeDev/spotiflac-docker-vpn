@@ -1955,15 +1955,15 @@ function renderJobs() {
 
     let expandPanel = '';
     if (hasTracks) {
-      const showAll  = _jobShowAll.has(j.id);
       const failures = j.track_results.filter(r => !r.success);
+      const showAll  = _jobShowAll.has(j.id) || failures.length === 0;
       const shown    = showAll ? j.track_results : failures;
       const rows = shown.map(r => r.success
         ? `<div class="track-row"><span class="track-ok">✓</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span></div>`
         : `<div class="track-row"><span class="track-fail">✗</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span><span class="track-err">— ${fmtTrackError(r.error)}</span></div>`
       ).join('');
       const toggleLabel = showAll ? 'Show failures only' : `Show all ${j.track_results.length} tracks`;
-      const toggleBtn = j.track_results.length > failures.length
+      const toggleBtn = failures.length > 0 && j.track_results.length > failures.length
         ? `<div class="track-show-toggle" data-action="tracks-toggle" data-id="${esc(j.id)}">${toggleLabel}</div>`
         : '';
       expandPanel = `<div class="job-expand"><div class="track-list">${rows}</div>${toggleBtn}</div>`;
