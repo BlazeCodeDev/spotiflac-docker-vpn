@@ -14,10 +14,8 @@ def _defaults() -> dict:
     return {
         # Download behaviour
         "services":    [s.strip() for s in os.environ.get("SPOTIFLAC_SERVICES", "tidal,qobuz,amazon,youtube").split(",") if s.strip()],
-        "filename_fmt": os.environ.get("FILENAME_FORMAT",       "{artist}/{album}/{track} {title}"),
-        "artist_dirs":  os.environ.get("USE_ARTIST_SUBFOLDERS", "false").lower() == "true",
-        "album_dirs":   os.environ.get("USE_ALBUM_SUBFOLDERS",  "false").lower() == "true",
-        "qobuz_token":  os.environ.get("QOBUZ_TOKEN",           ""),
+        "filename_fmt": os.environ.get("FILENAME_FORMAT", "{artist}/{album}/{track} {title}"),
+        "qobuz_token":  os.environ.get("QOBUZ_TOKEN",    ""),
         # Retry
         "retry_interval_min": int(os.environ.get("RETRY_MINUTES",       "5")),
         "retry_max_count":    int(os.environ.get("RETRY_MAX_COUNT",      "3")),

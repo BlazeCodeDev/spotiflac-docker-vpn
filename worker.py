@@ -245,7 +245,7 @@ def retry_job_partial(job_id: str, batch_urls: list, pre_success_count: int,
 _seq = 0
 
 def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
-            artist_dirs: bool, album_dirs: bool, qobuz_token: str,
+            qobuz_token: str,
             quality: str = "lossless",
             pre_success_count: int = 0, full_total: int = 0,
             batch_urls: list | None = None, pre_title: str = "") -> str:
@@ -263,7 +263,6 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
             pre_success_count=pre_success_count, full_total=full_total,
             _batch_urls=batch_urls or [],
             output_dir=output_dir, services=services, filename_fmt=filename_fmt,
-            artist_dirs=artist_dirs, album_dirs=album_dirs,
             quality=quality, _qobuz_token=qobuz_token,
             _seq=_seq,
         )
@@ -475,8 +474,6 @@ def _run(job_id: str) -> None:
         output_dir        = j["output_dir"]
         services          = j["services"]
         filename_fmt      = j["filename_fmt"]
-        artist_dirs       = j["artist_dirs"]
-        album_dirs        = j["album_dirs"]
         quality           = j.get("quality") or "lossless"
         qobuz_token       = j.get("_qobuz_token") or ""
         pre_success_count = j.get("pre_success_count") or 0
@@ -509,14 +506,12 @@ def _run(job_id: str) -> None:
 
             import settings as _settings
             opts = DownloadOptions(
-                output_dir            = output_dir,
-                services              = services,
-                filename_format       = filename_fmt,
-                use_artist_subfolders = artist_dirs,
-                use_album_subfolders  = album_dirs,
-                quality               = quality,
-                inter_track_delay_s   = _settings.load()["track_delay_s"],
-                use_track_numbers     = True,
+                output_dir          = output_dir,
+                services            = services,
+                filename_format     = filename_fmt,
+                quality             = quality,
+                inter_track_delay_s = _settings.load()["track_delay_s"],
+                use_track_numbers   = True,
             )
 
             def _on_progress(done, total):

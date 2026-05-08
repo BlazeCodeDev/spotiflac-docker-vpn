@@ -737,6 +737,53 @@ html.theme-transitioning *::after {
   .lib-entry { grid-template-columns: 18px 1fr auto; }
   .lib-size  { display: none; }
 }
+
+/* ─── Library organizer dialog ────────────────────────────────────── */
+.org-fmt-row { margin-bottom: 12px; }
+.org-label   { font-size: .75rem; font-weight: 500; color: var(--md-on-surface-variant); margin-bottom: 4px; display: block; letter-spacing: .025em; text-transform: uppercase; }
+.org-hint    { font-size: .72rem; color: var(--md-on-surface-variant); margin-top: 5px; line-height: 1.5; }
+.org-hint code { font-family: 'Roboto Mono', monospace; background: var(--md-surface-container); padding: 1px 4px; border-radius: 3px; font-size: .7rem; }
+.org-summary {
+  display: flex; gap: 16px; flex-wrap: wrap; align-items: center;
+  padding: 8px 12px; border-radius: 8px; margin-bottom: 10px;
+  background: var(--md-surface-container);
+}
+.org-stat         { font-size: .8rem; color: var(--md-on-surface-variant); }
+.org-stat strong  { font-weight: 600; color: var(--md-on-surface); }
+.org-stat.pending strong { color: var(--md-primary); }
+.org-stat.errs    strong { color: var(--s-error); }
+.org-move-list {
+  display: flex; flex-direction: column;
+  max-height: 300px; overflow-y: auto;
+  border: 1px solid var(--md-outline-variant); border-radius: 8px;
+}
+.org-move-item {
+  display: grid; grid-template-columns: 16px 1fr;
+  gap: 0 8px; align-items: start;
+  padding: 6px 10px; border-bottom: 1px solid var(--md-outline-variant);
+}
+.org-move-item:last-child { border-bottom: none; }
+.org-move-icon  { color: var(--md-on-surface-variant); font-size: 15px !important; padding-top: 2px; }
+.org-move-paths { min-width: 0; }
+.org-move-from  { font-size: .71rem; color: var(--md-on-surface-variant); font-family: 'Roboto Mono', monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.org-move-to    { font-size: .71rem; color: var(--md-primary); font-family: 'Roboto Mono', monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
+.org-move-to::before { content: '→ '; opacity: .6; }
+.org-err-section { margin-top: 10px; }
+.org-err-list  { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
+.org-err-item  { display: flex; gap: 6px; align-items: baseline; font-size: .75rem; }
+.org-err-path  { font-family: 'Roboto Mono', monospace; font-size: .7rem; color: var(--md-on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.org-err-msg   { color: var(--s-error); white-space: nowrap; flex-shrink: 0; }
+#org-apply-btn {
+  background: var(--md-primary); color: var(--md-on-primary);
+  border-radius: 999px; height: 32px; padding: 0 20px;
+  font-size: .875rem; font-weight: 500; letter-spacing: .006em;
+  position: relative; overflow: hidden; transition: box-shadow .2s;
+}
+#org-apply-btn::before { content: ''; position: absolute; inset: 0; background: var(--md-on-primary); opacity: 0; transition: opacity .2s; }
+#org-apply-btn:hover:not(:disabled) { box-shadow: 0 1px 2px rgba(0,0,0,.3),0 1px 3px 1px rgba(0,0,0,.15); }
+#org-apply-btn:hover:not(:disabled)::before  { opacity: .08; }
+#org-apply-btn:active:not(:disabled)::before { opacity: .12; }
+#org-apply-btn:disabled { opacity: .45; cursor: default; }
 </style>
 </head>
 <body>
@@ -832,6 +879,7 @@ html.theme-transitioning *::after {
     <div class="card-header">
       <span class="section-title">Library</span>
       <div style="display:flex;gap:4px">
+        <button class="btn-ghost" id="btn-lib-organize" title="Organize library" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">auto_fix_high</span></button>
         <button class="btn-ghost" id="btn-lib-search" title="Search library" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">search</span></button>
         <button class="btn-ghost" id="btn-lib-refresh" title="Refresh" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">refresh</span></button>
       </div>
@@ -917,18 +965,6 @@ html.theme-transitioning *::after {
           <label>Filename Format</label>
           <input type="text" id="cfg-filename-fmt" value="{{ filename_fmt }}">
           <div class="hint">Variables: {artist} {album} {title} {track} {year} · Use / to create subfolders</div>
-        </div>
-
-        <div class="setting-group">
-          <label>Folder Structure</label>
-          <div class="toggle-row">
-            <span class="toggle-label">Artist subfolder</span>
-            <label class="switch"><input type="checkbox" id="cfg-artist-dirs" {% if artist_dirs %}checked{% endif %}><span class="slider"></span></label>
-          </div>
-          <div class="toggle-row">
-            <span class="toggle-label">Album subfolder</span>
-            <label class="switch"><input type="checkbox" id="cfg-album-dirs" {% if album_dirs %}checked{% endif %}><span class="slider"></span></label>
-          </div>
         </div>
 
         <hr style="border:none;border-top:1px solid var(--md-outline-variant);margin:0">
@@ -1033,6 +1069,32 @@ html.theme-transitioning *::after {
     <div class="modal-footer">
       <button id="btn-search-dl" style="display:none">Download 0 selected</button>
       <span id="search-msg"></span>
+    </div>
+  </div>
+</div>
+
+<!-- Library organizer dialog -->
+<div id="org-modal" class="modal-overlay" role="dialog" aria-modal="true">
+  <div class="modal" style="max-width:680px">
+    <div class="modal-header">
+      <span class="modal-title">Library Organizer</span>
+      <button class="modal-close" id="org-close" title="Close"><span class="material-icons">close</span></button>
+    </div>
+    <div class="modal-body">
+      <div class="org-fmt-row">
+        <label class="org-label" for="org-fmt">Path format</label>
+        <input type="text" id="org-fmt" value="{artist}/{album}/{track} {title}" style="width:100%" autocomplete="off">
+        <div class="org-hint">
+          Tokens: <code>{artist}</code> <code>{album}</code> <code>{track}</code> <code>{title}</code>
+          &nbsp;·&nbsp; <code>{artist}</code> is the main artist only — featuring artists are excluded from the folder name
+        </div>
+      </div>
+      <div id="org-preview-area"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" id="org-cancel-btn">Cancel</button>
+      <button class="btn-ghost" id="org-preview-btn">Preview</button>
+      <button id="org-apply-btn" style="display:none" disabled>Apply</button>
     </div>
   </div>
 </div>
@@ -1415,10 +1477,8 @@ async function openSettingsModal() {
     document.getElementById('cfg-retry-max').value       = d.retry_max_count    ?? 3;
     document.getElementById('cfg-track-delay').value     = d.track_delay_s      ?? 4;
     document.getElementById('cfg-max-workers').value     = d.max_workers        ?? 3;
-    document.getElementById('cfg-filename-fmt').value    = d.filename_fmt       ?? '{artist}/{album}/{track} {title}';
-    document.getElementById('cfg-artist-dirs').checked   = !!d.artist_dirs;
-    document.getElementById('cfg-album-dirs').checked    = !!d.album_dirs;
-    document.getElementById('qobuz-token').value         = d.qobuz_token        ?? '';
+    document.getElementById('cfg-filename-fmt').value    = d.filename_fmt ?? '{artist}/{album}/{track} {title}';
+    document.getElementById('qobuz-token').value         = d.qobuz_token  ?? '';
     if (Array.isArray(d.services) && d.services.length) {
       _enabledSet = new Set(d.services);
       const disabledSvcs = svcOrder.filter(s => !_enabledSet.has(s.id));
@@ -1766,8 +1826,6 @@ document.getElementById('btn-cfg-save').addEventListener('click', async () => {
     track_delay_s:      parseFloat(document.getElementById('cfg-track-delay').value),
     max_workers:        parseInt(document.getElementById('cfg-max-workers').value,    10),
     filename_fmt:       document.getElementById('cfg-filename-fmt').value,
-    artist_dirs:        document.getElementById('cfg-artist-dirs').checked,
-    album_dirs:         document.getElementById('cfg-album-dirs').checked,
     qobuz_token:        document.getElementById('qobuz-token').value,
     services:           getActiveServices(),
   };
@@ -2573,6 +2631,153 @@ document.getElementById('btn-lsf-go').addEventListener('click', _lsfSearch);
 ['lsf-track','lsf-artist','lsf-album','lsf-year'].forEach(id =>
   document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') _lsfSearch(); })
 );
+
+// ── Library organizer ─────────────────────────────────────────────────
+function _orgOpen() {
+  document.getElementById('org-modal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  _orgReset();
+}
+
+function _orgClose() {
+  document.getElementById('org-modal').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+function _orgReset() {
+  const area = document.getElementById('org-preview-area');
+  area.innerHTML = '';
+  const applyBtn = document.getElementById('org-apply-btn');
+  applyBtn.style.display = 'none';
+  applyBtn.disabled = true;
+  applyBtn.textContent = 'Apply';
+  const previewBtn = document.getElementById('org-preview-btn');
+  previewBtn.disabled = false;
+  previewBtn.textContent = 'Preview';
+  document.getElementById('org-fmt').disabled = false;
+}
+
+async function _orgPreview() {
+  const fmt = document.getElementById('org-fmt').value.trim();
+  if (!fmt) return;
+
+  const previewBtn = document.getElementById('org-preview-btn');
+  const applyBtn   = document.getElementById('org-apply-btn');
+  const area       = document.getElementById('org-preview-area');
+
+  previewBtn.disabled  = true;
+  previewBtn.textContent = 'Scanning…';
+  applyBtn.style.display = 'none';
+  area.innerHTML = '<div class="jobs-empty" style="padding:12px 0;font-size:.85rem">Scanning library — this may take a moment…</div>';
+
+  try {
+    const res  = await fetch('/api/library/organize/preview', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({format: fmt}),
+    });
+    const data = await res.json();
+    if (!res.ok) { area.innerHTML = `<div class="jobs-empty" style="color:var(--s-error)">${esc(data.error || 'Error')}</div>`; return; }
+
+    const ops    = data.ops || [];
+    const moves  = ops.filter(o => o.changed);
+    const ok     = ops.filter(o => !o.changed && !o.error);
+    const errors = ops.filter(o => o.error);
+
+    let html = `<div class="org-summary">
+      <span class="org-stat pending"><strong>${moves.length}</strong> file${moves.length !== 1 ? 's' : ''} to move</span>
+      <span class="org-stat"><strong>${ok.length}</strong> already correct</span>
+      ${errors.length ? `<span class="org-stat errs"><strong>${errors.length}</strong> error${errors.length !== 1 ? 's' : ''}</span>` : ''}
+    </div>`;
+
+    if (moves.length) {
+      const cap  = 300;
+      const show = moves.slice(0, cap);
+      html += '<div class="org-move-list">';
+      for (const op of show) {
+        html += `<div class="org-move-item">
+          <span class="org-move-icon material-icons">audio_file</span>
+          <div class="org-move-paths">
+            <div class="org-move-from">${esc(op.src)}</div>
+            <div class="org-move-to">${esc(op.dst)}</div>
+          </div>
+        </div>`;
+      }
+      html += '</div>';
+      if (moves.length > cap) html += `<div class="hint" style="padding:5px 2px">… and ${moves.length - cap} more</div>`;
+    } else if (!errors.length) {
+      html += '<div class="jobs-empty" style="padding:8px 2px;font-size:.85rem">All files are already in the correct location.</div>';
+    }
+
+    if (errors.length) {
+      html += `<div class="org-err-section"><div class="org-label">Errors</div><div class="org-err-list">`;
+      for (const e of errors.slice(0, 25)) {
+        html += `<div class="org-err-item">
+          <span class="org-err-path">${esc(e.src)}</span>
+          <span class="org-err-msg">${esc(e.error)}</span>
+        </div>`;
+      }
+      if (errors.length > 25) html += `<div class="org-err-item" style="color:var(--md-on-surface-variant)">… and ${errors.length - 25} more</div>`;
+      html += '</div></div>';
+    }
+
+    area.innerHTML = html;
+
+    if (moves.length > 0) {
+      applyBtn.style.display = '';
+      applyBtn.disabled = false;
+      applyBtn.textContent = `Apply (${moves.length} move${moves.length !== 1 ? 's' : ''})`;
+    }
+  } catch (err) {
+    area.innerHTML = `<div class="jobs-empty" style="color:var(--s-error)">Request failed</div>`;
+  } finally {
+    previewBtn.disabled  = false;
+    previewBtn.textContent = 'Preview';
+  }
+}
+
+async function _orgApply() {
+  const fmt      = document.getElementById('org-fmt').value.trim();
+  const applyBtn = document.getElementById('org-apply-btn');
+  const previewBtn = document.getElementById('org-preview-btn');
+
+  applyBtn.disabled      = true;
+  applyBtn.textContent   = 'Applying…';
+  previewBtn.disabled    = true;
+  document.getElementById('org-fmt').disabled = true;
+
+  try {
+    const res  = await fetch('/api/library/organize/apply', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({format: fmt}),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.error || 'Organize failed', 'error');
+      applyBtn.disabled    = false;
+      previewBtn.disabled  = false;
+      document.getElementById('org-fmt').disabled = false;
+      return;
+    }
+    const msg = `Moved ${data.moved} file${data.moved !== 1 ? 's' : ''}` +
+                (data.errors ? ` · ${data.errors} error${data.errors !== 1 ? 's' : ''}` : '');
+    showToast(msg, data.errors ? 'error' : 'done');
+    _orgClose();
+    loadLibrary('');
+  } catch {
+    showToast('Request failed', 'error');
+    applyBtn.disabled    = false;
+    previewBtn.disabled  = false;
+    document.getElementById('org-fmt').disabled = false;
+  }
+}
+
+document.getElementById('btn-lib-organize').addEventListener('click', _orgOpen);
+document.getElementById('org-close')       .addEventListener('click', _orgClose);
+document.getElementById('org-cancel-btn')  .addEventListener('click', _orgClose);
+document.getElementById('org-preview-btn') .addEventListener('click', _orgPreview);
+document.getElementById('org-apply-btn')   .addEventListener('click', _orgApply);
+document.getElementById('org-modal')       .addEventListener('click', e => { if (e.target === e.currentTarget) _orgClose(); });
+document.getElementById('org-fmt')         .addEventListener('keydown', e => { if (e.key === 'Enter') _orgPreview(); });
 
 loadLibrary('');
 

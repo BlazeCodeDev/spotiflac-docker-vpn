@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import os
+import re
 import shutil
 
 from flask import Blueprint, jsonify, render_template, request, send_file
@@ -33,8 +34,6 @@ def index():
         "index.html",
         services=cfg["services"],
         filename_fmt=cfg["filename_fmt"],
-        artist_dirs=cfg["artist_dirs"],
-        album_dirs=cfg["album_dirs"],
     )
 
 
@@ -69,8 +68,6 @@ def api_download():
         output_dir=Config.OUTPUT_DIR,
         services=services,
         filename_fmt=cfg["filename_fmt"],
-        artist_dirs=cfg["artist_dirs"],
-        album_dirs=cfg["album_dirs"],
         qobuz_token=qobuz_token,
         quality=quality,
     )
@@ -507,6 +504,134 @@ def api_library_download():
     return send_file(target, as_attachment=True, download_name=os.path.basename(target))
 
 
+# ── Library organizer ─────────────────────────────────────────────────────────
+
+_AUDIO_EXTS = frozenset({".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".aac", ".wma"})
+_FEAT_RE    = re.compile(r"\s+(?:feat\.?|ft\.?|featuring)\s+.*$", re.IGNORECASE)
+
+
+def _org_main_artist(audio_easy) -> str:
+    """Return the primary artist only, stripping any featuring credits."""
+    for key in ("albumartist", "artist"):
+        vals = audio_easy.get(key)
+        if vals:
+            raw = str(vals[0]).strip()
+            if raw:
+                cleaned = _FEAT_RE.sub("", raw).strip()
+                return cleaned if cleaned else raw
+    return "Unknown Artist"
+
+
+def _org_san(s: str, fallback: str = "_") -> str:
+    return (re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(s))
+            .strip().strip(".") or fallback)[:200]
+
+
+def _org_target(audio_easy, fmt: str, ext: str) -> str:
+    """Compute the target relative path for an audio file given its easy tags."""
+    artist = _org_san(_org_main_artist(audio_easy))
+    album  = _org_san(str((audio_easy.get("album")  or ["Unknown Album"])[0]).strip() or "Unknown Album")
+    title  = _org_san(str((audio_easy.get("title")  or ["Unknown Title"])[0]).strip()  or "Unknown Title")
+
+    raw_trk = str((audio_easy.get("tracknumber") or ["0"])[0])
+    try:
+        trk = int(re.split(r"[/\-]", raw_trk)[0].strip())
+    except (ValueError, AttributeError):
+        trk = 0
+    track = f"{trk:02d}" if trk else ""
+
+    result = (fmt
+              .replace("{artist}", artist)
+              .replace("{album}",  album)
+              .replace("{title}",  title)
+              .replace("{track}",  track))
+    parts = [_org_san(p) for p in result.replace("\\", "/").split("/") if p.strip()]
+    return "/".join(parts or ["Unsorted"]) + ext.lower()
+
+
+def _org_scan(root: str, fmt: str) -> list[dict]:
+    from mutagen import File as MFile
+    ops: list[dict] = []
+    for dirpath, dirs, files in os.walk(root):
+        dirs.sort()
+        for fname in sorted(files):
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in _AUDIO_EXTS:
+                continue
+            src_abs = os.path.join(dirpath, fname)
+            src_rel = os.path.relpath(src_abs, root).replace(os.sep, "/")
+            try:
+                audio = MFile(src_abs, easy=True)
+                if audio is None:
+                    ops.append({"src": src_rel, "error": "Unrecognised format"})
+                    continue
+                dst_rel = _org_target(audio, fmt, ext)
+                ops.append({"src": src_rel, "dst": dst_rel, "changed": src_rel != dst_rel})
+            except Exception as exc:
+                ops.append({"src": src_rel, "error": str(exc)[:120]})
+    return ops
+
+
+@bp.post("/api/library/organize/preview")
+def api_org_preview():
+    body = request.get_json(silent=True) or {}
+    fmt  = str(body.get("format", "{artist}/{album}/{track} {title}")).strip() or "{artist}/{album}/{track} {title}"
+    root = _lib_root()
+    if not os.path.isdir(root):
+        return jsonify(error="Library directory not found"), 404
+    try:
+        return jsonify(ops=_org_scan(root, fmt))
+    except Exception as exc:
+        log.error("Organize preview failed: %s", exc)
+        return jsonify(error=str(exc)), 500
+
+
+@bp.post("/api/library/organize/apply")
+def api_org_apply():
+    body = request.get_json(silent=True) or {}
+    fmt  = str(body.get("format", "{artist}/{album}/{track} {title}")).strip() or "{artist}/{album}/{track} {title}"
+    root = _lib_root()
+    if not os.path.isdir(root):
+        return jsonify(error="Library directory not found"), 404
+    try:
+        ops     = _org_scan(root, fmt)
+        results = []
+        for op in ops:
+            if op.get("error") or not op.get("changed"):
+                continue
+            src_abs = os.path.join(root, *op["src"].split("/"))
+            dst_abs = os.path.join(root, *op["dst"].split("/"))
+            if not os.path.isfile(src_abs):
+                results.append({"src": op["src"], "ok": False, "error": "Source not found"})
+                continue
+            if os.path.exists(dst_abs) and os.path.normcase(src_abs) != os.path.normcase(dst_abs):
+                results.append({"src": op["src"], "ok": False, "error": "Destination already exists"})
+                continue
+            try:
+                os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
+                shutil.move(src_abs, dst_abs)
+                results.append({"src": op["src"], "dst": op["dst"], "ok": True})
+            except Exception as exc:
+                results.append({"src": op["src"], "ok": False, "error": str(exc)[:120]})
+
+        # Remove empty directories left behind
+        for dp, _, _ in os.walk(root, topdown=False):
+            if dp == root:
+                continue
+            try:
+                if not os.listdir(dp):
+                    os.rmdir(dp)
+            except OSError:
+                pass
+
+        moved  = sum(1 for r in results if r.get("ok"))
+        errors = sum(1 for r in results if not r.get("ok"))
+        return jsonify(moved=moved, errors=errors, results=results)
+    except Exception as exc:
+        log.error("Organize apply failed: %s", exc)
+        return jsonify(error=str(exc)), 500
+
+
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 @bp.get("/api/settings")
@@ -537,17 +662,6 @@ def api_settings_patch():
     for key in ("filename_fmt", "qobuz_token"):
         if key in body:
             updates[key] = str(body[key])
-
-    for key in ("artist_dirs", "album_dirs"):
-        if key not in body:
-            continue
-        val = body[key]
-        if isinstance(val, bool):
-            updates[key] = val
-        elif isinstance(val, str):
-            updates[key] = val.lower() == "true"
-        else:
-            errors[key] = "must be a boolean"
 
     if "services" in body:
         raw = body["services"]
