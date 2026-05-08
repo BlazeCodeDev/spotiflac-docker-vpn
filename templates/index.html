@@ -784,6 +784,31 @@ html.theme-transitioning *::after {
 #org-apply-btn:hover:not(:disabled)::before  { opacity: .08; }
 #org-apply-btn:active:not(:disabled)::before { opacity: .12; }
 #org-apply-btn:disabled { opacity: .45; cursor: default; }
+.org-progress-wrap {
+  height: 4px; border-radius: 2px; overflow: hidden;
+  background: var(--md-surface-container-highest);
+  margin: 10px 0 6px; position: relative;
+}
+.org-progress-fill {
+  height: 100%; border-radius: inherit;
+  background: var(--md-primary);
+  transition: width .15s ease;
+  width: 0%;
+}
+.org-progress-wrap.indeterminate .org-progress-fill {
+  width: 100%;
+  background: var(--md-surface-container-highest);
+  position: relative;
+  overflow: hidden;
+}
+.org-progress-wrap.indeterminate .org-progress-fill::after {
+  content: ''; position: absolute; top: 0; bottom: 0; width: 40%;
+  background: var(--md-primary); border-radius: inherit;
+  animation: org-slide 1.4s ease-in-out infinite;
+}
+@keyframes org-slide { 0% { left: -40%; } 100% { left: 110%; } }
+.org-progress-label { font-size: .82rem; color: var(--md-on-surface); font-weight: 500; }
+.org-progress-sub   { font-size: .75rem; color: var(--md-on-surface-variant); }
 </style>
 </head>
 <body>
@@ -2645,16 +2670,92 @@ function _orgClose() {
 }
 
 function _orgReset() {
-  const area = document.getElementById('org-preview-area');
-  area.innerHTML = '';
-  const applyBtn = document.getElementById('org-apply-btn');
+  document.getElementById('org-preview-area').innerHTML = '';
+  const applyBtn   = document.getElementById('org-apply-btn');
   applyBtn.style.display = 'none';
-  applyBtn.disabled = true;
-  applyBtn.textContent = 'Apply';
+  applyBtn.disabled      = true;
+  applyBtn.textContent   = 'Apply';
   const previewBtn = document.getElementById('org-preview-btn');
-  previewBtn.disabled = false;
+  previewBtn.disabled    = false;
   previewBtn.textContent = 'Preview';
   document.getElementById('org-fmt').disabled = false;
+}
+
+function _orgProgressHTML(label) {
+  return `<div class="org-progress-label" id="org-prog-label">${label}</div>
+<div class="org-progress-wrap indeterminate" id="org-prog-wrap"><div class="org-progress-fill" id="org-prog-fill"></div></div>
+<div class="org-progress-sub" id="org-prog-sub"></div>`;
+}
+
+function _orgSetProgress(done, total, sub) {
+  const wrap = document.getElementById('org-prog-wrap');
+  const fill = document.getElementById('org-prog-fill');
+  const sub_ = document.getElementById('org-prog-sub');
+  if (wrap)  wrap.classList.remove('indeterminate');
+  if (fill)  fill.style.width = total ? Math.round(done / total * 100) + '%' : '0%';
+  if (sub_)  sub_.textContent = sub || '';
+}
+
+async function _readOrgStream(response, onEvent) {
+  const reader  = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, {stream: true});
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop();
+    for (const part of parts) {
+      for (const line of part.split('\n')) {
+        if (line.startsWith('data: ')) {
+          try { onEvent(JSON.parse(line.slice(6))); } catch {}
+        }
+      }
+    }
+  }
+}
+
+function _orgRenderResults(ops) {
+  const moves  = ops.filter(o => o.changed);
+  const ok     = ops.filter(o => !o.changed && !o.error);
+  const errors = ops.filter(o => o.error);
+
+  let html = `<div class="org-summary">
+    <span class="org-stat pending"><strong>${moves.length}</strong> file${moves.length !== 1 ? 's' : ''} to move</span>
+    <span class="org-stat"><strong>${ok.length}</strong> already correct</span>
+    ${errors.length ? `<span class="org-stat errs"><strong>${errors.length}</strong> error${errors.length !== 1 ? 's' : ''}</span>` : ''}
+  </div>`;
+
+  if (moves.length) {
+    const cap  = 300;
+    const show = moves.slice(0, cap);
+    html += '<div class="org-move-list">';
+    for (const op of show) {
+      html += `<div class="org-move-item">
+        <span class="org-move-icon material-icons">audio_file</span>
+        <div class="org-move-paths">
+          <div class="org-move-from">${esc(op.src)}</div>
+          <div class="org-move-to">${esc(op.dst)}</div>
+        </div>
+      </div>`;
+    }
+    html += '</div>';
+    if (moves.length > cap) html += `<div class="hint" style="padding:5px 2px">… and ${moves.length - cap} more</div>`;
+  } else if (!errors.length) {
+    html += '<div class="jobs-empty" style="padding:8px 2px;font-size:.85rem">All files are already in the correct location.</div>';
+  }
+
+  if (errors.length) {
+    html += `<div class="org-err-section"><div class="org-label">Errors</div><div class="org-err-list">`;
+    for (const e of errors.slice(0, 25)) {
+      html += `<div class="org-err-item"><span class="org-err-path">${esc(e.src)}</span><span class="org-err-msg">${esc(e.error)}</span></div>`;
+    }
+    if (errors.length > 25) html += `<div class="org-err-item" style="color:var(--md-on-surface-variant)">… and ${errors.length - 25} more</div>`;
+    html += '</div></div>';
+  }
+
+  return {html, moves};
 }
 
 async function _orgPreview() {
@@ -2665,110 +2766,101 @@ async function _orgPreview() {
   const applyBtn   = document.getElementById('org-apply-btn');
   const area       = document.getElementById('org-preview-area');
 
-  previewBtn.disabled  = true;
+  previewBtn.disabled    = true;
   previewBtn.textContent = 'Scanning…';
   applyBtn.style.display = 'none';
-  area.innerHTML = '<div class="jobs-empty" style="padding:12px 0;font-size:.85rem">Scanning library — this may take a moment…</div>';
+  area.innerHTML = _orgProgressHTML('Scanning library…');
 
+  let ops = null;
   try {
-    const res  = await fetch('/api/library/organize/preview', {
+    const res = await fetch('/api/library/organize/preview', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({format: fmt}),
     });
-    const data = await res.json();
-    if (!res.ok) { area.innerHTML = `<div class="jobs-empty" style="color:var(--s-error)">${esc(data.error || 'Error')}</div>`; return; }
-
-    const ops    = data.ops || [];
-    const moves  = ops.filter(o => o.changed);
-    const ok     = ops.filter(o => !o.changed && !o.error);
-    const errors = ops.filter(o => o.error);
-
-    let html = `<div class="org-summary">
-      <span class="org-stat pending"><strong>${moves.length}</strong> file${moves.length !== 1 ? 's' : ''} to move</span>
-      <span class="org-stat"><strong>${ok.length}</strong> already correct</span>
-      ${errors.length ? `<span class="org-stat errs"><strong>${errors.length}</strong> error${errors.length !== 1 ? 's' : ''}</span>` : ''}
-    </div>`;
-
-    if (moves.length) {
-      const cap  = 300;
-      const show = moves.slice(0, cap);
-      html += '<div class="org-move-list">';
-      for (const op of show) {
-        html += `<div class="org-move-item">
-          <span class="org-move-icon material-icons">audio_file</span>
-          <div class="org-move-paths">
-            <div class="org-move-from">${esc(op.src)}</div>
-            <div class="org-move-to">${esc(op.dst)}</div>
-          </div>
-        </div>`;
-      }
-      html += '</div>';
-      if (moves.length > cap) html += `<div class="hint" style="padding:5px 2px">… and ${moves.length - cap} more</div>`;
-    } else if (!errors.length) {
-      html += '<div class="jobs-empty" style="padding:8px 2px;font-size:.85rem">All files are already in the correct location.</div>';
+    if (!res.ok) {
+      area.innerHTML = `<div class="jobs-empty" style="color:var(--s-error)">Server error</div>`;
+      return;
     }
-
-    if (errors.length) {
-      html += `<div class="org-err-section"><div class="org-label">Errors</div><div class="org-err-list">`;
-      for (const e of errors.slice(0, 25)) {
-        html += `<div class="org-err-item">
-          <span class="org-err-path">${esc(e.src)}</span>
-          <span class="org-err-msg">${esc(e.error)}</span>
-        </div>`;
+    await _readOrgStream(res, ev => {
+      if (ev.type === 'total') {
+        _orgSetProgress(0, ev.total, `0 / ${ev.total} files`);
+      } else if (ev.type === 'progress') {
+        _orgSetProgress(ev.done, ev.total, `${ev.done} / ${ev.total} files`);
+      } else if (ev.type === 'done') {
+        ops = ev.ops;
       }
-      if (errors.length > 25) html += `<div class="org-err-item" style="color:var(--md-on-surface-variant)">… and ${errors.length - 25} more</div>`;
-      html += '</div></div>';
-    }
+    });
 
+    if (!ops) { area.innerHTML = '<div class="jobs-empty">No response from server</div>'; return; }
+
+    const {html, moves} = _orgRenderResults(ops);
     area.innerHTML = html;
 
     if (moves.length > 0) {
       applyBtn.style.display = '';
-      applyBtn.disabled = false;
-      applyBtn.textContent = `Apply (${moves.length} move${moves.length !== 1 ? 's' : ''})`;
+      applyBtn.disabled      = false;
+      applyBtn.textContent   = `Apply (${moves.length} move${moves.length !== 1 ? 's' : ''})`;
     }
-  } catch (err) {
+  } catch {
     area.innerHTML = `<div class="jobs-empty" style="color:var(--s-error)">Request failed</div>`;
   } finally {
-    previewBtn.disabled  = false;
+    previewBtn.disabled    = false;
     previewBtn.textContent = 'Preview';
   }
 }
 
 async function _orgApply() {
-  const fmt      = document.getElementById('org-fmt').value.trim();
-  const applyBtn = document.getElementById('org-apply-btn');
+  const fmt        = document.getElementById('org-fmt').value.trim();
+  const applyBtn   = document.getElementById('org-apply-btn');
   const previewBtn = document.getElementById('org-preview-btn');
+  const area       = document.getElementById('org-preview-area');
 
   applyBtn.disabled      = true;
   applyBtn.textContent   = 'Applying…';
   previewBtn.disabled    = true;
   document.getElementById('org-fmt').disabled = true;
+  area.innerHTML = _orgProgressHTML('Applying changes…');
 
+  let result = null;
   try {
-    const res  = await fetch('/api/library/organize/apply', {
+    const res = await fetch('/api/library/organize/apply', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({format: fmt}),
     });
-    const data = await res.json();
     if (!res.ok) {
-      showToast(data.error || 'Organize failed', 'error');
-      applyBtn.disabled    = false;
-      previewBtn.disabled  = false;
-      document.getElementById('org-fmt').disabled = false;
+      showToast('Organize failed', 'error');
+      _orgResetButtons();
       return;
     }
-    const msg = `Moved ${data.moved} file${data.moved !== 1 ? 's' : ''}` +
-                (data.errors ? ` · ${data.errors} error${data.errors !== 1 ? 's' : ''}` : '');
-    showToast(msg, data.errors ? 'error' : 'done');
-    _orgClose();
-    loadLibrary('');
+    await _readOrgStream(res, ev => {
+      if (ev.type === 'total') {
+        _orgSetProgress(0, ev.total, `0 / ${ev.total}`);
+      } else if (ev.type === 'progress') {
+        const sub = `${ev.moved} moved · ${ev.done} / ${ev.total} processed` +
+                    (ev.errors ? ` · ${ev.errors} error${ev.errors !== 1 ? 's' : ''}` : '');
+        _orgSetProgress(ev.done, ev.total, sub);
+      } else if (ev.type === 'done') {
+        result = ev;
+      }
+    });
+
+    if (result) {
+      const msg = `Moved ${result.moved} file${result.moved !== 1 ? 's' : ''}` +
+                  (result.errors ? ` · ${result.errors} error${result.errors !== 1 ? 's' : ''}` : '');
+      showToast(msg, result.errors ? 'error' : 'done');
+      _orgClose();
+      loadLibrary('');
+    }
   } catch {
     showToast('Request failed', 'error');
-    applyBtn.disabled    = false;
-    previewBtn.disabled  = false;
-    document.getElementById('org-fmt').disabled = false;
+    _orgResetButtons();
   }
+}
+
+function _orgResetButtons() {
+  document.getElementById('org-apply-btn').disabled    = false;
+  document.getElementById('org-preview-btn').disabled  = false;
+  document.getElementById('org-fmt').disabled          = false;
 }
 
 document.getElementById('btn-lib-organize').addEventListener('click', _orgOpen);

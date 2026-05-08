@@ -4,7 +4,9 @@ import os
 import re
 import shutil
 
-from flask import Blueprint, jsonify, render_template, request, send_file
+import json
+
+from flask import Blueprint, Response, jsonify, render_template, request, send_file, stream_with_context
 
 import settings as _settings
 import worker
@@ -549,27 +551,20 @@ def _org_target(audio_easy, fmt: str, ext: str) -> str:
     return "/".join(parts or ["Unsorted"]) + ext.lower()
 
 
-def _org_scan(root: str, fmt: str) -> list[dict]:
-    from mutagen import File as MFile
-    ops: list[dict] = []
-    for dirpath, dirs, files in os.walk(root):
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
+
+
+def _org_collect(root: str) -> list[tuple[str, str]]:
+    """Snapshot all audio file paths before any moves happen."""
+    files: list[tuple[str, str]] = []
+    for dirpath, dirs, fnames in os.walk(root):
         dirs.sort()
-        for fname in sorted(files):
+        for fname in sorted(fnames):
             ext = os.path.splitext(fname)[1].lower()
-            if ext not in _AUDIO_EXTS:
-                continue
-            src_abs = os.path.join(dirpath, fname)
-            src_rel = os.path.relpath(src_abs, root).replace(os.sep, "/")
-            try:
-                audio = MFile(src_abs, easy=True)
-                if audio is None:
-                    ops.append({"src": src_rel, "error": "Unrecognised format"})
-                    continue
-                dst_rel = _org_target(audio, fmt, ext)
-                ops.append({"src": src_rel, "dst": dst_rel, "changed": src_rel != dst_rel})
-            except Exception as exc:
-                ops.append({"src": src_rel, "error": str(exc)[:120]})
-    return ops
+            if ext in _AUDIO_EXTS:
+                files.append((os.path.join(dirpath, fname), ext))
+    return files
 
 
 @bp.post("/api/library/organize/preview")
@@ -579,11 +574,32 @@ def api_org_preview():
     root = _lib_root()
     if not os.path.isdir(root):
         return jsonify(error="Library directory not found"), 404
-    try:
-        return jsonify(ops=_org_scan(root, fmt))
-    except Exception as exc:
-        log.error("Organize preview failed: %s", exc)
-        return jsonify(error=str(exc)), 500
+
+    def generate():
+        from mutagen import File as MFile
+        all_files = _org_collect(root)
+        total     = len(all_files)
+        yield _sse({"type": "total", "total": total})
+        ops: list[dict] = []
+        for i, (src_abs, ext) in enumerate(all_files):
+            src_rel = os.path.relpath(src_abs, root).replace(os.sep, "/")
+            try:
+                audio = MFile(src_abs, easy=True)
+                if audio is None:
+                    ops.append({"src": src_rel, "error": "Unrecognised format"})
+                else:
+                    dst_rel = _org_target(audio, fmt, ext)
+                    ops.append({"src": src_rel, "dst": dst_rel, "changed": src_rel != dst_rel})
+            except Exception as exc:
+                ops.append({"src": src_rel, "error": str(exc)[:120]})
+            yield _sse({"type": "progress", "done": i + 1, "total": total})
+        yield _sse({"type": "done", "ops": ops})
+
+    return Response(
+        stream_with_context(generate()),
+        content_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @bp.post("/api/library/organize/apply")
@@ -593,27 +609,35 @@ def api_org_apply():
     root = _lib_root()
     if not os.path.isdir(root):
         return jsonify(error="Library directory not found"), 404
-    try:
-        ops     = _org_scan(root, fmt)
-        results = []
-        for op in ops:
-            if op.get("error") or not op.get("changed"):
-                continue
-            src_abs = os.path.join(root, *op["src"].split("/"))
-            dst_abs = os.path.join(root, *op["dst"].split("/"))
-            if not os.path.isfile(src_abs):
-                results.append({"src": op["src"], "ok": False, "error": "Source not found"})
-                continue
-            if os.path.exists(dst_abs) and os.path.normcase(src_abs) != os.path.normcase(dst_abs):
-                results.append({"src": op["src"], "ok": False, "error": "Destination already exists"})
-                continue
-            try:
-                os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
-                shutil.move(src_abs, dst_abs)
-                results.append({"src": op["src"], "dst": op["dst"], "ok": True})
-            except Exception as exc:
-                results.append({"src": op["src"], "ok": False, "error": str(exc)[:120]})
 
+    def generate():
+        from mutagen import File as MFile
+        all_files = _org_collect(root)
+        total     = len(all_files)
+        yield _sse({"type": "total", "total": total})
+        moved = errors = 0
+        for i, (src_abs, ext) in enumerate(all_files):
+            src_rel = os.path.relpath(src_abs, root).replace(os.sep, "/")
+            try:
+                if not os.path.isfile(src_abs):
+                    pass  # already relocated — not an error
+                else:
+                    audio = MFile(src_abs, easy=True)
+                    if audio is None:
+                        raise ValueError("Unrecognised format")
+                    dst_rel = _org_target(audio, fmt, ext)
+                    if src_rel != dst_rel:
+                        dst_abs = os.path.join(root, *dst_rel.split("/"))
+                        if os.path.exists(dst_abs) and os.path.normcase(src_abs) != os.path.normcase(dst_abs):
+                            errors += 1
+                        else:
+                            os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
+                            shutil.move(src_abs, dst_abs)
+                            moved += 1
+            except Exception:
+                errors += 1
+            yield _sse({"type": "progress", "done": i + 1, "total": total,
+                        "moved": moved, "errors": errors})
         # Remove empty directories left behind
         for dp, _, _ in os.walk(root, topdown=False):
             if dp == root:
@@ -623,13 +647,13 @@ def api_org_apply():
                     os.rmdir(dp)
             except OSError:
                 pass
+        yield _sse({"type": "done", "moved": moved, "errors": errors})
 
-        moved  = sum(1 for r in results if r.get("ok"))
-        errors = sum(1 for r in results if not r.get("ok"))
-        return jsonify(moved=moved, errors=errors, results=results)
-    except Exception as exc:
-        log.error("Organize apply failed: %s", exc)
-        return jsonify(error=str(exc)), 500
+    return Response(
+        stream_with_context(generate()),
+        content_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
