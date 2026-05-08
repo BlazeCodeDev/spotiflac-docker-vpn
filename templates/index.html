@@ -1943,7 +1943,7 @@ function renderJobs() {
       : `<div class="job-cover-ph"></div>`;
     const sel      = _selectedJobIds.has(j.id);
     const expanded = _jobExpanded.has(j.id);
-    const hasTracks = j.track_results && j.track_results.length > 0;
+    const hasTracks = (j.track_results && j.track_results.length > 0) || j.total > 1;
     let actionBtn = '<span></span>';
     if (j.status === 'queued' || j.status === 'running') {
       actionBtn = `<button class="job-btn cancel" data-action="cancel" data-id="${esc(j.id)}" title="Cancel"><span class="material-icons">stop</span></button>`;
@@ -1955,18 +1955,25 @@ function renderJobs() {
 
     let expandPanel = '';
     if (hasTracks) {
-      const failures = j.track_results.filter(r => !r.success);
-      const showAll  = _jobShowAll.has(j.id) || failures.length === 0;
-      const shown    = showAll ? j.track_results : failures;
-      const rows = shown.map(r => r.success
-        ? `<div class="track-row"><span class="track-ok">✓</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span></div>`
-        : `<div class="track-row"><span class="track-fail">✗</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span><span class="track-err">— ${fmtTrackError(r.error)}</span></div>`
-      ).join('');
-      const toggleLabel = showAll ? 'Show failures only' : `Show all ${j.track_results.length} tracks`;
-      const toggleBtn = failures.length > 0 && j.track_results.length > failures.length
-        ? `<div class="track-show-toggle" data-action="tracks-toggle" data-id="${esc(j.id)}">${toggleLabel}</div>`
-        : '';
-      expandPanel = `<div class="job-expand"><div class="track-list">${rows}</div>${toggleBtn}</div>`;
+      if (j.track_results && j.track_results.length > 0) {
+        const failures = j.track_results.filter(r => !r.success);
+        const showAll  = _jobShowAll.has(j.id) || failures.length === 0;
+        const shown    = showAll ? j.track_results : failures;
+        const rows = shown.map(r => r.success
+          ? `<div class="track-row"><span class="track-ok">✓</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span></div>`
+          : `<div class="track-row"><span class="track-fail">✗</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span><span class="track-err">— ${fmtTrackError(r.error)}</span></div>`
+        ).join('');
+        const toggleLabel = showAll ? 'Show failures only' : `Show all ${j.track_results.length} tracks`;
+        const toggleBtn = failures.length > 0 && j.track_results.length > failures.length
+          ? `<div class="track-show-toggle" data-action="tracks-toggle" data-id="${esc(j.id)}">${toggleLabel}</div>`
+          : '';
+        expandPanel = `<div class="job-expand"><div class="track-list">${rows}</div>${toggleBtn}</div>`;
+      } else {
+        const loadMsg = j.status === 'running'
+          ? `${j.total} tracks — downloading…`
+          : `${j.total} tracks`;
+        expandPanel = `<div class="job-expand"><div class="track-row" style="color:var(--md-on-surface-variant);font-size:.8125rem">${loadMsg}</div></div>`;
+      }
     }
 
     return `

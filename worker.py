@@ -323,13 +323,15 @@ class _TrackingWorker(DownloadWorker):
         base_out = self._resolve_output_dir()
         done     = 0
 
+        # Pre-scan: check the output folder for every track before starting any
+        # downloads so files that already exist are never re-downloaded.
+        # We also cache each track's output directory so the loop doesn't recompute it.
+        track_dirs:   list[str]             = []
+        pre_existing: list[_Path | None]    = []
         for i, track in enumerate(self._tracks):
-            manager.start_download(track.id)
             out_dir = self._track_output_dir(base_out, track)
-
-            # Pre-check: skip if a matching audio file already exists on disk.
-            # Checks all common extensions so cross-format duplicates are caught too.
-            existing = None
+            track_dirs.append(out_dir)
+            found: _Path | None = None
             for ext in ('.flac', '.m4a', '.mp3'):
                 fname = build_filename(
                     track,
@@ -342,11 +344,24 @@ class _TrackingWorker(DownloadWorker):
                 )
                 candidate = _Path(out_dir) / fname
                 if candidate.exists() and candidate.stat().st_size > 0:
-                    existing = candidate
+                    found = candidate
                     break
+            pre_existing.append(found)
+
+        skip_count = sum(1 for p in pre_existing if p)
+        if skip_count:
+            remaining = total - skip_count
+            log.info(
+                "Pre-scan: %d/%d tracks already on disk%s",
+                skip_count, total,
+                f", downloading {remaining} remaining" if remaining else " — nothing to download",
+            )
+
+        for i, track in enumerate(self._tracks):
+            manager.start_download(track.id)
+            existing = pre_existing[i]
 
             if existing:
-                log.info("Skipping already-downloaded track: %s", existing.name)
                 size_mb = existing.stat().st_size / (1024 * 1024)
                 manager.complete_download(track.id, str(existing), size_mb)
                 if self._on_track_result:
@@ -359,7 +374,8 @@ class _TrackingWorker(DownloadWorker):
                 self._on_track_done(done)
                 continue
 
-            result = download_one(track, out_dir, self._providers, self._opts, i + 1)
+            out_dir = track_dirs[i]
+            result  = download_one(track, out_dir, self._providers, self._opts, i + 1)
 
             if result.success:
                 try:
@@ -557,7 +573,10 @@ def _run(job_id: str) -> None:
             succeeded = (new_success > 0) or not track_results
         except Exception as exc:
             log.error("Job %s failed: %s", job_id, exc)
-            _update(job_id, status="error", error=str(exc), finished_at=_now())
+            _update(job_id, status="error", error=str(exc), finished_at=_now(),
+                    track_results=track_results if track_results else None,
+                    success_count=sum(1 for r in track_results if r["success"]) if track_results else None,
+                    fail_count=sum(1 for r in track_results if not r["success"]) if track_results else None)
 
         if succeeded or ev.is_set():
             _cancel.pop(job_id, None)
