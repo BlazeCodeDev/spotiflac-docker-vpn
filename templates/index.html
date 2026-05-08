@@ -1932,6 +1932,9 @@ function renderJobs() {
     if (b) _prevBadges.set(item.dataset.id, b.textContent.trim() + '|' + b.className.replace(/\bbadge-changed\b/g, '').trim());
   });
 
+  // Clear any stale inline height from a previous animation so offsetHeight
+  // reads the true content height, not a locked value.
+  el.style.height = el.style.transition = el.style.overflow = '';
   const prevH = el.offsetHeight;
   el.innerHTML = jobs.map(j => {
     const label = j.title || j.url;
@@ -2016,9 +2019,12 @@ function renderJobs() {
     requestAnimationFrame(() => {
       el.style.transition = 'height .24s cubic-bezier(.4,0,.2,1)';
       el.style.height = newH + 'px';
-      el.addEventListener('transitionend', () => {
+      const _onHeightEnd = (e) => {
+        if (e.target !== el || e.propertyName !== 'height') return;
         el.style.height = el.style.transition = el.style.overflow = '';
-      }, {once: true});
+        el.removeEventListener('transitionend', _onHeightEnd);
+      };
+      el.addEventListener('transitionend', _onHeightEnd);
     });
   }
 
