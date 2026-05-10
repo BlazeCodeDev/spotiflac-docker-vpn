@@ -312,6 +312,16 @@ class _TrackingWorker(DownloadWorker):
         self._on_track_done   = on_track_done
         self._on_track_result = on_track_result
 
+    def _resolve_output_dir(self) -> str:
+        # The filename_format already encodes the full directory structure
+        # (e.g. {artist}/{album}/{track} {title}), so let it be the sole
+        # authority. Skipping the base-class album/playlist collection-name
+        # subfolder prevents the album name from appearing twice in the path.
+        import os as _os
+        out = _os.path.normpath(self._opts.output_dir)
+        _os.makedirs(out, exist_ok=True)
+        return out
+
     def run(self):
         from SpotiFLAC.core.models import build_filename
         from pathlib import Path as _Path
