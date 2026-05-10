@@ -369,6 +369,62 @@ start_app() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Reconnect VPN — restarts the VPN process after a tunnel drop.
+# Kill-switch iptables rules are NOT touched; traffic stays blocked throughout.
+# Returns 0 on success, 1 if all attempts are exhausted (caller then exits).
+# ─────────────────────────────────────────────────────────────────────────────
+reconnect_vpn() {
+    _max="${VPN_RECONNECT_TRIES:-3}"
+    log "Reconnecting VPN (kill-switch stays active, up to $_max attempts)..."
+    _try=1
+    while [ "$_try" -le "$_max" ]; do
+        log "Reconnect attempt $_try/$_max..."
+        case "$VPN_PROTOCOL" in
+            openvpn)
+                if [ -f /vpn/openvpn.pid ]; then
+                    kill "$(cat /vpn/openvpn.pid)" 2>/dev/null || true
+                    rm -f /vpn/openvpn.pid
+                fi
+                pkill -f openvpn 2>/dev/null || true
+                sleep 2
+                rm -f /vpn/openvpn.log
+                openvpn \
+                    --config "$CREDS_DIR/config.ovpn" \
+                    --auth-nocache \
+                    --log /vpn/openvpn.log \
+                    --writepid /vpn/openvpn.pid \
+                    --daemon
+                ;;
+            wireguard)
+                wg-quick down wg0 2>/dev/null || true
+                sleep 1
+                wg-quick up wg0 2>&1 | sed 's/^/[wg]   /'
+                ;;
+        esac
+        _max_wait="${VPN_CONNECT_TIMEOUT:-30}"
+        _w=0
+        while [ "$_w" -lt "$_max_wait" ]; do
+            if ip link show "$VPN_IFACE" > /dev/null 2>&1; then
+                date +%s > /vpn/tunnel_up_since
+                log "Tunnel $VPN_IFACE is up (attempt $_try)"
+                return 0
+            fi
+            if [ "$VPN_PROTOCOL" = "openvpn" ] && [ -f /vpn/openvpn.log ]; then
+                if grep -q "AUTH_FAILED\|TLS Error\|Connection refused" /vpn/openvpn.log 2>/dev/null; then
+                    err "OpenVPN fatal error on attempt $_try"
+                    break
+                fi
+            fi
+            _w=$((_w + 1))
+            sleep 1
+        done
+        err "Reconnect attempt $_try/$_max failed"
+        _try=$((_try + 1))
+    done
+    return 1
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Monitor tunnel and app process
 # ─────────────────────────────────────────────────────────────────────────────
 monitor_tunnel() {
@@ -378,20 +434,28 @@ monitor_tunnel() {
 
         # Tunnel check
         if ! ip link show "$VPN_IFACE" > /dev/null 2>&1; then
-            err "Tunnel $VPN_IFACE is no longer active — shutting down container"
-            [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null || true
-            exit 1
+            err "Tunnel $VPN_IFACE is no longer active — attempting reconnect (kill-switch remains active)"
+            if ! reconnect_vpn; then
+                err "All reconnect attempts failed — shutting down container"
+                [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null || true
+                exit 1
+            fi
+            continue
         fi
 
         # OpenVPN process check
         if [ "$VPN_PROTOCOL" = "openvpn" ] && [ -f /vpn/openvpn.pid ]; then
             OVPN_PID=$(cat /vpn/openvpn.pid)
             if ! kill -0 "$OVPN_PID" 2>/dev/null; then
-                err "OpenVPN process (PID $OVPN_PID) died — shutting down container"
-                [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null || true
-                exit 1
+                err "OpenVPN process (PID $OVPN_PID) died — attempting reconnect (kill-switch remains active)"
+                if ! reconnect_vpn; then
+                    err "All reconnect attempts failed — shutting down container"
+                    [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null || true
+                    exit 1
+                fi
+            else
+                debug "OpenVPN PID $OVPN_PID alive"
             fi
-            debug "OpenVPN PID $OVPN_PID alive"
         fi
 
         # App process check
@@ -403,9 +467,12 @@ monitor_tunnel() {
         # Optional ping check through the tunnel
         if [ -n "$VPN_PING_HOST" ]; then
             if ! ping -c 1 -W 5 -I "$VPN_IFACE" "$VPN_PING_HOST" > /dev/null 2>&1; then
-                err "Ping $VPN_PING_HOST via $VPN_IFACE failed — shutting down container"
-                [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null || true
-                exit 1
+                err "Ping $VPN_PING_HOST via $VPN_IFACE failed — attempting reconnect (kill-switch remains active)"
+                if ! reconnect_vpn; then
+                    err "All reconnect attempts failed — shutting down container"
+                    [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null || true
+                    exit 1
+                fi
             fi
             debug "Ping $VPN_PING_HOST OK"
         fi
