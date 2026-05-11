@@ -353,8 +353,9 @@ update_spotiflac() {
 # Start and monitor the app process
 # ─────────────────────────────────────────────────────────────────────────────
 start_app() {
-    # Default if APP_CMD is not set in .env
-    APP_CMD="${APP_CMD:-python /app/app.py}"
+    # Single worker to preserve shared in-memory job queue; threads handle
+    # concurrent requests. Timeout 300s covers long SSE streams (library organizer).
+    APP_CMD="${APP_CMD:-gunicorn --bind 0.0.0.0:${PORT:-5000} --workers 1 --threads 4 --timeout 300 app:app}"
     WEB_PORT="${PORT:-5000}"
 
     log "Starting app: $APP_CMD"

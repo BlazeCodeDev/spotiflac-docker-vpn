@@ -13,7 +13,7 @@ RUN apk add --no-cache \
     ffmpeg
 
 # App dependencies (SpotiFLAC is installed separately for easy in-place upgrades)
-RUN pip install --no-cache-dir flask python-dotenv
+RUN pip install --no-cache-dir flask python-dotenv gunicorn
 
 # SpotiFLAC goes to /spotiflac so it can be upgraded via a named volume without
 # rebuilding the image.  Docker copies this directory into a fresh named volume
