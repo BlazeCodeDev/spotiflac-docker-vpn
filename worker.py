@@ -344,12 +344,12 @@ class _TrackingWorker(DownloadWorker):
             for ext in ('.flac', '.m4a', '.mp3'):
                 fname = build_filename(
                     track,
-                    fmt                 = self._opts.filename_format,
-                    position            = i + 1,
-                    include_track_num   = self._opts.use_track_numbers,
-                    use_album_track_num = self._opts.use_track_numbers,
-                    first_artist_only   = self._opts.first_artist_only,
-                    extension           = ext,
+                    fmt                  = self._opts.filename_format,
+                    position             = i + 1,
+                    include_track_number = self._opts.use_track_numbers,
+                    use_album_track_number = self._opts.use_track_numbers,
+                    first_artist_only    = self._opts.first_artist_only,
+                    extension            = ext,
                 )
                 candidate = _Path(out_dir) / fname
                 if candidate.exists() and candidate.stat().st_size > 0:
