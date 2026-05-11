@@ -12,12 +12,14 @@ RUN apk add --no-cache \
     iputils \
     ffmpeg
 
-# App dependencies
-RUN pip install --no-cache-dir SpotiFLAC flask python-dotenv
+# App dependencies (SpotiFLAC is installed separately for easy in-place upgrades)
+RUN pip install --no-cache-dir flask python-dotenv
 
-# Patch SpotiFLAC: preserve / as directory separator in filename formats
-COPY patch_spotiflac.py /tmp/patch_spotiflac.py
-RUN python3 /tmp/patch_spotiflac.py
+# SpotiFLAC goes to /spotiflac so it can be upgraded via a named volume without
+# rebuilding the image.  Docker copies this directory into a fresh named volume
+# on first run, and subsequent pip upgrades via the UI persist there.
+RUN pip install --no-cache-dir --target /spotiflac SpotiFLAC
+ENV PYTHONPATH=/spotiflac
 
 RUN mkdir -p /vpn /downloads /app/templates && \
     chmod 700 /vpn && \
@@ -31,10 +33,15 @@ ENV PYTHONUNBUFFERED=1
 RUN apk add --no-cache netcat-openbsd
 
 COPY entrypoint.sh /entrypoint.sh
+COPY patch_spotiflac.py /app/patch_spotiflac.py
 COPY app.py config.py worker.py vpn.py routes.py settings.py /app/
 COPY templates/ /app/templates/
 COPY static/ /app/static/
 RUN chmod +x /entrypoint.sh
+
+# Apply patches to the build-time SpotiFLAC install.  The entrypoint re-runs
+# this on every startup so upgrades via the UI are patched automatically.
+RUN python3 /app/patch_spotiflac.py
 
 VOLUME ["/downloads"]
 

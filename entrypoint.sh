@@ -194,10 +194,12 @@ apply_killswitch() {
     debug "VPN server IPs         : $VPN_SERVERS"
 
     # ── IPv4 ──────────────────────────────────────────────────────────────────
-    iptables -F INPUT  2>/dev/null || true
-    iptables -F OUTPUT 2>/dev/null || true
-    iptables -P INPUT  DROP
-    iptables -P OUTPUT DROP
+    iptables -F INPUT   2>/dev/null || true
+    iptables -F OUTPUT  2>/dev/null || true
+    iptables -F FORWARD 2>/dev/null || true
+    iptables -P INPUT   DROP
+    iptables -P OUTPUT  DROP
+    iptables -P FORWARD DROP
 
     iptables -A INPUT  -i lo -j ACCEPT
     iptables -A OUTPUT -o lo -j ACCEPT
@@ -325,6 +327,26 @@ wait_for_tunnel() {
     err "Tunnel did not come up within ${max}s"
     [ -f /vpn/openvpn.log ] && cat /vpn/openvpn.log >&2
     die "Timeout"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Update SpotiFLAC — runs after tunnel is up so pip can reach PyPI.
+# ─────────────────────────────────────────────────────────────────────────────
+update_spotiflac() {
+    log "Checking for SpotiFLAC updates..."
+    _out=$(pip install --upgrade --target /spotiflac SpotiFLAC 2>&1)
+    _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+        err "SpotiFLAC update check failed: $(echo "$_out" | tail -1)"
+        return
+    fi
+    if echo "$_out" | grep -qi "successfully installed"; then
+        _ver=$(echo "$_out" | grep -o "SpotiFLAC-[0-9][^ ]*" | head -1)
+        log "SpotiFLAC upgraded to ${_ver:-new version} — re-patching"
+        python3 /app/patch_spotiflac.py 2>&1 | sed 's/^/[vpn] /' || true
+    else
+        log "SpotiFLAC already up to date"
+    fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -482,6 +504,11 @@ monitor_tunnel() {
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
+# Re-apply SpotiFLAC patches on every startup so in-place pip upgrades via the
+# UI are automatically patched before the app starts.
+log "Applying SpotiFLAC patches..."
+python3 /app/patch_spotiflac.py 2>&1 | sed 's/^/[vpn] /' || true
+
 case "$VPN_PROTOCOL" in
     openvpn)   setup_openvpn  ;;
     wireguard) setup_wireguard ;;
@@ -492,5 +519,6 @@ apply_killswitch
 start_vpn
 wait_for_tunnel
 setup_return_routing
+update_spotiflac
 start_app
 monitor_tunnel

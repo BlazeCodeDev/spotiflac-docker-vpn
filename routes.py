@@ -3,6 +3,11 @@ import logging
 import os
 import re
 import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
 
 import json
 
@@ -705,3 +710,70 @@ def api_settings_patch():
         return jsonify(error="Invalid values", fields=errors), 400
     _settings.save(updates)
     return jsonify(ok=True, settings=_settings.load())
+
+
+_sf_version_cache: dict = {}
+
+
+@bp.get("/api/spotiflac/version")
+def api_spotiflac_version():
+    import urllib.request as _ureq
+    from importlib.metadata import version as _ver, PackageNotFoundError
+
+    try:
+        installed = _ver("SpotiFLAC")
+    except PackageNotFoundError:
+        installed = "unknown"
+
+    now = time.time()
+    if _sf_version_cache.get("ts", 0) > now - 3600:
+        latest = _sf_version_cache["latest"]
+    else:
+        try:
+            req = _ureq.Request(
+                "https://pypi.org/pypi/SpotiFLAC/json",
+                headers={"User-Agent": "spotiflac-ui/1.0"},
+            )
+            with _ureq.urlopen(req, timeout=8) as resp:
+                latest = json.loads(resp.read())["info"]["version"]
+            _sf_version_cache["latest"] = latest
+            _sf_version_cache["ts"] = now
+        except Exception as exc:
+            log.debug("PyPI version check failed: %s", exc)
+            latest = installed
+
+    try:
+        update_available = (
+            installed != "unknown"
+            and tuple(int(x) for x in latest.split(".")[:3])
+            > tuple(int(x) for x in installed.split(".")[:3])
+        )
+    except Exception:
+        update_available = False
+
+    return jsonify(installed=installed, latest=latest, update_available=update_available)
+
+
+@bp.post("/api/spotiflac/update")
+def api_spotiflac_update():
+    pip = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--upgrade",
+         "--target", "/spotiflac", "SpotiFLAC"],
+        capture_output=True, text=True,
+    )
+    if pip.returncode != 0:
+        return jsonify(error=pip.stderr or "pip failed"), 500
+
+    patch = subprocess.run(
+        [sys.executable, "/app/patch_spotiflac.py"],
+        capture_output=True, text=True,
+    )
+
+    # Kill this process after the response is sent; Docker restarts the
+    # container (restart: unless-stopped) and starts fresh with the new version.
+    def _restart():
+        time.sleep(1)
+        os.kill(os.getpid(), signal.SIGTERM)
+    threading.Thread(target=_restart, daemon=True).start()
+
+    return jsonify(ok=True, pip=pip.stdout.strip(), patch=patch.stdout.strip())
