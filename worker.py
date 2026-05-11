@@ -79,6 +79,9 @@ def _save() -> None:
     try:
         with _lock:
             snapshot = {"seq": _seq, "jobs": {jid: dict(j) for jid, j in _jobs.items()}}
+        d = os.path.dirname(os.path.abspath(_STATE_FILE))
+        if d:
+            os.makedirs(d, exist_ok=True)
         tmp = _STATE_FILE + ".tmp"
         with open(tmp, "w") as f:
             json.dump(snapshot, f)
@@ -384,7 +387,8 @@ class _TrackingWorker(DownloadWorker):
                 continue
 
             out_dir = track_dirs[i]
-            result  = download_one(track, out_dir, self._providers, self._opts, i + 1)
+            result  = download_one(track, out_dir, self._providers, self._opts, i + 1,
+                                   self._is_album)
 
             if result.success:
                 try:
@@ -404,7 +408,7 @@ class _TrackingWorker(DownloadWorker):
                     })
             else:
                 err = result.error or "unknown"
-                self._failed.append((track.title, track.artists, err))
+                self._failed.append((track.id, track.title, track.artists, err))
                 manager.fail_download(track.id, err)
                 if self._on_track_result:
                     self._on_track_result({
@@ -432,21 +436,37 @@ class _TrackingDownloader(SpotiflacDownloader):
         self._on_progress    = on_progress
         self._on_track_result = on_track_result
 
-    def _run_once(self, spotify_url):
+    def _run_once(self, spotify_url, target_tracks=None):
         from SpotiFLAC.core.errors import SpotiflacError
-        from SpotiFLAC.providers.spotify_metadata import parse_spotify_url
 
-        collection_name, tracks = self._client.get_url(spotify_url)
-
-        if not tracks:
-            return
+        if target_tracks is not None:
+            tracks          = target_tracks
+            collection_name = ""
+            is_album        = getattr(self._opts, 'is_album', False)
+            is_playlist     = len(tracks) > 1
+        elif hasattr(self, '_resolve_metadata'):
+            # SpotiFLAC 0.4.7+: handles Tidal, Apple Music, SoundCloud, YouTube too
+            try:
+                collection_name, tracks, info = self._resolve_metadata(spotify_url)
+            except SpotiflacError as exc:
+                log.error("Metadata fetch failed: %s", exc)
+                return []
+            if not tracks:
+                return []
+            is_album    = info.get("type") == "album"
+            is_playlist = info.get("type") in ("playlist", "artist", "artist_discography")
+        else:
+            # SpotiFLAC 0.3.x fallback
+            from SpotiFLAC.providers.spotify_metadata import parse_spotify_url
+            collection_name, tracks = self._client.get_url(spotify_url)
+            if not tracks:
+                return []
+            info        = parse_spotify_url(spotify_url)
+            is_album    = info["type"] == "album"
+            is_playlist = info["type"] == "playlist"
 
         total = len(tracks)
         self._on_progress(0, total)
-
-        info        = parse_spotify_url(spotify_url)
-        is_album    = info["type"] == "album"
-        is_playlist = info["type"] == "playlist"
 
         manager = DownloadManager()
         for t in tracks:
@@ -462,6 +482,7 @@ class _TrackingDownloader(SpotiflacDownloader):
             on_track_result = self._on_track_result,
         )
         worker.run()
+        return []
 
 
 def _run(job_id: str) -> None:
