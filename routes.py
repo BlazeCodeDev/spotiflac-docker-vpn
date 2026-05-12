@@ -769,11 +769,13 @@ def api_spotiflac_update():
         capture_output=True, text=True,
     )
 
-    # Kill this process after the response is sent; Docker restarts the
-    # container (restart: unless-stopped) and starts fresh with the new version.
+    # Signal PID 1 (the entrypoint shell) so Docker sees the container exit
+    # and restarts it (restart: unless-stopped) with the new SpotiFLAC version.
+    # Killing only the Gunicorn worker (os.getpid()) just gets it respawned by
+    # the master without the container ever restarting.
     def _restart():
         time.sleep(1)
-        os.kill(os.getpid(), signal.SIGTERM)
+        os.kill(1, signal.SIGTERM)
     threading.Thread(target=_restart, daemon=True).start()
 
     return jsonify(ok=True, pip=pip.stdout.strip(), patch=patch.stdout.strip())
