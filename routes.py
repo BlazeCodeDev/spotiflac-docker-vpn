@@ -715,15 +715,29 @@ def api_settings_patch():
 _sf_version_cache: dict = {}
 
 
+def _sf_installed_version() -> str:
+    """Read version directly from /spotiflac dist-info — works with --target installs."""
+    import glob
+    for di in glob.glob("/spotiflac/SpotiFLAC-*.dist-info") + glob.glob("/spotiflac/spotiflac-*.dist-info"):
+        try:
+            with open(os.path.join(di, "METADATA")) as f:
+                for line in f:
+                    if line.lower().startswith("version:"):
+                        return line.split(":", 1)[1].strip()
+        except OSError:
+            pass
+    try:
+        from importlib.metadata import version as _imv
+        return _imv("SpotiFLAC")
+    except Exception:
+        return "unknown"
+
+
 @bp.get("/api/spotiflac/version")
 def api_spotiflac_version():
     import urllib.request as _ureq
-    from importlib.metadata import version as _ver, PackageNotFoundError
 
-    try:
-        installed = _ver("SpotiFLAC")
-    except PackageNotFoundError:
-        installed = "unknown"
+    installed = _sf_installed_version()
 
     now = time.time()
     if _sf_version_cache.get("ts", 0) > now - 3600:
@@ -769,13 +783,13 @@ def api_spotiflac_update():
         capture_output=True, text=True,
     )
 
-    # Signal PID 1 (the entrypoint shell) so Docker sees the container exit
-    # and restarts it (restart: unless-stopped) with the new SpotiFLAC version.
-    # Killing only the Gunicorn worker (os.getpid()) just gets it respawned by
-    # the master without the container ever restarting.
+    # Kill the Gunicorn master — entrypoint.sh's monitor_tunnel watches APP_PID
+    # and calls exit 1 when it dies, which makes Docker restart the container.
+    # os.kill(1, SIGTERM) is unreliable: Linux silently ignores SIGTERM on PID 1
+    # when the process has no registered handler (init protection).
     def _restart():
         time.sleep(1)
-        os.kill(1, signal.SIGTERM)
+        os.kill(os.getppid(), signal.SIGTERM)
     threading.Thread(target=_restart, daemon=True).start()
 
     return jsonify(ok=True, pip=pip.stdout.strip(), patch=patch.stdout.strip())
