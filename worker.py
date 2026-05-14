@@ -176,8 +176,9 @@ def cancel_job(job_id: str) -> bool:
         j = _jobs.get(job_id)
         if not j or j["status"] not in ("queued", "running"):
             return False
-        j["status"]      = "cancelled"
-        j["finished_at"] = _now()
+        j["status"]        = "cancelled"
+        j["finished_at"]   = _now()
+        j["next_retry_at"] = None
     _save()
     _cleanup_empty_dirs()
     return True

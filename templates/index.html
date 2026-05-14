@@ -1422,6 +1422,10 @@ function fmtUptime(since) {
   const h = Math.floor(m / 60);
   return `${h}h ${m % 60}m`;
 }
+function fmtCountdown(until) {
+  const s = Math.max(0, Math.round((new Date(until) - Date.now()) / 1000));
+  return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+}
 
 function _countryMismatch(configured, ipData) {
   if (!configured || !ipData) return false;
@@ -2104,7 +2108,7 @@ function renderJobs() {
       ${actionBtn}
       <button class="job-btn remove" data-action="remove" data-id="${esc(j.id)}" title="Remove"><span class="material-icons">close</span></button>
       ${j.error ? `<div class="job-error">${esc(j.error)}</div>` : ''}
-      ${j.next_retry_at ? `<div class="job-retry-bar"><span class="material-icons">schedule</span>Retry ${j.retry_count || 1}${j.retry_max ? ' of ' + j.retry_max : ''} in <span class="retry-countdown" data-until="${esc(j.next_retry_at)}">…</span></div>` : ''}
+      ${j.next_retry_at && j.status !== 'cancelled' ? `<div class="job-retry-bar"><span class="material-icons">schedule</span>Retry ${j.retry_count || 1}${j.retry_max ? ' of ' + j.retry_max : ''} in <span class="retry-countdown" data-until="${esc(j.next_retry_at)}">${fmtCountdown(j.next_retry_at)}</span></div>` : ''}
       ${expandPanel}
     </div>`;
   }).join('');
@@ -2944,8 +2948,7 @@ setInterval(refreshJobs, 3_000);
 setInterval(() => {
   if (_vpnConnectedSince) document.getElementById('tt-uptime').textContent = fmtUptime(_vpnConnectedSince);
   document.querySelectorAll('.retry-countdown').forEach(el => {
-    const s = Math.max(0, Math.round((new Date(el.dataset.until) - Date.now()) / 1000));
-    el.textContent = s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+    el.textContent = fmtCountdown(el.dataset.until);
   });
 }, 1000);
 
