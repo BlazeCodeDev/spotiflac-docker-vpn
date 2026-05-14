@@ -715,17 +715,30 @@ def api_settings_patch():
 _sf_version_cache: dict = {}
 
 
+def _ver_tuple(v: str) -> tuple:
+    parts = [int(x) for x in v.split(".")[:3]]
+    return tuple(parts + [0] * (3 - len(parts)))
+
+
 def _sf_installed_version() -> str:
-    """Read version directly from /spotiflac dist-info — works with --target installs."""
+    """Read version from /spotiflac dist-info, returning the highest found.
+
+    pip install --upgrade --target can leave old dist-info dirs alongside the
+    new one; taking the max ensures we always report the installed version.
+    """
     import glob
+    found: list[str] = []
     for di in glob.glob("/spotiflac/SpotiFLAC-*.dist-info") + glob.glob("/spotiflac/spotiflac-*.dist-info"):
         try:
             with open(os.path.join(di, "METADATA")) as f:
                 for line in f:
                     if line.lower().startswith("version:"):
-                        return line.split(":", 1)[1].strip()
+                        found.append(line.split(":", 1)[1].strip())
+                        break
         except OSError:
             pass
+    if found:
+        return max(found, key=_ver_tuple)
     try:
         from importlib.metadata import version as _imv
         return _imv("SpotiFLAC")
@@ -759,8 +772,7 @@ def api_spotiflac_version():
     try:
         update_available = (
             installed != "unknown"
-            and tuple(int(x) for x in latest.split(".")[:3])
-            > tuple(int(x) for x in installed.split(".")[:3])
+            and _ver_tuple(latest) > _ver_tuple(installed)
         )
     except Exception:
         update_available = False
