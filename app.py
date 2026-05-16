@@ -13,6 +13,7 @@ from flask import Flask, Response, request
 
 import settings as _settings
 import worker
+import lib_index
 from config import Config
 from routes import bp
 
@@ -25,6 +26,7 @@ logging.basicConfig(
 os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
 _cfg = _settings.load()
 worker.init(_cfg["max_workers"])
+lib_index.start(lambda: Config.OUTPUT_DIR)
 
 _log = logging.getLogger("startup")
 _log.info("OUTPUT_DIR  = %s", os.path.abspath(Config.OUTPUT_DIR))

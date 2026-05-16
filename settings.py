@@ -22,6 +22,9 @@ def _defaults() -> dict:
         # Performance
         "track_delay_s": float(os.environ.get("TRACK_DELAY_SECONDS", "4.0")),
         "max_workers":   int(os.environ.get("MAX_WORKERS",           "3")),
+        # VPN rotation: reconnect after this many consecutive all-provider failures
+        # (0 = disabled)
+        "reconnect_threshold": int(os.environ.get("VPN_RECONNECT_THRESHOLD", "3")),
     }
 
 

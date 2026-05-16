@@ -529,6 +529,9 @@ button { cursor: pointer; font-family: inherit; border: none; }
 .result-item.expandable { grid-template-columns: 48px 1fr auto auto auto; }
 .result-item.expandable .result-check { display: flex; }
 .result-item.expandable .result-chevron { color: var(--md-on-surface-variant); font-size: 20px; flex-shrink: 0; transition: color .12s; }
+.lib-badge { display: none; align-items: center; gap: 3px; margin-top: 3px; font-size: .6875rem; font-weight: 500; color: var(--s-done); }
+.lib-badge .material-icons { font-size: 12px; }
+.result-item.in-lib .lib-badge { display: inline-flex; }
 .result-item.expandable:hover .result-chevron { color: var(--md-on-surface); }
 
 /* ─── Expand drill-down ────────────────────────────────────────────── */
@@ -1053,6 +1056,17 @@ html.theme-transitioning *::after {
           <div class="hint">Number of jobs processed simultaneously</div>
         </div>
 
+        <hr style="border:none;border-top:1px solid var(--md-outline-variant);margin:0">
+
+        <div class="setting-group">
+          <label>Library Index</label>
+          <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
+            <button class="btn-ghost" id="btn-lib-rescan">Rescan Library</button>
+            <span id="lib-rescan-msg" style="font-size:.8rem;color:var(--md-on-surface-variant)"></span>
+          </div>
+          <div class="hint">Rebuilds the in-memory track index used for "In library" detection in search</div>
+        </div>
+
         <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:4px">
           <span id="cfg-save-msg" style="font-size:.8rem;color:var(--md-on-surface-variant);align-self:center"></span>
           <button id="btn-cfg-save" style="
@@ -1515,6 +1529,7 @@ let _searchFilter   = 'all';
 let _searchSort     = 'relevance';
 let _searchHasMore  = false;
 let _searchLoading  = false;
+let _libPresence    = {};   // url → bool, cached for current search session
 // Map<key, {kind:'url',url} | {kind:'batch',parentUrl,parentTitle,trackUrls[]}>
 // key = url for 'url' kind, parentUrl for 'batch' kind — one entry = one download job
 let _selectedItems  = new Map();
@@ -1642,6 +1657,7 @@ async function doSearch(append = false) {
     _searchOffset   = 0;
     _searchQuery    = q;
     _searchFilter   = 'all';
+    _libPresence    = {};
     _searchSort     = 'relevance';
     _selectedItems.clear();
     document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p.dataset.filter === 'all'));
@@ -1666,6 +1682,7 @@ async function doSearch(append = false) {
     _searchHasMore = data.has_more;
     _searchOffset  = data.next_offset;
     renderSearchResults();
+    checkLibraryPresence(_searchResults);
   } catch {
     if (!append) {
       document.getElementById('search-results').innerHTML = '<div class="jobs-empty">Search failed</div>';
@@ -1713,6 +1730,7 @@ function renderSearchResults() {
       <div class="result-info">
         <div class="result-title">${esc(r.title)}</div>
         <div class="result-sub">${esc(fmtSubtitle(r))}</div>
+        ${r.type === 'track' ? '<span class="lib-badge"><span class="material-icons">check_circle</span>In library</span>' : ''}
       </div>
       <span class="result-type type-${r.type}">${r.type}</span>
       ${action}
@@ -1724,6 +1742,7 @@ function renderSearchResults() {
   }
 
   el.innerHTML = html;
+  applyLibraryPresence();
   el.querySelectorAll('.result-item').forEach(item => {
     const {url, type, title} = item.dataset;
     item.querySelector('.result-sel-whole')?.addEventListener('click', e => {
@@ -1744,6 +1763,26 @@ function renderSearchResults() {
       }
     });
   });
+}
+
+function applyLibraryPresence() {
+  document.querySelectorAll('.result-item[data-type="track"]').forEach(item => {
+    item.classList.toggle('in-lib', !!_libPresence[item.dataset.url]);
+  });
+}
+
+async function checkLibraryPresence(results) {
+  const tracks = results.filter(r => r.type === 'track' && !(r.url in _libPresence));
+  if (!tracks.length) { applyLibraryPresence(); return; }
+  try {
+    const res = await fetch('/api/library/check-tracks', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tracks: tracks.map(r => ({url: r.url, title: r.title}))}),
+    });
+    if (res.ok) Object.assign(_libPresence, await res.json());
+  } catch {}
+  applyLibraryPresence();
 }
 
 function updateSearchDlBtn() {
@@ -1911,6 +1950,23 @@ document.getElementById('btn-tidal-refresh').addEventListener('click', async () 
   }
   btn.disabled = false;
   setTimeout(() => { msg.textContent = ''; msg.style.color = ''; }, 5000);
+});
+document.getElementById('btn-lib-rescan').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-lib-rescan');
+  const msg = document.getElementById('lib-rescan-msg');
+  btn.disabled = true;
+  msg.textContent = 'Scanning…';
+  msg.style.color = '';
+  try {
+    const res = await fetch('/api/library/rescan', {method: 'POST'});
+    msg.textContent = res.ok ? '✓ Rescan started' : '✗ Failed';
+    msg.style.color = res.ok ? 'var(--green)' : 'var(--red)';
+  } catch {
+    msg.textContent = '✗ Network error';
+    msg.style.color = 'var(--red)';
+  }
+  btn.disabled = false;
+  setTimeout(() => { msg.textContent = ''; msg.style.color = ''; }, 4000);
 });
 document.getElementById('settings-modal').addEventListener('click', e => {
   if (e.target === e.currentTarget) closeSettingsModal();

@@ -68,7 +68,10 @@ def init(max_workers: int) -> None:
     log.info("MAX_WORKERS = %d", max_workers)
     threading.Thread(target=_dispatcher, daemon=True, name="job-dispatcher").start()
 
-_STATE_FILE = os.environ.get("STATE_FILE", "/vpn/jobs.json")
+_STATE_FILE       = os.environ.get("STATE_FILE", "/vpn/jobs.json")
+_VPN_RECONNECT    = "/tmp/vpn_reconnect"
+_fail_streak      = 0
+_fail_streak_lock = threading.Lock()
 
 
 def _now() -> str:
@@ -274,6 +277,26 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
     _save()
     _push_pq(jid, _seq)
     return jid
+
+
+def _update_fail_streak(success: bool) -> None:
+    global _fail_streak
+    import settings as _s
+    threshold = _s.load().get("reconnect_threshold", 3)
+    with _fail_streak_lock:
+        if success:
+            _fail_streak = 0
+            return
+        if threshold <= 0:
+            return
+        _fail_streak += 1
+        if _fail_streak >= threshold:
+            _fail_streak = 0
+            try:
+                open(_VPN_RECONNECT, "w").close()
+                log.warning("All-provider failure streak hit %d — requesting VPN reconnect", threshold)
+            except Exception:
+                pass
 
 
 def _update(job_id: str, **kwargs) -> None:
@@ -598,6 +621,7 @@ def _run(job_id: str) -> None:
             # Treat complete failure (all tracks failed) same as an exception so
             # auto-retry kicks in.  Partial success (at least one track OK) is done.
             succeeded = (new_success > 0) or not track_results
+            _update_fail_streak(succeeded and bool(track_results))
         except Exception as exc:
             log.error("Job %s failed: %s", job_id, exc)
             _update(job_id, status="error", error=str(exc), finished_at=_now(),
@@ -607,6 +631,14 @@ def _run(job_id: str) -> None:
 
         if succeeded or ev.is_set():
             _cancel.pop(job_id, None)
+            if succeeded and track_results:
+                try:
+                    import lib_index as _li
+                    ok_titles = [r["title"] for r in track_results if r.get("success") and r.get("title")]
+                    if ok_titles:
+                        _li.add_titles(ok_titles)
+                except Exception:
+                    pass
             return
 
         # ── Retry logic ───────────────────────────────────────────────────────

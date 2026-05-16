@@ -16,6 +16,7 @@ from flask import Blueprint, Response, jsonify, render_template, request, send_f
 import settings as _settings
 import worker
 import vpn
+import lib_index
 from config import Config
 
 log = logging.getLogger(__name__)
@@ -142,6 +143,15 @@ def api_retry_job_partial(job_id: str):
     full_total        = _safe_int(body.get("full_total",        0), 0)
     ok = worker.retry_job_partial(job_id, urls, pre_success_count, full_total)
     return (jsonify(ok=True), 200) if ok else (jsonify(error="Not found or not retryable"), 400)
+
+
+@bp.post("/api/vpn/reconnect")
+def api_vpn_reconnect():
+    try:
+        open("/tmp/vpn_reconnect", "w").close()
+        return jsonify(ok=True)
+    except Exception as exc:
+        return jsonify(error=str(exc)), 500
 
 
 @bp.post("/api/tidal/refresh")
@@ -497,6 +507,27 @@ def api_library_search():
     return jsonify(results=results, capped=capped)
 
 
+_TRACK_NUM_RE = re.compile(r'^\d+\s+')
+
+
+@bp.post("/api/library/check-tracks")
+def api_library_check_tracks():
+    body   = request.get_json(silent=True) or {}
+    tracks = body.get("tracks", [])
+    if not tracks:
+        return jsonify({})
+
+    titles = [_org_san(t.get("title", "")) for t in tracks]
+    hits   = lib_index.check(titles)
+    return jsonify({t.get("url", ""): hit for t, hit in zip(tracks, hits)})
+
+
+@bp.post("/api/library/rescan")
+def api_library_rescan():
+    lib_index.trigger_rescan()
+    return jsonify(ok=True)
+
+
 @bp.get("/api/library/download")
 def api_library_download():
     rel = request.args.get("path", "")
@@ -677,7 +708,7 @@ def api_settings_patch():
     updates = {}
     errors  = {}
 
-    for key in ("retry_interval_min", "retry_max_count", "max_workers"):
+    for key in ("retry_interval_min", "retry_max_count", "max_workers", "reconnect_threshold"):
         if key not in body:
             continue
         try:

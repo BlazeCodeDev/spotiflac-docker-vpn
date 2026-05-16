@@ -44,6 +44,46 @@ log "Protocol: $VPN_PROTOCOL"
 # ─────────────────────────────────────────────────────────────────────────────
 # OpenVPN setup
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Config rotation helpers (OpenVPN only)
+# Place multiple .ovpn files in /vpn/configs/ to enable server rotation.
+# All server IPs are whitelisted at startup so the kill-switch never needs
+# updating when rotating.
+# ─────────────────────────────────────────────────────────────────────────────
+_VPN_CFGS=/tmp/vpn_cfgs       # one config path per line
+_VPN_CFG_IDX=/tmp/vpn_cfg_idx # current index (0-based)
+
+_init_config_rotation() {
+    _cdir="$CREDS_DIR/configs"
+    [ -d "$_cdir" ] || return 0
+    ls "$_cdir"/*.ovpn 2>/dev/null | sort > "$_VPN_CFGS"
+    _cnt=$(wc -l < "$_VPN_CFGS")
+    [ "$_cnt" -eq 0 ] && { rm -f "$_VPN_CFGS"; return 0; }
+    echo "0" > "$_VPN_CFG_IDX"
+    log "Config rotation: $_cnt server config(s) in $_cdir"
+    # Use the first config as the starting point
+    cp "$(head -1 "$_VPN_CFGS")" "$CREDS_DIR/config.ovpn"
+    # Merge all remote hostnames into VPN_SERVERS so apply_killswitch
+    # whitelists every possible server at startup
+    while IFS= read -r _cfg; do
+        _svrs=$(grep "^remote " "$_cfg" 2>/dev/null | awk '{print $2}')
+        VPN_SERVERS="$VPN_SERVERS $_svrs"
+    done < "$_VPN_CFGS"
+    VPN_SERVERS=$(printf '%s\n' $VPN_SERVERS | sort -u | tr '\n' ' ')
+}
+
+_rotate_vpn_config() {
+    [ -f "$_VPN_CFGS" ] || return 0
+    _cnt=$(wc -l < "$_VPN_CFGS")
+    [ "$_cnt" -le 1 ] && return 0
+    _i=$(cat "$_VPN_CFG_IDX" 2>/dev/null || echo 0)
+    _i=$(( (_i + 1) % _cnt ))
+    echo "$_i" > "$_VPN_CFG_IDX"
+    _next=$(sed -n "$((_i + 1))p" "$_VPN_CFGS")
+    cp "$_next" "$CREDS_DIR/config.ovpn"
+    log "Rotated to VPN config $_i: $(basename "$_next")"
+}
+
 setup_openvpn() {
     CONFIG_PATH="$CREDS_DIR/config.ovpn"
     AUTH_PATH="$CREDS_DIR/auth.txt"
@@ -411,6 +451,7 @@ reconnect_vpn() {
                 pkill -f openvpn 2>/dev/null || true
                 sleep 2
                 rm -f /vpn/openvpn.log
+                _rotate_vpn_config
                 openvpn \
                     --config "$CREDS_DIR/config.ovpn" \
                     --auth-nocache \
@@ -454,6 +495,18 @@ monitor_tunnel() {
     log "Monitoring active (interval: ${VPN_CHECK_INTERVAL:-10}s)..."
     while true; do
         sleep "${VPN_CHECK_INTERVAL:-10}"
+
+        # App-requested VPN reconnect (triggered when downloads are all failing)
+        if [ -f /tmp/vpn_reconnect ]; then
+            rm -f /tmp/vpn_reconnect
+            log "Download worker requested VPN reconnect (IP block detected)"
+            if reconnect_vpn; then
+                log "VPN reconnected to new server after IP block"
+            else
+                err "VPN reconnect after IP block failed — will retry next cycle"
+            fi
+            continue
+        fi
 
         # Tunnel check
         if ! ip link show "$VPN_IFACE" > /dev/null 2>&1; then
@@ -511,7 +564,7 @@ log "Applying SpotiFLAC patches..."
 python3 /app/patch_spotiflac.py 2>&1 | sed 's/^/[vpn] /' || true
 
 case "$VPN_PROTOCOL" in
-    openvpn)   setup_openvpn  ;;
+    openvpn)   setup_openvpn; _init_config_rotation ;;
     wireguard) setup_wireguard ;;
 esac
 
