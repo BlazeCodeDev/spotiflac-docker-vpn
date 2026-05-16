@@ -541,13 +541,22 @@ def api_library_rescan():
 
 @bp.get("/api/tasks")
 def api_tasks():
+    import math
     idx = lib_index.status()
+    if idx["scanning"]:
+        detail = "Scanning…"
+    elif idx["last_elapsed"] is not None:
+        secs = idx["last_elapsed"]
+        dur  = f"{secs:.1f}s" if secs < 60 else f"{math.floor(secs/60)}m {secs%60:.0f}s"
+        detail = f"{idx['count']:,} tracks indexed in {dur}"
+    else:
+        detail = f"{idx['count']:,} tracks indexed"
     tasks = [
         {
             "id":      "lib-index",
             "label":   "Library Index",
             "running": idx["scanning"],
-            "detail":  "Scanning…" if idx["scanning"] else f"{idx['count']:,} tracks indexed",
+            "detail":  detail,
         },
     ]
     return jsonify(tasks=tasks, any_running=any(t["running"] for t in tasks))

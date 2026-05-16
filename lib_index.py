@@ -16,9 +16,11 @@ _index:        set[str]         = set()
 _album_counts: dict             = {}   # normalised album name → track count
 _index_lock:   threading.RLock = threading.RLock()
 _scan_event:   threading.Event = threading.Event()
-_root_fn    = None
-_ready      = False
-_scanning   = False
+_root_fn       = None
+_ready         = False
+_scanning      = False
+_last_elapsed  = None   # seconds the most recent scan took
+_last_scanned  = None   # time.time() when the most recent scan finished
 
 
 def _nfc(s: str) -> str:
@@ -65,7 +67,7 @@ def _build_index(root: str) -> tuple[set[str], dict]:
 
 
 def _worker():
-    global _index, _album_counts, _ready, _scanning
+    global _index, _album_counts, _ready, _scanning, _last_elapsed, _last_scanned
     while True:
         _scan_event.wait()
         _scan_event.clear()
@@ -83,8 +85,10 @@ def _worker():
         with _index_lock:
             _index        = stems
             _album_counts = ac
-        _scanning = False
-        _ready    = True
+        _scanning     = False
+        _ready        = True
+        _last_elapsed = elapsed
+        _last_scanned = time.time()
         _log.info("lib_index: full scan — %d tracks, %d albums in %.2fs",
                   len(stems), len(ac), elapsed)
 
@@ -146,7 +150,12 @@ def check_album(album: str, total: int | None) -> str:
 def status() -> dict:
     with _index_lock:
         count = len(_index)
-    return {"scanning": _scanning, "count": count}
+    return {
+        "scanning":      _scanning,
+        "count":         count,
+        "last_elapsed":  _last_elapsed,
+        "last_scanned":  _last_scanned,
+    }
 
 
 def ready() -> bool:
