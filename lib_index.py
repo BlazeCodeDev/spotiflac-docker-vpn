@@ -15,6 +15,7 @@ _index_lock: threading.RLock = threading.RLock()
 _scan_event: threading.Event = threading.Event()
 _root_fn    = None
 _ready      = False
+_scanning   = False
 
 
 def _normalise_filename(stem: str) -> str:
@@ -42,7 +43,7 @@ def _build_index(root: str) -> set[str]:
 
 
 def _worker():
-    global _index, _ready
+    global _index, _ready, _scanning
     while True:
         _scan_event.wait()
         _scan_event.clear()
@@ -52,13 +53,15 @@ def _worker():
             _ready = True
             continue
 
-        t0      = time.monotonic()
-        stems   = _build_index(root)
-        elapsed = time.monotonic() - t0
+        _scanning = True
+        t0        = time.monotonic()
+        stems     = _build_index(root)
+        elapsed   = time.monotonic() - t0
 
         with _index_lock:
             _index = stems
-        _ready = True
+        _scanning = False
+        _ready    = True
         _log.info("lib_index: full scan — %d tracks in %.2fs", len(stems), elapsed)
 
 
@@ -93,3 +96,9 @@ def check(titles: list[str]) -> list[bool]:
 
 def ready() -> bool:
     return _ready
+
+
+def status() -> dict:
+    with _index_lock:
+        count = len(_index)
+    return {"scanning": _scanning, "count": count}

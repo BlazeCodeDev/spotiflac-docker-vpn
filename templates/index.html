@@ -165,6 +165,61 @@ header {
 #vpn-badge.mismatch     .dot { background: var(--s-partial); box-shadow: 0 0 6px var(--s-partial); animation: none; }
 @keyframes pulse { 0%,100%{box-shadow:0 0 4px var(--s-done)} 50%{box-shadow:0 0 10px var(--s-done)} }
 
+/* ─── Background tasks button & menu ────────────────────────────── */
+.tasks-wrap { position: relative; }
+#btn-tasks {
+  width: 40px; height: 40px;
+  border-radius: 999px;
+  background: transparent;
+  border: none;
+  color: var(--md-on-surface-variant);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; flex-shrink: 0;
+  position: relative; overflow: visible;
+  transition: color .2s;
+}
+#btn-tasks::before {
+  content: ''; position: absolute; inset: 0; border-radius: 999px;
+  background: currentColor; opacity: 0; transition: opacity .2s;
+}
+#btn-tasks:hover::before  { opacity: .08; }
+#btn-tasks:active::before { opacity: .12; }
+#btn-tasks .material-icons { font-size: 20px; position: relative; }
+#btn-tasks .tasks-badge {
+  position: absolute; top: 5px; right: 5px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--md-primary);
+  display: none;
+}
+#btn-tasks.has-running .tasks-badge { display: block; animation: pulse 1.4s ease-in-out infinite; }
+.tasks-menu {
+  display: none; position: absolute; top: calc(100% + 8px); right: 0;
+  background: var(--md-surface-container-high);
+  border-radius: 12px;
+  padding: 8px 0; min-width: 240px;
+  box-shadow: 0 4px 8px 3px rgba(0,0,0,.15),0 1px 3px rgba(0,0,0,.3);
+  z-index: 200;
+}
+.tasks-wrap.open .tasks-menu { display: block; }
+.task-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 16px;
+  font-size: .8rem; color: var(--md-on-surface);
+}
+.task-row + .task-row { border-top: 1px solid var(--md-outline-variant); }
+.task-icon { color: var(--md-on-surface-variant); display: flex; align-items: center; }
+.task-icon .material-icons { font-size: 18px; }
+.task-icon .spin { animation: spin-icon .9s linear infinite; }
+@keyframes spin-icon { to { transform: rotate(360deg); } }
+.task-info { flex: 1; }
+.task-label  { font-weight: 500; }
+.task-detail { color: var(--md-on-surface-variant); margin-top: 1px; }
+.tasks-header {
+  padding: 8px 16px 4px;
+  font-size: .7rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--md-on-surface-variant);
+}
+
 /* ─── SpotiFLAC update chip ──────────────────────────────────────── */
 #update-chip {
   display: none; align-items: center; gap: 4px;
@@ -839,6 +894,16 @@ html.theme-transitioning *::after {
 <header>
   <div class="logo">Spoti<span>FLAC</span></div>
   <button id="theme-toggle" title="Toggle theme"></button>
+  <div class="tasks-wrap" id="tasks-wrap">
+    <button id="btn-tasks" title="Background tasks">
+      <span class="material-icons">pending_actions</span>
+      <span class="tasks-badge"></span>
+    </button>
+    <div class="tasks-menu" id="tasks-menu">
+      <div class="tasks-header">Background Tasks</div>
+      <div id="tasks-list"></div>
+    </div>
+  </div>
   <button id="btn-settings" title="Settings"><span class="material-icons">settings</span></button>
   <button id="update-chip" title="">
     <span class="material-icons">upgrade</span>
@@ -2997,10 +3062,45 @@ document.getElementById('update-chip').addEventListener('click', async () => {
 checkSpotiflacUpdate();
 setInterval(checkSpotiflacUpdate, 3_600_000);
 
+// ── Background tasks menu ─────────────────────────────────────────────────
+const _tasksWrap = document.getElementById('tasks-wrap');
+const _tasksBtn  = document.getElementById('btn-tasks');
+
+_tasksBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  _tasksWrap.classList.toggle('open');
+});
+document.addEventListener('click', e => {
+  if (!_tasksWrap.contains(e.target)) _tasksWrap.classList.remove('open');
+});
+
+function renderTasks(tasks) {
+  const list = document.getElementById('tasks-list');
+  list.innerHTML = tasks.map(t => `
+    <div class="task-row">
+      <div class="task-icon">
+        <span class="material-icons${t.running ? ' spin' : ''}">${t.running ? 'sync' : 'check_circle'}</span>
+      </div>
+      <div class="task-info">
+        <div class="task-label">${t.label}</div>
+        <div class="task-detail">${t.detail}</div>
+      </div>
+    </div>`).join('');
+}
+
+async function refreshTasks() {
+  try {
+    const data = await fetch('/api/tasks').then(r => r.json());
+    _tasksBtn.classList.toggle('has-running', data.any_running);
+    renderTasks(data.tasks);
+  } catch { /* ignore */ }
+}
+
 renderSkeleton();
-refreshVPN(); refreshJobs();
+refreshVPN(); refreshJobs(); refreshTasks();
 setInterval(refreshVPN, 10_000);
 setInterval(refreshJobs, 3_000);
+setInterval(refreshTasks, 3_000);
 setInterval(() => {
   if (_vpnConnectedSince) document.getElementById('tt-uptime').textContent = fmtUptime(_vpnConnectedSince);
   document.querySelectorAll('.retry-countdown').forEach(el => {

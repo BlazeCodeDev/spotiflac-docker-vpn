@@ -528,6 +528,20 @@ def api_library_rescan():
     return jsonify(ok=True)
 
 
+@bp.get("/api/tasks")
+def api_tasks():
+    idx = lib_index.status()
+    tasks = [
+        {
+            "id":      "lib-index",
+            "label":   "Library Index",
+            "running": idx["scanning"],
+            "detail":  "Scanning…" if idx["scanning"] else f"{idx['count']:,} tracks indexed",
+        },
+    ]
+    return jsonify(tasks=tasks, any_running=any(t["running"] for t in tasks))
+
+
 @bp.get("/api/library/download")
 def api_library_download():
     rel = request.args.get("path", "")
