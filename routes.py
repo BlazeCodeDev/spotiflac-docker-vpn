@@ -510,16 +510,27 @@ def api_library_search():
 _TRACK_NUM_RE = re.compile(r'^\d+\s+')
 
 
-@bp.post("/api/library/check-tracks")
-def api_library_check_tracks():
-    body   = request.get_json(silent=True) or {}
-    tracks = body.get("tracks", [])
-    if not tracks:
+@bp.post("/api/library/check-items")
+def api_library_check_items():
+    body  = request.get_json(silent=True) or {}
+    items = body.get("items", [])
+    if not items:
         return jsonify({})
 
-    titles = [_org_san(t.get("title", "")) for t in tracks]
-    hits   = lib_index.check(titles)
-    return jsonify({t.get("url", ""): hit for t, hit in zip(tracks, hits)})
+    result: dict[str, str] = {}
+    tracks  = [i for i in items if i.get("type") == "track"]
+    albums  = [i for i in items if i.get("type") in ("album", "playlist")]
+
+    if tracks:
+        hits = lib_index.check([t.get("title", "") for t in tracks])
+        for item, hit in zip(tracks, hits):
+            result[item.get("url", "")] = "full" if hit else "none"
+
+    for item in albums:
+        status = lib_index.check_album(item.get("title", ""), item.get("track_count"))
+        result[item.get("url", "")] = status
+
+    return jsonify(result)
 
 
 @bp.post("/api/library/rescan")

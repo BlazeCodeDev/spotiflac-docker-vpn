@@ -584,9 +584,12 @@ button { cursor: pointer; font-family: inherit; border: none; }
 .result-item.expandable { grid-template-columns: 48px 1fr auto auto auto; }
 .result-item.expandable .result-check { display: flex; }
 .result-item.expandable .result-chevron { color: var(--md-on-surface-variant); font-size: 20px; flex-shrink: 0; transition: color .12s; }
-.lib-badge { display: none; align-items: center; gap: 3px; margin-top: 3px; font-size: .6875rem; font-weight: 500; color: var(--s-done); }
+.lib-badge { display: none; align-items: center; gap: 3px; margin-top: 3px; font-size: .6875rem; font-weight: 500; }
 .lib-badge .material-icons { font-size: 12px; }
-.result-item.in-lib .lib-badge { display: inline-flex; }
+.lib-badge.full    { color: var(--s-done); }
+.lib-badge.partial { color: var(--s-partial); }
+.result-item.in-lib-full    .lib-badge.full    { display: inline-flex; }
+.result-item.in-lib-partial .lib-badge.partial { display: inline-flex; }
 .result-item.expandable:hover .result-chevron { color: var(--md-on-surface); }
 
 /* ─── Expand drill-down ────────────────────────────────────────────── */
@@ -1795,7 +1798,7 @@ function renderSearchResults() {
       <div class="result-info">
         <div class="result-title">${esc(r.title)}</div>
         <div class="result-sub">${esc(fmtSubtitle(r))}</div>
-        ${r.type === 'track' ? '<span class="lib-badge"><span class="material-icons">check_circle</span>In library</span>' : ''}
+        ${r.type !== 'artist' ? `<span class="lib-badge full"><span class="material-icons">check_circle</span>In library</span><span class="lib-badge partial"><span class="material-icons">check_circle</span>Partial</span>` : ''}
       </div>
       <span class="result-type type-${r.type}">${r.type}</span>
       ${action}
@@ -1831,19 +1834,27 @@ function renderSearchResults() {
 }
 
 function applyLibraryPresence() {
-  document.querySelectorAll('.result-item[data-type="track"]').forEach(item => {
-    item.classList.toggle('in-lib', !!_libPresence[item.dataset.url]);
+  document.querySelectorAll('.result-item').forEach(item => {
+    const state = _libPresence[item.dataset.url];
+    item.classList.toggle('in-lib-full',    state === 'full');
+    item.classList.toggle('in-lib-partial', state === 'partial');
   });
 }
 
 async function checkLibraryPresence(results) {
-  const tracks = results.filter(r => r.type === 'track' && !(r.url in _libPresence));
-  if (!tracks.length) { applyLibraryPresence(); return; }
+  const unchecked = results.filter(r => r.type !== 'artist' && !(r.url in _libPresence));
+  if (!unchecked.length) { applyLibraryPresence(); return; }
   try {
-    const res = await fetch('/api/library/check-tracks', {
+    const items = unchecked.map(r => ({
+      url:         r.url,
+      type:        r.type,
+      title:       r.title,
+      track_count: r.track_count ?? null,
+    }));
+    const res = await fetch('/api/library/check-items', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({tracks: tracks.map(r => ({url: r.url, title: r.title}))}),
+      body: JSON.stringify({items}),
     });
     if (res.ok) Object.assign(_libPresence, await res.json());
   } catch {}
