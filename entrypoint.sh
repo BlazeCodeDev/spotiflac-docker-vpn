@@ -374,8 +374,11 @@ wait_for_tunnel() {
 # ─────────────────────────────────────────────────────────────────────────────
 update_spotiflac() {
     log "Checking for SpotiFLAC updates..."
-    _out=$(pip install --upgrade --target /spotiflac SpotiFLAC 2>&1)
-    _rc=$?
+    if _out=$(pip install --upgrade --target /spotiflac SpotiFLAC 2>&1); then
+        _rc=0
+    else
+        _rc=$?
+    fi
     if [ "$_rc" -ne 0 ]; then
         err "SpotiFLAC update check failed: $(echo "$_out" | tail -1)"
         return
