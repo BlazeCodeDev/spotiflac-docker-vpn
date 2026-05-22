@@ -526,6 +526,13 @@ button { cursor: pointer; font-family: inherit; border: none; }
   .quality-badge { display: none; }
 }
 
+@media (max-width: 480px) {
+  #vpn-label          { display: none; }
+  #update-chip-label  { display: none; }
+  #vpn-badge          { padding: 0 8px; gap: 0; }
+  #update-chip        { padding: 0 8px; gap: 0; }
+}
+
 /* ─── M3 Dialog ───────────────────────────────────────────────────── */
 .modal-overlay { display: none; position: fixed; inset: 0; z-index: 500; background: var(--md-scrim); align-items: center; justify-content: center; padding: 24px; }
 .modal-overlay.open { display: flex; }
