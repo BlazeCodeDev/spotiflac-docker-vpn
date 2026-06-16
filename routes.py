@@ -26,6 +26,13 @@ bp = Blueprint("main", __name__)
 _VALID_SERVICES   = {"tidal", "qobuz", "amazon", "deezer", "youtube"}
 _VALID_QUALITIES  = {"high", "lossless", "hires"}
 
+# Module-level client so the OAuth token is cached and reused across requests.
+try:
+    from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient as _SpotifyClient
+    _spotify = _SpotifyClient(timeout_s=15)
+except Exception:
+    _spotify = None
+
 
 def _safe_int(value, default: int) -> int:
     try:
@@ -188,8 +195,10 @@ def api_search():
     if not q:
         return jsonify(error="No query provided"), 400
     try:
-        from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient
-        client = SpotifyMetadataClient(timeout_s=8)
+        client = _spotify
+        if client is None:
+            from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient
+            client = SpotifyMetadataClient(timeout_s=15)
         data   = client._get("/search", params={
             "q": q, "type": "track,album,playlist,artist",
             "limit": limit, "offset": offset,
@@ -261,16 +270,16 @@ def api_search():
             })
 
         total = max(
-            tracks_obj.get("total", 0),
-            albums_obj.get("total", 0),
-            playlists_obj.get("total", 0),
-            artists_obj.get("total", 0),
+            tracks_obj.get("total") or 0,
+            albums_obj.get("total") or 0,
+            playlists_obj.get("total") or 0,
+            artists_obj.get("total") or 0,
         )
         has_more = (offset + limit) < total
 
         return jsonify(results=results, has_more=has_more, next_offset=offset + limit)
     except Exception as exc:
-        log.warning("Search failed: %s", exc)
+        log.warning("Search failed (%s): %s", type(exc).__name__, exc)
         return jsonify(error="Search failed"), 502
 
 
@@ -280,8 +289,10 @@ def api_search_expand():
     if not url:
         return jsonify(error="No URL provided"), 400
     try:
-        from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient
-        client = SpotifyMetadataClient(timeout_s=15)
+        client = _spotify
+        if client is None:
+            from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient
+            client = SpotifyMetadataClient(timeout_s=15)
         name, tracks = client.get_url(url)
         return jsonify(
             title=name,
