@@ -202,7 +202,7 @@ header {
 }
 .tasks-wrap.open .tasks-menu { display: block; }
 .task-row {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 8px 16px;
   font-size: .8rem; color: var(--md-on-surface);
 }
@@ -214,6 +214,14 @@ header {
 .task-info { flex: 1; }
 .task-label  { font-weight: 500; }
 .task-detail { color: var(--md-on-surface-variant); margin-top: 1px; }
+.task-expand-btn { flex-shrink: 0; user-select: none; }
+.task-log { display: none; width: 100%; padding: 6px 0 2px 28px; border-top: 1px solid var(--md-outline-variant); margin-top: 4px; max-height: 220px; overflow-y: auto; }
+.task-row.expanded .task-log { display: block; }
+.task-log-section + .task-log-section { margin-top: 6px; }
+.task-log-section-title { font-size: .68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--md-on-surface-variant); margin-bottom: 3px; }
+.task-log-entry { font-size: .72rem; font-family: ui-monospace, monospace; line-height: 1.5; word-break: break-all; }
+.task-log-entry.entry-error { color: var(--md-error, #b3261e); }
+.task-log-entry.entry-moved { color: var(--md-on-surface-variant); }
 .tasks-header {
   padding: 8px 16px 4px;
   font-size: .7rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
@@ -1311,6 +1319,31 @@ html.theme-transitioning *::after {
   </div>
 </div>
 
+<!-- Enrich confirmation dialog -->
+<div id="enrich-confirm-modal" class="modal-overlay" role="dialog" aria-modal="true">
+  <div class="modal" style="max-width:400px">
+    <div class="modal-header">
+      <span class="modal-title" style="display:flex;align-items:center;gap:8px"><span class="material-icons" style="font-size:20px;color:var(--md-tertiary,#7d5260)">auto_awesome</span>Enrich Metadata</span>
+      <button class="modal-close" id="enrich-confirm-close" title="Close"><span class="material-icons">close</span></button>
+    </div>
+    <div class="modal-body" style="padding-top:4px;display:flex;flex-direction:column;gap:12px">
+      <p id="enrich-confirm-desc" style="margin:0;color:var(--md-on-surface);font-size:.9rem"></p>
+      <div style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:8px;background:color-mix(in srgb,var(--md-tertiary,#7d5260) 8%,transparent)">
+        <span class="material-icons" style="font-size:18px;color:var(--md-tertiary,#7d5260);flex-shrink:0;margin-top:1px">drive_file_rename_outline</span>
+        <span style="font-size:.82rem;color:var(--md-on-surface)">Files may be <strong>renamed and moved</strong> if the enriched tags produce a different path under your current filename format.</span>
+      </div>
+      <div style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:8px;background:color-mix(in srgb,var(--md-outline,#79747e) 8%,transparent)">
+        <span class="material-icons" style="font-size:18px;color:var(--md-on-surface-variant);flex-shrink:0;margin-top:1px">cloud</span>
+        <span style="font-size:.82rem;color:var(--md-on-surface)">Metadata is fetched from external providers (Deezer, Apple, etc.). The job runs in the background and can be cancelled at any time from the Tasks menu.</span>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" id="enrich-confirm-cancel">Cancel</button>
+      <button id="enrich-confirm-ok"><span class="material-icons" style="font-size:16px;vertical-align:-3px;margin-right:4px">auto_awesome</span>Start Enrichment</button>
+    </div>
+  </div>
+</div>
+
 <script>
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
@@ -2123,7 +2156,7 @@ document.getElementById('search-modal').addEventListener('click', e => {
   if (e.target === e.currentTarget) closeModal();
 });
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { closeModal(); closeSettingsModal(); }
+  if (e.key === 'Escape') { closeModal(); closeSettingsModal(); _closeEnrichConfirm(); }
 });
 
 document.querySelectorAll('.filter-pill').forEach(pill => {
@@ -3149,7 +3182,21 @@ function _libEnrichSelectNone() {
   _libUpdateEnrichBar();
 }
 
-async function _enrichFiles(paths, allFiles = false) {
+let _enrichPending = null;
+
+function _enrichFiles(paths, allFiles = false) {
+  const n   = allFiles ? 'all audio files in the library' : `${paths.length} file${paths.length !== 1 ? 's' : ''}`;
+  document.getElementById('enrich-confirm-desc').textContent =
+    `Fetch genre, label, BPM, and other tags from external providers for ${n}.`;
+  _enrichPending = { paths, allFiles };
+  document.getElementById('enrich-confirm-modal').classList.add('open');
+}
+
+async function _doEnrichStart() {
+  if (!_enrichPending) return;
+  const { paths, allFiles } = _enrichPending;
+  _enrichPending = null;
+  document.getElementById('enrich-confirm-modal').classList.remove('open');
   const body = allFiles ? {all: true} : {paths};
   try {
     const res  = await fetch('/api/library/enrich', {
@@ -3162,13 +3209,22 @@ async function _enrichFiles(paths, allFiles = false) {
       return;
     }
     _libEnrichSelectNone();
-    // Open tasks menu so user sees progress immediately
     _tasksWrap.classList.add('open');
     refreshTasks();
   } catch {
     showToast('Request failed', 'error');
   }
 }
+
+function _closeEnrichConfirm() {
+  _enrichPending = null;
+  document.getElementById('enrich-confirm-modal').classList.remove('open');
+}
+
+document.getElementById('enrich-confirm-close') .addEventListener('click', _closeEnrichConfirm);
+document.getElementById('enrich-confirm-cancel').addEventListener('click', _closeEnrichConfirm);
+document.getElementById('enrich-confirm-ok')    .addEventListener('click', _doEnrichStart);
+document.getElementById('enrich-confirm-modal') .addEventListener('click', e => { if (e.target === e.currentTarget) _closeEnrichConfirm(); });
 
 document.getElementById('btn-lib-enrich-all')     .addEventListener('click', () => _enrichFiles([], true));
 document.getElementById('btn-lib-enrich-sel-all') .addEventListener('click', _libEnrichSelectAll);
@@ -3230,11 +3286,28 @@ document.addEventListener('click', e => {
 });
 
 let _enrichWasRunning = false;
+const _taskExpanded = new Set();
 
 function renderTasks(tasks) {
   const list = document.getElementById('tasks-list');
-  list.innerHTML = tasks.map(t => `
-    <div class="task-row">
+  list.innerHTML = tasks.map(t => {
+    const errLog = t.errors_log || [];
+    const movLog = t.moved_log  || [];
+    const hasLog = errLog.length > 0 || movLog.length > 0;
+    const isExp  = _taskExpanded.has(t.id);
+    let logHtml  = '';
+    if (hasLog) {
+      const sections = [];
+      if (errLog.length) {
+        sections.push(`<div class="task-log-section"><div class="task-log-section-title">${errLog.length} error${errLog.length !== 1 ? 's' : ''}</div>${errLog.map(e => `<div class="task-log-entry entry-error">${esc(e.path)} — ${esc(e.error)}</div>`).join('')}</div>`);
+      }
+      if (movLog.length) {
+        sections.push(`<div class="task-log-section"><div class="task-log-section-title">${movLog.length} moved</div>${movLog.map(m => `<div class="task-log-entry entry-moved">${esc(m.from)} → ${esc(m.to)}</div>`).join('')}</div>`);
+      }
+      logHtml = `<div class="task-log">${sections.join('')}</div>`;
+    }
+    return `
+    <div class="task-row${isExp ? ' expanded' : ''}" data-task-id="${esc(t.id)}">
       <div class="task-icon">
         <span class="material-icons${t.running ? ' spin' : ''}">${t.running ? 'sync' : 'check_circle'}</span>
       </div>
@@ -3242,8 +3315,22 @@ function renderTasks(tasks) {
         <div class="task-label">${esc(t.label)}</div>
         <div class="task-detail">${esc(t.detail)}</div>
       </div>
+      ${hasLog ? `<span class="material-icons task-expand-btn" title="Show details" style="font-size:18px;color:var(--md-on-surface-variant);cursor:pointer">${isExp ? 'expand_less' : 'expand_more'}</span>` : ''}
       ${t.cancellable ? `<button class="btn-ghost task-cancel-btn" data-id="${esc(t.id)}" style="padding:.2rem .5rem;font-size:.72rem;flex-shrink:0" title="Cancel">✕</button>` : ''}
-    </div>`).join('');
+      ${logHtml}
+    </div>`;
+  }).join('');
+
+  list.querySelectorAll('.task-expand-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const row = btn.closest('.task-row');
+      const id  = row.dataset.taskId;
+      if (_taskExpanded.has(id)) { _taskExpanded.delete(id); row.classList.remove('expanded'); btn.textContent = 'expand_more'; }
+      else                       { _taskExpanded.add(id);    row.classList.add('expanded');    btn.textContent = 'expand_less'; }
+    });
+  });
+
   list.querySelectorAll('.task-cancel-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       if (btn.dataset.id === 'lib-enrich') {

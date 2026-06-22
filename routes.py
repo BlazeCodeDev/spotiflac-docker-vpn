@@ -35,6 +35,8 @@ _enrich_state: dict = {
     "errors":      0,
     "label":       "",
     "elapsed":     None,
+    "error_log":   [],   # list of {"path": str, "error": str}
+    "moved_log":   [],   # list of {"from": str, "to": str}
 }
 
 _VALID_SERVICES   = {"tidal", "qobuz", "amazon", "deezer", "youtube"}
@@ -662,6 +664,8 @@ def api_tasks():
             "running":     es["running"],
             "detail":      detail,
             "cancellable": es["running"],
+            "errors_log":  es.get("error_log", []),
+            "moved_log":   es.get("moved_log", []),
         })
 
     return jsonify(tasks=tasks, any_running=any(t["running"] for t in tasks))
@@ -821,10 +825,13 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
 
     total    = len(rel_paths)
     enriched = moved = errors = 0
+    error_log: list = []
+    moved_log: list = []
     t0       = time.monotonic()
 
     with _enrich_lock:
-        _enrich_state.update(total=total, done=0, enriched=0, moved=0, errors=0)
+        _enrich_state.update(total=total, done=0, enriched=0, moved=0, errors=0,
+                             error_log=[], moved_log=[])
 
     for i, rel in enumerate(rel_paths):
         if _enrich_cancel.is_set():
@@ -834,14 +841,18 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
             abs_path = _safe_lib_path(rel)
         except ValueError:
             errors += 1
+            if len(error_log) < 50:
+                error_log.append({"path": rel, "error": "Path outside library"})
             with _enrich_lock:
-                _enrich_state.update(done=i + 1, errors=errors)
+                _enrich_state.update(done=i + 1, errors=errors, error_log=list(error_log))
             continue
 
         if not os.path.isfile(abs_path):
             errors += 1
+            if len(error_log) < 50:
+                error_log.append({"path": rel, "error": "File not found"})
             with _enrich_lock:
-                _enrich_state.update(done=i + 1, errors=errors)
+                _enrich_state.update(done=i + 1, errors=errors, error_log=list(error_log))
             continue
 
         try:
@@ -875,19 +886,25 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
                         os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
                         shutil.move(abs_path, dst_abs)
                         moved += 1
+                        if len(moved_log) < 50:
+                            moved_log.append({"from": cur_rel, "to": new_rel})
                         _cleanup_empty_dirs_up(os.path.dirname(abs_path), root)
 
         except Exception as exc:
             log.warning("Enrich failed for %s: %s", rel, exc)
             errors += 1
+            if len(error_log) < 50:
+                error_log.append({"path": rel, "error": str(exc)[:120]})
 
         with _enrich_lock:
-            _enrich_state.update(done=i + 1, enriched=enriched, moved=moved, errors=errors)
+            _enrich_state.update(done=i + 1, enriched=enriched, moved=moved, errors=errors,
+                                 error_log=list(error_log), moved_log=list(moved_log))
 
     elapsed = time.monotonic() - t0
     with _enrich_lock:
         _enrich_state.update(running=False, elapsed=elapsed,
-                             enriched=enriched, moved=moved, errors=errors)
+                             enriched=enriched, moved=moved, errors=errors,
+                             error_log=list(error_log), moved_log=list(moved_log))
     log.info("Enrich done — %d enriched, %d moved, %d errors in %.1fs",
              enriched, moved, errors, elapsed)
 
@@ -926,7 +943,8 @@ def api_library_enrich():
     _enrich_cancel.clear()
     with _enrich_lock:
         _enrich_state.update(running=True, label=label, total=len(rel_paths),
-                             done=0, enriched=0, moved=0, errors=0, elapsed=None)
+                             done=0, enriched=0, moved=0, errors=0, elapsed=None,
+                             error_log=[], moved_log=[])
 
     threading.Thread(
         target=_run_enrich_bg,
