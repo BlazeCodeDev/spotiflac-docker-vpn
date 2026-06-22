@@ -117,7 +117,6 @@ proto ${VPN_TRANSPORT}
 remote ${VPN_SERVER} ${VPN_PORT}
 resolv-retry infinite
 nobind
-persist-key
 persist-tun
 redirect-gateway def1 bypass-dhcp
 remote-cert-tls server
