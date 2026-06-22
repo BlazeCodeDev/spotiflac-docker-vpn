@@ -317,26 +317,33 @@ def _fetch_metadata(url: str) -> tuple[str | None, str | None, str | None]:
             return None, None, None
         client = SpotifyMetadataClient(timeout_s=5)
         if not hasattr(client, '_get'):
-            import base64, types
+            import base64, json, types, urllib.parse, urllib.request
             _CID  = base64.b64decode("ODNlNDQzMGI0NzAwNDM0YmFhMjEyMjhhOWM3ZDExYzU=").decode()
             _CSEC = base64.b64decode("OWJiOWUxMzFmZjI4NDI0Y2I2YTQyMGFmZGY0MWQ0NGE=").decode()
             def _get(self, path, **kwargs):
-                session = self._session
                 now = time.time()
                 if not getattr(self, '_tok', '') or now >= getattr(self, '_tok_exp', 0) - 60:
                     auth = base64.b64encode(f"{_CID}:{_CSEC}".encode()).decode()
-                    r = session.post("https://accounts.spotify.com/api/token",
+                    req = urllib.request.Request(
+                        "https://accounts.spotify.com/api/token",
+                        data=urllib.parse.urlencode({"grant_type": "client_credentials"}).encode(),
                         headers={"Authorization": f"Basic {auth}",
                                  "Content-Type": "application/x-www-form-urlencoded"},
-                        data={"grant_type": "client_credentials"}, timeout=10)
-                    r.raise_for_status()
-                    body = r.json()
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        body = json.loads(resp.read())
                     self._tok = body["access_token"]
                     self._tok_exp = now + body.get("expires_in", 3600)
-                r = session.get(f"https://api.spotify.com/v1/{path.lstrip('/')}",
-                    headers={"Authorization": f"Bearer {self._tok}"}, timeout=10, **kwargs)
-                r.raise_for_status()
-                return r.json()
+                url = f"https://api.spotify.com/v1/{path.lstrip('/')}"
+                params = kwargs.get("params")
+                if params:
+                    url += "?" + urllib.parse.urlencode(params)
+                req = urllib.request.Request(
+                    url, headers={"Authorization": f"Bearer {self._tok}"}
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    return json.loads(resp.read())
             client._get = types.MethodType(_get, client)
         if kind == "track":
             meta   = client.get_track(sid)

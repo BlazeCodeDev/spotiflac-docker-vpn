@@ -46,8 +46,11 @@ def _patch_spotify_client(client):
     if client is None or hasattr(client, '_get'):
         return client
     import base64
+    import json
     import time
     import types
+    import urllib.parse
+    import urllib.request
 
     _CID     = base64.b64decode("ODNlNDQzMGI0NzAwNDM0YmFhMjEyMjhhOWM3ZDExYzU=").decode()
     _CSEC    = base64.b64decode("OWJiOWUxMzFmZjI4NDI0Y2I2YTQyMGFmZGY0MWQ0NGE=").decode()
@@ -55,34 +58,29 @@ def _patch_spotify_client(client):
     _API_BASE = "https://api.spotify.com/v1"
 
     def _get(self, path, **kwargs):
-        # Use self._session (set by the client's __init__) to avoid an
-        # external `requests` import that may not be on sys.path in all envs.
-        session = self._session
         now = time.time()
         if not getattr(self, '_compat_tok', '') or now >= getattr(self, '_compat_exp', 0) - 60:
             auth = base64.b64encode(f"{_CID}:{_CSEC}".encode()).decode()
-            r = session.post(
+            req = urllib.request.Request(
                 _TOK_URL,
+                data=urllib.parse.urlencode({"grant_type": "client_credentials"}).encode(),
                 headers={"Authorization": f"Basic {auth}",
                          "Content-Type": "application/x-www-form-urlencoded"},
-                data={"grant_type": "client_credentials"},
-                timeout=15,
+                method="POST",
             )
-            r.raise_for_status()
-            body = r.json()
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = json.loads(resp.read())
             self._compat_tok = body["access_token"]
             self._compat_exp = now + body.get("expires_in", 3600)
-        r = session.get(
-            f"{_API_BASE}/{path.lstrip('/')}",
-            headers={"Authorization": f"Bearer {self._compat_tok}"},
-            timeout=15,
-            **kwargs,
+        params = kwargs.get("params")
+        url = f"{_API_BASE}/{path.lstrip('/')}"
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(
+            url, headers={"Authorization": f"Bearer {self._compat_tok}"}
         )
-        if r.status_code == 429:
-            time.sleep(int(r.headers.get("Retry-After", 5)) + 1)
-            return _get(self, path, **kwargs)
-        r.raise_for_status()
-        return r.json()
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
 
     client._get = types.MethodType(_get, client)
     return client
