@@ -659,13 +659,18 @@ def api_tasks():
             if es["moved"]:  detail += f" · {es['moved']} moved"
             if es["errors"]: detail += f" · {es['errors']} errors"
         tasks.append({
-            "id":          "lib-enrich",
-            "label":       f"Metadata Enrichment — {es['label']}",
-            "running":     es["running"],
-            "detail":      detail,
-            "cancellable": es["running"],
-            "errors_log":  es.get("error_log", []),
-            "moved_log":   es.get("moved_log", []),
+            "id":             "lib-enrich",
+            "label":          f"Metadata Enrichment — {es['label']}",
+            "running":        es["running"],
+            "detail":         detail,
+            "cancellable":    es["running"],
+            "enriched_count": es["enriched"],
+            "moved_count":    es["moved"],
+            "errors_count":   es["errors"],
+            "done_count":     es["done"],
+            "total_count":    es["total"],
+            "errors_log":     es.get("error_log", []),
+            "moved_log":      es.get("moved_log", []),
         })
 
     return jsonify(tasks=tasks, any_running=any(t["running"] for t in tasks))

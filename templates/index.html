@@ -217,11 +217,20 @@ header {
 .task-expand-btn { flex-shrink: 0; user-select: none; }
 .task-log { display: none; width: 100%; padding: 6px 0 2px 28px; border-top: 1px solid var(--md-outline-variant); margin-top: 4px; max-height: 220px; overflow-y: auto; }
 .task-row.expanded .task-log { display: block; }
-.task-log-section + .task-log-section { margin-top: 6px; }
+.task-log-section + .task-log-section { margin-top: 8px; }
 .task-log-section-title { font-size: .68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--md-on-surface-variant); margin-bottom: 3px; }
 .task-log-entry { font-size: .72rem; font-family: ui-monospace, monospace; line-height: 1.5; word-break: break-all; }
 .task-log-entry.entry-error { color: var(--md-error, #b3261e); }
+.task-log-entry.entry-error .entry-msg { font-style: italic; opacity: .85; padding-left: 8px; }
 .task-log-entry.entry-moved { color: var(--md-on-surface-variant); }
+.task-log-entry.entry-moved .entry-arrow { margin: 0 4px; opacity: .6; }
+.task-log-summary { display: flex; gap: 12px; flex-wrap: wrap; padding: 6px 10px; border-radius: 6px; background: color-mix(in srgb, var(--md-on-surface) 5%, transparent); margin-bottom: 2px; }
+.task-log-stat { display: flex; align-items: center; gap: 4px; font-size: .78rem; font-weight: 500; }
+.task-log-stat .material-icons { font-size: 14px; }
+.task-log-stat.stat-ok  { color: var(--md-primary); }
+.task-log-stat.stat-mv  { color: var(--md-tertiary, #7d5260); }
+.task-log-stat.stat-err { color: var(--md-error, #b3261e); }
+.task-log-stat.stat-skip { color: var(--md-on-surface-variant); }
 .tasks-header {
   padding: 8px 16px 4px;
   font-size: .7rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
@@ -3291,18 +3300,38 @@ const _taskExpanded = new Set();
 function renderTasks(tasks) {
   const list = document.getElementById('tasks-list');
   list.innerHTML = tasks.map(t => {
-    const errLog = t.errors_log || [];
-    const movLog = t.moved_log  || [];
-    const hasLog = errLog.length > 0 || movLog.length > 0;
-    const isExp  = _taskExpanded.has(t.id);
-    let logHtml  = '';
+    const errLog  = t.errors_log || [];
+    const movLog  = t.moved_log  || [];
+    const nOk     = t.enriched_count ?? 0;
+    const nMv     = t.moved_count    ?? 0;
+    const nErr    = t.errors_count   ?? 0;
+    const nDone   = t.done_count     ?? 0;
+    const nSkip   = nDone - nOk - nErr;   // processed but no tags changed
+    const hasLog  = (nOk + nMv + nErr) > 0;
+    const isExp   = _taskExpanded.has(t.id);
+    let logHtml   = '';
     if (hasLog) {
       const sections = [];
-      if (errLog.length) {
-        sections.push(`<div class="task-log-section"><div class="task-log-section-title">${errLog.length} error${errLog.length !== 1 ? 's' : ''}</div>${errLog.map(e => `<div class="task-log-entry entry-error">${esc(e.path)} — ${esc(e.error)}</div>`).join('')}</div>`);
-      }
+
+      // Summary chips
+      const chips = [];
+      if (nOk)   chips.push(`<span class="task-log-stat stat-ok"><span class="material-icons">check_circle</span>${nOk} enriched</span>`);
+      if (nMv)   chips.push(`<span class="task-log-stat stat-mv"><span class="material-icons">drive_file_rename_outline</span>${nMv} moved</span>`);
+      if (nErr)  chips.push(`<span class="task-log-stat stat-err"><span class="material-icons">error_outline</span>${nErr} error${nErr !== 1 ? 's' : ''}</span>`);
+      if (nSkip > 0) chips.push(`<span class="task-log-stat stat-skip"><span class="material-icons">remove_circle_outline</span>${nSkip} unchanged</span>`);
+      sections.push(`<div class="task-log-summary">${chips.join('')}</div>`);
+
       if (movLog.length) {
-        sections.push(`<div class="task-log-section"><div class="task-log-section-title">${movLog.length} moved</div>${movLog.map(m => `<div class="task-log-entry entry-moved">${esc(m.from)} → ${esc(m.to)}</div>`).join('')}</div>`);
+        const cap = nMv > movLog.length ? ` (first ${movLog.length})` : '';
+        sections.push(`<div class="task-log-section"><div class="task-log-section-title">Moves${cap}</div>${movLog.map(m =>
+          `<div class="task-log-entry entry-moved"><span class="entry-from">${esc(m.from)}</span><span class="entry-arrow">→</span><span class="entry-to">${esc(m.to)}</span></div>`
+        ).join('')}</div>`);
+      }
+      if (errLog.length) {
+        const cap = nErr > errLog.length ? ` (first ${errLog.length})` : '';
+        sections.push(`<div class="task-log-section"><div class="task-log-section-title">Errors${cap}</div>${errLog.map(e =>
+          `<div class="task-log-entry entry-error"><div>${esc(e.path)}</div><div class="entry-msg">${esc(e.error)}</div></div>`
+        ).join('')}</div>`);
       }
       logHtml = `<div class="task-log">${sections.join('')}</div>`;
     }
