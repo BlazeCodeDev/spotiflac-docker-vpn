@@ -365,7 +365,7 @@ def api_search_expand():
         if client is None:
             from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient
             client = _patch_spotify_client(SpotifyMetadataClient(timeout_s=15))
-        name, tracks = client.get_url(url)
+        name, tracks, *_ = client.get_url(url)
         return jsonify(
             title=name,
             tracks=[{
