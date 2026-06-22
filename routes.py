@@ -48,7 +48,6 @@ def _patch_spotify_client(client):
     import base64
     import time
     import types
-    import requests as _rq
 
     _CID     = base64.b64decode("ODNlNDQzMGI0NzAwNDM0YmFhMjEyMjhhOWM3ZDExYzU=").decode()
     _CSEC    = base64.b64decode("OWJiOWUxMzFmZjI4NDI0Y2I2YTQyMGFmZGY0MWQ0NGE=").decode()
@@ -56,10 +55,13 @@ def _patch_spotify_client(client):
     _API_BASE = "https://api.spotify.com/v1"
 
     def _get(self, path, **kwargs):
+        # Use self._session (set by the client's __init__) to avoid an
+        # external `requests` import that may not be on sys.path in all envs.
+        session = self._session
         now = time.time()
         if not getattr(self, '_compat_tok', '') or now >= getattr(self, '_compat_exp', 0) - 60:
             auth = base64.b64encode(f"{_CID}:{_CSEC}".encode()).decode()
-            r = _rq.post(
+            r = session.post(
                 _TOK_URL,
                 headers={"Authorization": f"Basic {auth}",
                          "Content-Type": "application/x-www-form-urlencoded"},
@@ -70,7 +72,7 @@ def _patch_spotify_client(client):
             body = r.json()
             self._compat_tok = body["access_token"]
             self._compat_exp = now + body.get("expires_in", 3600)
-        r = _rq.get(
+        r = session.get(
             f"{_API_BASE}/{path.lstrip('/')}",
             headers={"Authorization": f"Bearer {self._compat_tok}"},
             timeout=15,
