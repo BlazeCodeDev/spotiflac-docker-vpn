@@ -803,6 +803,73 @@ def _write_enriched_tags(abs_path: str, tags: dict) -> bool:
     return False
 
 
+def _has_cover(abs_path: str) -> bool:
+    """Return True if the file already has embedded cover art."""
+    ext = os.path.splitext(abs_path)[1].lower()
+    try:
+        if ext == ".flac":
+            from mutagen.flac import FLAC
+            return bool(FLAC(abs_path).pictures)
+        elif ext == ".mp3":
+            from mutagen.id3 import ID3
+            return bool(ID3(abs_path).getall("APIC"))
+        elif ext == ".m4a":
+            from mutagen.mp4 import MP4
+            return "covr" in MP4(abs_path)
+    except Exception:
+        pass
+    return False
+
+
+def _embed_cover(abs_path: str, image_data: bytes, mime: str = "image/jpeg") -> bool:
+    """Embed cover art bytes into a FLAC/MP3/M4A file. Returns True on success."""
+    ext = os.path.splitext(abs_path)[1].lower()
+    try:
+        if ext == ".flac":
+            from mutagen.flac import FLAC, Picture
+            audio = FLAC(abs_path)
+            pic = Picture()
+            pic.type = 3  # front cover
+            pic.mime = mime
+            pic.data = image_data
+            audio.add_picture(pic)
+            audio.save()
+            return True
+        elif ext == ".mp3":
+            from mutagen.id3 import ID3, APIC
+            try:
+                audio = ID3(abs_path)
+            except Exception:
+                audio = ID3()
+            audio.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=image_data))
+            audio.save(abs_path)
+            return True
+        elif ext == ".m4a":
+            from mutagen.mp4 import MP4, MP4Cover
+            audio = MP4(abs_path)
+            fmt = MP4Cover.FORMAT_PNG if mime == "image/png" else MP4Cover.FORMAT_JPEG
+            audio["covr"] = [MP4Cover(image_data, imageformat=fmt)]
+            audio.save()
+            return True
+    except Exception as exc:
+        log.warning("Cover embed failed for %s: %s", abs_path, exc)
+    return False
+
+
+def _fetch_cover(url: str) -> tuple[bytes, str] | None:
+    """Download cover image; returns (bytes, mime_type) or None on failure."""
+    try:
+        import urllib.request
+        with urllib.request.urlopen(url, timeout=10) as r:
+            data = r.read()
+        ctype = r.headers.get_content_type() or ""
+        mime = "image/png" if "png" in ctype else "image/jpeg"
+        return data, mime
+    except Exception as exc:
+        log.debug("Cover fetch failed for %s: %s", url, exc)
+    return None
+
+
 def _cleanup_empty_dirs_up(dirpath: str, root: str) -> None:
     """Remove empty ancestor dirs from dirpath up to (but not including) root."""
     real_root = os.path.realpath(os.path.abspath(root))
@@ -896,17 +963,37 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
                           audio.get("albumartist") or [""])[0]).strip()
             isrc   = str((audio.get("isrc")        or [""])[0]).strip()
 
-            result   = _enrich(title, artist, isrc=isrc, providers=providers, timeout_s=12)
+            has_genre = bool(str((audio.get("genre") or [""])[0]).strip())
+            has_bpm   = bool(str((audio.get("bpm")   or [""])[0]).strip())
 
-            if not result.genre and _mb_genre and isrc:
-                result.genre = _mb_genre(isrc) or ""
+            if not (has_genre and has_bpm):
+                result   = _enrich(title, artist, isrc=isrc, providers=providers, timeout_s=12)
 
-            tags     = result.as_tags()
-            did_save = _write_enriched_tags(abs_path, tags)
-            if did_save:
-                enriched += 1
+                if not result.genre and _mb_genre and isrc:
+                    result.genre = _mb_genre(isrc) or ""
 
-            audio2 = MFile(abs_path, easy=True)
+                tags     = result.as_tags()
+                did_save = _write_enriched_tags(abs_path, tags)
+
+                cover_url = result.cover_url_hd
+                if cover_url and not _has_cover(abs_path):
+                    cover_data = _fetch_cover(cover_url)
+                    if cover_data:
+                        _embed_cover(abs_path, *cover_data)
+                        did_save = True
+
+                if did_save:
+                    enriched += 1
+                audio2 = MFile(abs_path, easy=True)
+            else:
+                if not _has_cover(abs_path):
+                    result = _enrich(title, artist, isrc=isrc, providers=providers, timeout_s=12)
+                    cover_url = result.cover_url_hd
+                    if cover_url:
+                        cover_data = _fetch_cover(cover_url)
+                        if cover_data and _embed_cover(abs_path, *cover_data):
+                            enriched += 1
+                audio2 = audio
             if audio2:
                 ext     = os.path.splitext(abs_path)[1]
                 new_rel = _org_target(audio2, fmt, ext)
