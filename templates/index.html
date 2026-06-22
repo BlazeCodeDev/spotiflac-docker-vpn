@@ -780,9 +780,6 @@ html.theme-transitioning *::after {
 #lib-enrich-bar .btn-ghost { color: var(--md-on-tertiary, #fff); }
 #lib-enrich-bar .btn-ghost::before { background: var(--md-on-tertiary, #fff); }
 
-/* ─── Enrich dialog ───────────────────────────────────────────────── */
-#enrich-modal .org-progress-wrap { margin: 12px 0 4px; }
-.enrich-stats { display: flex; gap: 16px; flex-wrap: wrap; padding: 8px 12px; border-radius: 8px; background: var(--md-surface-container); }
 
 .lib-stale-bar {
   display: none; align-items: center; gap: 6px;
@@ -1295,30 +1292,6 @@ html.theme-transitioning *::after {
   </div>
 </div>
 
-<!-- Enrich dialog -->
-<div id="enrich-modal" class="modal-overlay" role="dialog" aria-modal="true">
-  <div class="modal" style="max-width:520px">
-    <div class="modal-header">
-      <span id="enrich-modal-title" class="modal-title">Enrich Metadata</span>
-      <button class="modal-close" id="enrich-close" title="Close"><span class="material-icons">close</span></button>
-    </div>
-    <div class="modal-body">
-      <div class="org-progress-wrap" id="enrich-prog-wrap">
-        <div class="org-progress-fill" id="enrich-prog-fill"></div>
-      </div>
-      <div class="org-progress-label" id="enrich-prog-label">Starting…</div>
-      <div class="org-progress-sub"   id="enrich-prog-sub"></div>
-      <div class="enrich-stats" id="enrich-stats" style="display:none;margin-top:10px">
-        <span class="org-stat" id="estat-enriched"><strong>0</strong> enriched</span>
-        <span class="org-stat" id="estat-moved"><strong>0</strong> moved</span>
-        <span class="org-stat" id="estat-errors"><strong>0</strong> errors</span>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn-ghost" id="enrich-cancel-btn">Cancel</button>
-    </div>
-  </div>
-</div>
 
 <!-- Library action dialog (rename / move) -->
 <div id="lib-dialog" class="modal-overlay" role="dialog" aria-modal="true">
@@ -3147,7 +3120,6 @@ document.getElementById('org-fmt')         .addEventListener('keydown', e => { i
 
 // ── Library metadata enrichment ────────────────────────────────────────
 let _libEnrichSel = new Set();   // set of selected lib-file rel-paths
-let _enrichAbort  = null;        // AbortController for the running SSE stream
 
 function _libUpdateEnrichBar() {
   const n   = _libEnrichSel.size;
@@ -3177,109 +3149,27 @@ function _libEnrichSelectNone() {
   _libUpdateEnrichBar();
 }
 
-function _enrichSetStats(enriched, moved, errors) {
-  document.getElementById('estat-enriched').innerHTML = `<strong>${enriched}</strong> enriched`;
-  document.getElementById('estat-moved').innerHTML    = `<strong>${moved}</strong> moved`;
-  document.getElementById('estat-errors').innerHTML   = `<strong>${errors}</strong> error${errors !== 1 ? 's' : ''}`;
-}
-
 async function _enrichFiles(paths, allFiles = false) {
-  const modal     = document.getElementById('enrich-modal');
-  const title     = document.getElementById('enrich-modal-title');
-  const progWrap  = document.getElementById('enrich-prog-wrap');
-  const progFill  = document.getElementById('enrich-prog-fill');
-  const progLabel = document.getElementById('enrich-prog-label');
-  const progSub   = document.getElementById('enrich-prog-sub');
-  const statsEl   = document.getElementById('enrich-stats');
-  const cancelBtn = document.getElementById('enrich-cancel-btn');
-
-  title.textContent   = allFiles ? 'Enrich All Files' : `Enrich ${paths.length} File${paths.length !== 1 ? 's' : ''}`;
-  progWrap.className  = 'org-progress-wrap indeterminate';
-  progFill.style.width = '0%';
-  progLabel.textContent = 'Connecting…';
-  progSub.textContent   = '';
-  statsEl.style.display = 'none';
-  cancelBtn.textContent = 'Cancel';
-  cancelBtn.disabled    = false;
-  modal.classList.add('open');
-
-  _enrichAbort = new AbortController();
-
   const body = allFiles ? {all: true} : {paths};
-
   try {
-    const res = await fetch('/api/library/enrich', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+    const res  = await fetch('/api/library/enrich', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body),
-      signal: _enrichAbort.signal,
     });
-
+    const data = await res.json();
     if (!res.ok) {
-      progLabel.textContent = 'Failed to start enrichment';
+      showToast(data.error || 'Failed to start enrichment', 'error');
       return;
     }
-
-    let total = paths.length || 1;
-    progWrap.className = 'org-progress-wrap';
-
-    const reader = res.body.getReader();
-    const dec    = new TextDecoder();
-    let   buf    = '';
-
-    while (true) {
-      const {done, value} = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, {stream: true});
-      const lines = buf.split('\n');
-      buf = lines.pop();
-      for (const line of lines) {
-        if (!line.startsWith('data:')) continue;
-        let ev;
-        try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
-
-        if (ev.type === 'error') {
-          progLabel.textContent = ev.message || 'Error';
-          return;
-        }
-        if (ev.type === 'total') {
-          total = ev.total || 1;
-        }
-        if (ev.type === 'progress') {
-          const pct = total > 0 ? Math.round((ev.done / total) * 100) : 0;
-          progFill.style.width  = pct + '%';
-          progLabel.textContent = `${ev.done} / ${total}`;
-          progSub.textContent   = `${ev.enriched} enriched · ${ev.moved} moved` +
-                                  (ev.errors ? ` · ${ev.errors} error${ev.errors !== 1 ? 's' : ''}` : '');
-          statsEl.style.display = 'flex';
-          _enrichSetStats(ev.enriched, ev.moved, ev.errors);
-        }
-        if (ev.type === 'done') {
-          progFill.style.width  = '100%';
-          progLabel.textContent = 'Done';
-          progSub.textContent   = `${ev.enriched} file${ev.enriched !== 1 ? 's' : ''} enriched` +
-                                  (ev.moved  ? ` · ${ev.moved} moved`  : '') +
-                                  (ev.errors ? ` · ${ev.errors} error${ev.errors !== 1 ? 's' : ''}` : '');
-          statsEl.style.display = 'flex';
-          _enrichSetStats(ev.enriched, ev.moved, ev.errors);
-          cancelBtn.textContent = 'Close';
-          _libEnrichSelectNone();
-          loadLibrary(_libPath);
-        }
-      }
-    }
-  } catch (err) {
-    if (err.name !== 'AbortError') {
-      progLabel.textContent = 'Request failed';
-    } else {
-      progLabel.textContent = 'Cancelled';
-    }
+    _libEnrichSelectNone();
+    // Open tasks menu so user sees progress immediately
+    _tasksWrap.classList.add('open');
+    refreshTasks();
+  } catch {
+    showToast('Request failed', 'error');
   }
 }
 
-document.getElementById('enrich-close')          .addEventListener('click', () => { _enrichAbort?.abort(); document.getElementById('enrich-modal').classList.remove('open'); });
-document.getElementById('enrich-cancel-btn')      .addEventListener('click', () => { _enrichAbort?.abort(); document.getElementById('enrich-modal').classList.remove('open'); });
-document.getElementById('enrich-modal')           .addEventListener('click', e => { if (e.target === e.currentTarget) { _enrichAbort?.abort(); e.currentTarget.classList.remove('open'); } });
 document.getElementById('btn-lib-enrich-all')     .addEventListener('click', () => _enrichFiles([], true));
 document.getElementById('btn-lib-enrich-sel-all') .addEventListener('click', _libEnrichSelectAll);
 document.getElementById('btn-lib-enrich-sel-none').addEventListener('click', _libEnrichSelectNone);
@@ -3339,6 +3229,8 @@ document.addEventListener('click', e => {
   if (!_tasksWrap.contains(e.target)) _tasksWrap.classList.remove('open');
 });
 
+let _enrichWasRunning = false;
+
 function renderTasks(tasks) {
   const list = document.getElementById('tasks-list');
   list.innerHTML = tasks.map(t => `
@@ -3347,10 +3239,19 @@ function renderTasks(tasks) {
         <span class="material-icons${t.running ? ' spin' : ''}">${t.running ? 'sync' : 'check_circle'}</span>
       </div>
       <div class="task-info">
-        <div class="task-label">${t.label}</div>
-        <div class="task-detail">${t.detail}</div>
+        <div class="task-label">${esc(t.label)}</div>
+        <div class="task-detail">${esc(t.detail)}</div>
       </div>
+      ${t.cancellable ? `<button class="btn-ghost task-cancel-btn" data-id="${esc(t.id)}" style="padding:.2rem .5rem;font-size:.72rem;flex-shrink:0" title="Cancel">✕</button>` : ''}
     </div>`).join('');
+  list.querySelectorAll('.task-cancel-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (btn.dataset.id === 'lib-enrich') {
+        await fetch('/api/library/enrich', {method: 'DELETE'});
+        refreshTasks();
+      }
+    });
+  });
 }
 
 async function refreshTasks() {
@@ -3358,6 +3259,14 @@ async function refreshTasks() {
     const data = await fetch('/api/tasks').then(r => r.json());
     _tasksBtn.classList.toggle('has-running', data.any_running);
     renderTasks(data.tasks);
+
+    // Reload library when enrichment transitions from running → done
+    const enrichTask = data.tasks.find(t => t.id === 'lib-enrich');
+    const isRunning  = !!(enrichTask?.running);
+    if (_enrichWasRunning && !isRunning && enrichTask) {
+      loadLibrary(_libPath);
+    }
+    _enrichWasRunning = isRunning;
   } catch { /* ignore */ }
 }
 

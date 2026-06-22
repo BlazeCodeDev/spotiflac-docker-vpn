@@ -23,6 +23,20 @@ log = logging.getLogger(__name__)
 
 bp = Blueprint("main", __name__)
 
+# ── Background enrichment state ───────────────────────────────────────────────
+_enrich_lock   = threading.Lock()
+_enrich_cancel = threading.Event()
+_enrich_state: dict = {
+    "running":     False,
+    "total":       0,
+    "done":        0,
+    "enriched":    0,
+    "moved":       0,
+    "errors":      0,
+    "label":       "",
+    "elapsed":     None,
+}
+
 _VALID_SERVICES   = {"tidal", "qobuz", "amazon", "deezer", "youtube"}
 _VALID_QUALITIES  = {"high", "lossless", "hires"}
 
@@ -611,21 +625,45 @@ def api_tasks():
     import math
     idx = lib_index.status()
     if idx["scanning"]:
-        detail = "Scanning…"
+        idx_detail = "Scanning…"
     elif idx["last_elapsed"] is not None:
         secs = idx["last_elapsed"]
         dur  = f"{secs:.1f}s" if secs < 60 else f"{math.floor(secs/60)}m {secs%60:.0f}s"
-        detail = f"{idx['count']:,} tracks indexed in {dur}"
+        idx_detail = f"{idx['count']:,} tracks indexed in {dur}"
     else:
-        detail = f"{idx['count']:,} tracks indexed"
+        idx_detail = f"{idx['count']:,} tracks indexed"
+
     tasks = [
         {
             "id":      "lib-index",
             "label":   "Library Index",
             "running": idx["scanning"],
-            "detail":  detail,
+            "detail":  idx_detail,
         },
     ]
+
+    with _enrich_lock:
+        es = dict(_enrich_state)
+    if es["running"] or es["elapsed"] is not None:
+        if es["running"]:
+            pct     = f"{es['done']}/{es['total']}" if es["total"] else "…"
+            detail  = f"{pct} · {es['enriched']} enriched"
+            if es["moved"]:   detail += f" · {es['moved']} moved"
+            if es["errors"]:  detail += f" · {es['errors']} errors"
+        else:
+            secs   = es["elapsed"] or 0
+            dur    = f"{secs:.1f}s" if secs < 60 else f"{math.floor(secs/60)}m {secs%60:.0f}s"
+            detail = f"{es['enriched']} enriched in {dur}"
+            if es["moved"]:  detail += f" · {es['moved']} moved"
+            if es["errors"]: detail += f" · {es['errors']} errors"
+        tasks.append({
+            "id":          "lib-enrich",
+            "label":       f"Metadata Enrichment — {es['label']}",
+            "running":     es["running"],
+            "detail":      detail,
+            "cancellable": es["running"],
+        })
+
     return jsonify(tasks=tasks, any_running=any(t["running"] for t in tasks))
 
 
@@ -759,17 +797,118 @@ def _cleanup_empty_dirs_up(dirpath: str, root: str) -> None:
         cur = os.path.dirname(cur)
 
 
+def _run_enrich_bg(rel_paths: list, root: str, providers: list,
+                   use_mb: bool, fmt: str) -> None:
+    """Background thread: enriches files and updates _enrich_state."""
+    global _enrich_state
+    from mutagen import File as MFile
+
+    try:
+        from SpotiFLAC.core.metadata_enrichment import enrich_metadata as _enrich
+    except ImportError:
+        with _enrich_lock:
+            _enrich_state["running"] = False
+            _enrich_state["elapsed"] = 0.0
+        log.warning("Metadata enrichment not available — upgrade SpotiFLAC")
+        return
+
+    _mb_genre = None
+    if use_mb:
+        try:
+            from SpotiFLAC.core.musicbrainz import fetch_genre_sync as _mb_genre
+        except ImportError:
+            pass
+
+    total    = len(rel_paths)
+    enriched = moved = errors = 0
+    t0       = time.monotonic()
+
+    with _enrich_lock:
+        _enrich_state.update(total=total, done=0, enriched=0, moved=0, errors=0)
+
+    for i, rel in enumerate(rel_paths):
+        if _enrich_cancel.is_set():
+            break
+
+        try:
+            abs_path = _safe_lib_path(rel)
+        except ValueError:
+            errors += 1
+            with _enrich_lock:
+                _enrich_state.update(done=i + 1, errors=errors)
+            continue
+
+        if not os.path.isfile(abs_path):
+            errors += 1
+            with _enrich_lock:
+                _enrich_state.update(done=i + 1, errors=errors)
+            continue
+
+        try:
+            audio = MFile(abs_path, easy=True)
+            if audio is None:
+                raise ValueError("Unrecognised format")
+
+            title  = str((audio.get("title")       or [""])[0]).strip()
+            artist = str((audio.get("artist")      or
+                          audio.get("albumartist") or [""])[0]).strip()
+            isrc   = str((audio.get("isrc")        or [""])[0]).strip()
+
+            result   = _enrich(title, artist, isrc=isrc, providers=providers, timeout_s=12)
+
+            if not result.genre and _mb_genre and isrc:
+                result.genre = _mb_genre(isrc) or ""
+
+            tags     = result.as_tags()
+            did_save = _write_enriched_tags(abs_path, tags)
+            if did_save:
+                enriched += 1
+
+            audio2 = MFile(abs_path, easy=True)
+            if audio2:
+                ext     = os.path.splitext(abs_path)[1]
+                new_rel = _org_target(audio2, fmt, ext)
+                cur_rel = os.path.relpath(abs_path, root).replace(os.sep, "/")
+                if new_rel != cur_rel:
+                    dst_abs = os.path.join(root, *new_rel.replace("\\", "/").split("/"))
+                    if not os.path.exists(dst_abs):
+                        os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
+                        shutil.move(abs_path, dst_abs)
+                        moved += 1
+                        _cleanup_empty_dirs_up(os.path.dirname(abs_path), root)
+
+        except Exception as exc:
+            log.warning("Enrich failed for %s: %s", rel, exc)
+            errors += 1
+
+        with _enrich_lock:
+            _enrich_state.update(done=i + 1, enriched=enriched, moved=moved, errors=errors)
+
+    elapsed = time.monotonic() - t0
+    with _enrich_lock:
+        _enrich_state.update(running=False, elapsed=elapsed,
+                             enriched=enriched, moved=moved, errors=errors)
+    log.info("Enrich done — %d enriched, %d moved, %d errors in %.1fs",
+             enriched, moved, errors, elapsed)
+
+
 @bp.post("/api/library/enrich")
 def api_library_enrich():
+    global _enrich_state
+
+    with _enrich_lock:
+        if _enrich_state["running"]:
+            return jsonify(error="Enrichment already running"), 409
+
     body       = request.get_json(silent=True) or {}
     enrich_all = body.get("all", False)
     rel_paths  = body.get("paths", [])
 
-    cfg        = _settings.load()
-    providers  = cfg.get("enrich_providers", ["deezer", "apple"])
-    use_mb     = cfg.get("enrich_musicbrainz", True)
-    fmt        = cfg.get("filename_fmt", "{artist}/{album}/{track} {title}")
-    root       = _lib_root()
+    cfg       = _settings.load()
+    providers = cfg.get("enrich_providers", ["deezer", "apple"])
+    use_mb    = cfg.get("enrich_musicbrainz", True)
+    fmt       = cfg.get("filename_fmt", "{artist}/{album}/{track} {title}")
+    root      = _lib_root()
 
     if enrich_all:
         rel_paths = []
@@ -780,87 +919,28 @@ def api_library_enrich():
                         os.path.relpath(os.path.join(dp, fname), root).replace(os.sep, "/")
                     )
 
-    def generate():
-        from mutagen import File as MFile
-        try:
-            from SpotiFLAC.core.metadata_enrichment import enrich_metadata as _enrich
-        except ImportError:
-            yield _sse({"type": "error", "message": "Metadata enrichment not available — upgrade SpotiFLAC"})
-            return
-        _mb_genre = None
-        if use_mb:
-            try:
-                from SpotiFLAC.core.musicbrainz import fetch_genre_sync as _mb_genre
-            except ImportError:
-                pass
+    if not rel_paths:
+        return jsonify(error="No audio files found"), 400
 
-        total    = len(rel_paths)
-        enriched = moved = errors = 0
-        yield _sse({"type": "total", "total": total})
+    label = "all files" if enrich_all else f"{len(rel_paths)} file{'' if len(rel_paths) == 1 else 's'}"
+    _enrich_cancel.clear()
+    with _enrich_lock:
+        _enrich_state.update(running=True, label=label, total=len(rel_paths),
+                             done=0, enriched=0, moved=0, errors=0, elapsed=None)
 
-        for i, rel in enumerate(rel_paths):
-            try:
-                abs_path = _safe_lib_path(rel)
-            except ValueError:
-                errors += 1
-                yield _sse({"type": "progress", "done": i + 1, "total": total,
-                            "enriched": enriched, "moved": moved, "errors": errors})
-                continue
+    threading.Thread(
+        target=_run_enrich_bg,
+        args=(rel_paths, root, providers, use_mb, fmt),
+        daemon=True, name="lib-enrich",
+    ).start()
 
-            if not os.path.isfile(abs_path):
-                errors += 1
-                yield _sse({"type": "progress", "done": i + 1, "total": total,
-                            "enriched": enriched, "moved": moved, "errors": errors})
-                continue
+    return jsonify(ok=True, total=len(rel_paths))
 
-            try:
-                audio = MFile(abs_path, easy=True)
-                if audio is None:
-                    raise ValueError("Unrecognised format")
 
-                title  = str((audio.get("title")       or [""])[0]).strip()
-                artist = str((audio.get("artist")      or
-                              audio.get("albumartist") or [""])[0]).strip()
-                isrc   = str((audio.get("isrc")        or [""])[0]).strip()
-
-                result = _enrich(title, artist, isrc=isrc, providers=providers, timeout_s=12)
-
-                if not result.genre and _mb_genre and isrc:
-                    result.genre = _mb_genre(isrc) or ""
-
-                tags     = result.as_tags()
-                did_save = _write_enriched_tags(abs_path, tags)
-                if did_save:
-                    enriched += 1
-
-                # Move file if updated tags shift its place in the filename format
-                audio2 = MFile(abs_path, easy=True)
-                if audio2:
-                    ext     = os.path.splitext(abs_path)[1]
-                    new_rel = _org_target(audio2, fmt, ext)
-                    cur_rel = os.path.relpath(abs_path, root).replace(os.sep, "/")
-                    if new_rel != cur_rel:
-                        dst_abs = os.path.join(root, *new_rel.replace("\\", "/").split("/"))
-                        if not os.path.exists(dst_abs):
-                            os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
-                            shutil.move(abs_path, dst_abs)
-                            moved += 1
-                            _cleanup_empty_dirs_up(os.path.dirname(abs_path), root)
-
-            except Exception as exc:
-                log.warning("Enrich failed for %s: %s", rel, exc)
-                errors += 1
-
-            yield _sse({"type": "progress", "done": i + 1, "total": total,
-                        "enriched": enriched, "moved": moved, "errors": errors})
-
-        yield _sse({"type": "done", "enriched": enriched, "moved": moved, "errors": errors})
-
-    return Response(
-        stream_with_context(generate()),
-        content_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+@bp.delete("/api/library/enrich")
+def api_library_enrich_cancel():
+    _enrich_cancel.set()
+    return jsonify(ok=True)
 
 
 def _org_collect(root: str) -> list[tuple[str, str]]:
