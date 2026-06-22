@@ -588,14 +588,22 @@ def _run(job_id: str) -> None:
                     total=full_total if full_total else None,
                     track_results=None, success_count=None, fail_count=None)
 
+            import dataclasses as _dc
             import settings as _settings
+            cfg = _settings.load()
+            _do_fields = {f.name for f in _dc.fields(DownloadOptions)}
+            _enrich_kwargs: dict = {}
+            if "enrich_metadata" in _do_fields and cfg.get("enrich_metadata"):
+                _enrich_kwargs["enrich_metadata"]  = True
+                _enrich_kwargs["enrich_providers"] = cfg.get("enrich_providers", ["deezer", "apple"])
             opts = DownloadOptions(
                 output_dir          = output_dir,
                 services            = services,
                 filename_format     = filename_fmt,
                 quality             = quality,
-                inter_track_delay_s = _settings.load()["track_delay_s"],
+                inter_track_delay_s = cfg["track_delay_s"],
                 use_track_numbers   = True,
+                **_enrich_kwargs,
             )
 
             def _on_progress(done, total):

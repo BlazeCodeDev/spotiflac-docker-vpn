@@ -748,12 +748,15 @@ html.theme-transitioning *::after {
 
 .lib-entry {
   display: grid;
-  grid-template-columns: 18px 1fr auto auto auto;
+  grid-template-columns: 14px 18px 1fr auto auto auto;
   align-items: center; gap: 4px 8px;
   padding: 4px 0;
   border-bottom: 1px solid var(--md-outline-variant);
 }
 .lib-entry:last-child { border-bottom: none; }
+.lib-enrich-cb { width: 14px; height: 14px; flex-shrink: 0; cursor: pointer; accent-color: var(--md-primary); }
+.lib-entry.dir .lib-enrich-cb { visibility: hidden; pointer-events: none; }
+.lib-entry.enrich-sel { background: color-mix(in srgb, var(--md-primary) 8%, transparent); border-radius: 4px; }
 .lib-icon { font-size: 18px !important; color: var(--md-on-surface-variant); flex-shrink: 0; line-height: 1; }
 .lib-entry.dir .lib-icon { color: var(--md-primary); opacity: .8; cursor: pointer; }
 .lib-entry.dir .lib-name { cursor: pointer; }
@@ -763,6 +766,23 @@ html.theme-transitioning *::after {
 .lib-size  { font-size: .75rem; color: var(--md-on-surface-variant); white-space: nowrap; text-align: right; min-width: 54px; }
 .lib-mtime { font-size: .75rem; color: var(--md-on-surface-variant); white-space: nowrap; text-align: right; min-width: 96px; }
 .lib-actions { display: flex; justify-content: flex-end; flex-shrink: 0; }
+
+/* ─── Library enrich selection bar ───────────────────────────────── */
+#lib-enrich-bar {
+  display: none; align-items: center; gap: 4px;
+  padding: 6px 12px; margin-bottom: 8px;
+  background: color-mix(in srgb, var(--md-tertiary, #7D5260) 80%, var(--md-surface));
+  border-radius: 12px;
+}
+#lib-enrich-bar.visible { display: flex; position: sticky; top: 52px; z-index: 50; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+#lib-enrich-count { color: var(--md-on-tertiary, #fff); font-size: .875rem; font-weight: 500; flex-shrink: 0; }
+.lib-enrich-sep { width: 1px; height: 16px; background: color-mix(in srgb, var(--md-on-tertiary,#fff) 30%, transparent); margin: 0 4px; flex-shrink: 0; }
+#lib-enrich-bar .btn-ghost { color: var(--md-on-tertiary, #fff); }
+#lib-enrich-bar .btn-ghost::before { background: var(--md-on-tertiary, #fff); }
+
+/* ─── Enrich dialog ───────────────────────────────────────────────── */
+#enrich-modal .org-progress-wrap { margin: 12px 0 4px; }
+.enrich-stats { display: flex; gap: 16px; flex-wrap: wrap; padding: 8px 12px; border-radius: 8px; background: var(--md-surface-container); }
 
 .lib-stale-bar {
   display: none; align-items: center; gap: 6px;
@@ -818,11 +838,11 @@ html.theme-transitioning *::after {
 .lib-sr-dir  { font-size: .72rem; color: var(--md-on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 @media (max-width: 580px) {
-  .lib-entry { grid-template-columns: 18px 1fr auto auto; }
+  .lib-entry { grid-template-columns: 14px 18px 1fr auto auto; }
   .lib-mtime { display: none; }
 }
 @media (max-width: 400px) {
-  .lib-entry { grid-template-columns: 18px 1fr auto; }
+  .lib-entry { grid-template-columns: 14px 18px 1fr auto; }
   .lib-size  { display: none; }
 }
 
@@ -1006,6 +1026,7 @@ html.theme-transitioning *::after {
     <div class="card-header">
       <span class="section-title">Library</span>
       <div style="display:flex;gap:4px">
+        <button class="btn-ghost" id="btn-lib-enrich-all" title="Enrich all files with metadata" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">auto_awesome</span></button>
         <button class="btn-ghost" id="btn-lib-organize" title="Organize library" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">auto_fix_high</span></button>
         <button class="btn-ghost" id="btn-lib-search" title="Search library" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">search</span></button>
         <button class="btn-ghost" id="btn-lib-refresh" title="Refresh" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">refresh</span></button>
@@ -1041,6 +1062,14 @@ html.theme-transitioning *::after {
       Directory changed since last refresh
       <div style="flex:1"></div>
       <button class="btn-ghost" style="height:24px;padding:0 8px;font-size:.75rem" onclick="loadLibrary(_libPath)">Refresh now</button>
+    </div>
+    <div id="lib-enrich-bar">
+      <span id="lib-enrich-count">0 selected</span>
+      <div class="lib-enrich-sep"></div>
+      <button class="btn-ghost" id="btn-lib-enrich-sel-all"  style="padding:.25rem .6rem;font-size:.75rem">All</button>
+      <button class="btn-ghost" id="btn-lib-enrich-sel-none" style="padding:.25rem .6rem;font-size:.75rem">None</button>
+      <div style="flex:1"></div>
+      <button class="btn-ghost" id="btn-lib-enrich-sel-run"  style="padding:.25rem .6rem;font-size:.75rem">Enrich selected</button>
     </div>
     <div id="lib-crumbs" class="lib-crumbs"></div>
     <div id="lib-list"></div>
@@ -1092,6 +1121,35 @@ html.theme-transitioning *::after {
           <label>Filename Format</label>
           <input type="text" id="cfg-filename-fmt" value="{{ filename_fmt }}">
           <div class="hint">Variables: {artist} {album} {title} {track} {year} · Use / to create subfolders</div>
+        </div>
+
+        <hr style="border:none;border-top:1px solid var(--md-outline-variant);margin:0">
+
+        <div class="setting-group">
+          <label>Metadata Enrichment</label>
+          <div class="toggle-row">
+            <span class="toggle-label">Fetch genre, label, BPM &amp; UPC after download</span>
+            <label class="switch"><input type="checkbox" id="cfg-enrich-metadata"><span class="slider"></span></label>
+          </div>
+          <div id="enrich-providers-row" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px">
+            <label style="display:flex;align-items:center;gap:5px;font-size:.82rem;cursor:pointer">
+              <input type="checkbox" class="enrich-prov" value="deezer" checked> Deezer
+            </label>
+            <label style="display:flex;align-items:center;gap:5px;font-size:.82rem;cursor:pointer">
+              <input type="checkbox" class="enrich-prov" value="apple" checked> Apple Music
+            </label>
+            <label style="display:flex;align-items:center;gap:5px;font-size:.82rem;cursor:pointer">
+              <input type="checkbox" class="enrich-prov" value="qobuz"> Qobuz
+            </label>
+            <label style="display:flex;align-items:center;gap:5px;font-size:.82rem;cursor:pointer">
+              <input type="checkbox" class="enrich-prov" value="tidal"> Tidal
+            </label>
+          </div>
+          <div class="toggle-row" style="margin-top:8px">
+            <span class="toggle-label">MusicBrainz genre fallback (uses ISRC; rate-limited to 1 req/s)</span>
+            <label class="switch"><input type="checkbox" id="cfg-enrich-musicbrainz" checked><span class="slider"></span></label>
+          </div>
+          <div class="hint">Providers are queried in parallel; first result per field wins · Deezer &amp; Apple are free</div>
         </div>
 
         <hr style="border:none;border-top:1px solid var(--md-outline-variant);margin:0">
@@ -1233,6 +1291,31 @@ html.theme-transitioning *::after {
       <button class="btn-ghost" id="org-cancel-btn">Cancel</button>
       <button class="btn-ghost" id="org-preview-btn">Preview</button>
       <button id="org-apply-btn" style="display:none" disabled>Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- Enrich dialog -->
+<div id="enrich-modal" class="modal-overlay" role="dialog" aria-modal="true">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-header">
+      <span id="enrich-modal-title" class="modal-title">Enrich Metadata</span>
+      <button class="modal-close" id="enrich-close" title="Close"><span class="material-icons">close</span></button>
+    </div>
+    <div class="modal-body">
+      <div class="org-progress-wrap" id="enrich-prog-wrap">
+        <div class="org-progress-fill" id="enrich-prog-fill"></div>
+      </div>
+      <div class="org-progress-label" id="enrich-prog-label">Starting…</div>
+      <div class="org-progress-sub"   id="enrich-prog-sub"></div>
+      <div class="enrich-stats" id="enrich-stats" style="display:none;margin-top:10px">
+        <span class="org-stat" id="estat-enriched"><strong>0</strong> enriched</span>
+        <span class="org-stat" id="estat-moved"><strong>0</strong> moved</span>
+        <span class="org-stat" id="estat-errors"><strong>0</strong> errors</span>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" id="enrich-cancel-btn">Cancel</button>
     </div>
   </div>
 </div>
@@ -1622,6 +1705,10 @@ async function openSettingsModal() {
     document.getElementById('cfg-max-workers').value     = d.max_workers        ?? 3;
     document.getElementById('cfg-filename-fmt').value    = d.filename_fmt ?? '{artist}/{album}/{track} {title}';
     document.getElementById('qobuz-token').value         = d.qobuz_token  ?? '';
+    document.getElementById('cfg-enrich-metadata').checked    = !!(d.enrich_metadata);
+    document.getElementById('cfg-enrich-musicbrainz').checked = d.enrich_musicbrainz !== false;
+    const activeProv = new Set(d.enrich_providers ?? ['deezer', 'apple']);
+    document.querySelectorAll('.enrich-prov').forEach(cb => { cb.checked = activeProv.has(cb.value); });
     if (Array.isArray(d.services) && d.services.length) {
       _enabledSet = new Set(d.services);
       const disabledSvcs = svcOrder.filter(s => !_enabledSet.has(s.id));
@@ -2003,6 +2090,9 @@ document.getElementById('btn-cfg-save').addEventListener('click', async () => {
     filename_fmt:       document.getElementById('cfg-filename-fmt').value,
     qobuz_token:        document.getElementById('qobuz-token').value,
     services:           getActiveServices(),
+    enrich_metadata:    document.getElementById('cfg-enrich-metadata').checked,
+    enrich_musicbrainz: document.getElementById('cfg-enrich-musicbrainz').checked,
+    enrich_providers:   [...document.querySelectorAll('.enrich-prov:checked')].map(c => c.value),
   };
   const numericFields = ['retry_interval_min', 'retry_max_count', 'track_delay_s', 'max_workers'];
   if (numericFields.some(k => isNaN(payload[k]))) { msg.textContent = 'Invalid values'; return; }
@@ -2598,25 +2688,34 @@ function _renderLibCrumbs(relPath) {
   );
 }
 
+const _AUDIO_EXTS_JS = new Set(['flac','mp3','m4a','ogg','opus','wav','aac','wma']);
+function _isAudioFile(name) { return _AUDIO_EXTS_JS.has((name.split('.').pop() || '').toLowerCase()); }
+
 function _renderLibEntries(entries) {
   const el = document.getElementById('lib-list');
   if (!entries.length) {
     el.innerHTML = '<div class="jobs-empty">Empty folder</div>';
     return;
   }
-  el.innerHTML = entries.map(e => `
-    <div class="lib-entry ${e.type}" data-path="${esc(e.path)}" data-type="${e.type}" data-name="${esc(e.name)}">
+  el.innerHTML = entries.map(e => {
+    const isAudio = e.type === 'file' && _isAudioFile(e.name);
+    const cbChecked = _libEnrichSel.has(e.path) ? 'checked' : '';
+    return `
+    <div class="lib-entry ${e.type}${_libEnrichSel.has(e.path) ? ' enrich-sel' : ''}" data-path="${esc(e.path)}" data-type="${e.type}" data-name="${esc(e.name)}">
+      <input type="checkbox" class="lib-enrich-cb" ${cbChecked} title="Select for enrichment">
       <span class="lib-icon material-icons">${_libFileIcon(e)}</span>
       <span class="lib-name">${esc(e.name)}</span>
       <span class="lib-size">${_fmtSize(e.size)}</span>
       <span class="lib-mtime">${_fmtMtime(e.mtime)}</span>
       <div class="lib-actions">
         ${e.type === 'file' ? `<button class="job-btn lib-dl" title="Download to browser"><span class="material-icons">download</span></button>` : ''}
+        ${isAudio ? `<button class="job-btn lib-enrich-one" title="Enrich this file's metadata"><span class="material-icons" style="font-size:16px">auto_awesome</span></button>` : ''}
         <button class="job-btn lib-rename" title="Rename"><span class="material-icons">drive_file_rename_outline</span></button>
         <button class="job-btn lib-move"   title="Move"><span class="material-icons">drive_file_move</span></button>
         <button class="job-btn lib-del remove" title="Delete"><span class="material-icons">delete_outline</span></button>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
   el.querySelectorAll('.lib-entry').forEach(row => {
     const {path, type, name} = row.dataset;
@@ -2624,15 +2723,23 @@ function _renderLibEntries(entries) {
       row.querySelector('.lib-name').addEventListener('click', () => loadLibrary(path));
       row.querySelector('.lib-icon').addEventListener('click', () => loadLibrary(path));
     }
-    row.querySelector('.lib-dl')    ?.addEventListener('click', () => {
+    row.querySelector('.lib-dl')        ?.addEventListener('click', () => {
       const a = document.createElement('a');
       a.href = '/api/library/download?path=' + encodeURIComponent(path);
       a.download = name;
       document.body.appendChild(a); a.click(); a.remove();
     });
-    row.querySelector('.lib-rename')?.addEventListener('click', () => _libShowDialog('rename', path, name));
-    row.querySelector('.lib-move')  ?.addEventListener('click', () => _libShowDialog('move', path, name));
-    row.querySelector('.lib-del')   ?.addEventListener('click', () => _libDelete(path, name, type));
+    row.querySelector('.lib-enrich-one')?.addEventListener('click', () => _enrichFiles([path]));
+    row.querySelector('.lib-rename')    ?.addEventListener('click', () => _libShowDialog('rename', path, name));
+    row.querySelector('.lib-move')      ?.addEventListener('click', () => _libShowDialog('move', path, name));
+    row.querySelector('.lib-del')       ?.addEventListener('click', () => _libDelete(path, name, type));
+    row.querySelector('.lib-enrich-cb') ?.addEventListener('change', ev => {
+      if (type === 'dir') return;
+      if (ev.target.checked) _libEnrichSel.add(path);
+      else                   _libEnrichSel.delete(path);
+      row.classList.toggle('enrich-sel', ev.target.checked);
+      _libUpdateEnrichBar();
+    });
   });
 }
 
@@ -3037,6 +3144,146 @@ document.getElementById('org-preview-btn') .addEventListener('click', _orgPrevie
 document.getElementById('org-apply-btn')   .addEventListener('click', _orgApply);
 document.getElementById('org-modal')       .addEventListener('click', e => { if (e.target === e.currentTarget) _orgClose(); });
 document.getElementById('org-fmt')         .addEventListener('keydown', e => { if (e.key === 'Enter') _orgPreview(); });
+
+// ── Library metadata enrichment ────────────────────────────────────────
+let _libEnrichSel = new Set();   // set of selected lib-file rel-paths
+let _enrichAbort  = null;        // AbortController for the running SSE stream
+
+function _libUpdateEnrichBar() {
+  const n   = _libEnrichSel.size;
+  const bar = document.getElementById('lib-enrich-bar');
+  bar.classList.toggle('visible', n > 0);
+  document.getElementById('lib-enrich-count').textContent = `${n} file${n !== 1 ? 's' : ''} selected`;
+}
+
+function _libEnrichSelectAll() {
+  document.querySelectorAll('.lib-entry.file .lib-enrich-cb').forEach(cb => {
+    const path = cb.closest('.lib-entry').dataset.path;
+    if (!path) return;
+    cb.checked = true;
+    cb.closest('.lib-entry').classList.add('enrich-sel');
+    _libEnrichSel.add(path);
+  });
+  _libUpdateEnrichBar();
+}
+
+function _libEnrichSelectNone() {
+  _libEnrichSel.clear();
+  document.querySelectorAll('.lib-entry.enrich-sel').forEach(row => {
+    row.classList.remove('enrich-sel');
+    const cb = row.querySelector('.lib-enrich-cb');
+    if (cb) cb.checked = false;
+  });
+  _libUpdateEnrichBar();
+}
+
+function _enrichSetStats(enriched, moved, errors) {
+  document.getElementById('estat-enriched').innerHTML = `<strong>${enriched}</strong> enriched`;
+  document.getElementById('estat-moved').innerHTML    = `<strong>${moved}</strong> moved`;
+  document.getElementById('estat-errors').innerHTML   = `<strong>${errors}</strong> error${errors !== 1 ? 's' : ''}`;
+}
+
+async function _enrichFiles(paths, allFiles = false) {
+  const modal     = document.getElementById('enrich-modal');
+  const title     = document.getElementById('enrich-modal-title');
+  const progWrap  = document.getElementById('enrich-prog-wrap');
+  const progFill  = document.getElementById('enrich-prog-fill');
+  const progLabel = document.getElementById('enrich-prog-label');
+  const progSub   = document.getElementById('enrich-prog-sub');
+  const statsEl   = document.getElementById('enrich-stats');
+  const cancelBtn = document.getElementById('enrich-cancel-btn');
+
+  title.textContent   = allFiles ? 'Enrich All Files' : `Enrich ${paths.length} File${paths.length !== 1 ? 's' : ''}`;
+  progWrap.className  = 'org-progress-wrap indeterminate';
+  progFill.style.width = '0%';
+  progLabel.textContent = 'Connecting…';
+  progSub.textContent   = '';
+  statsEl.style.display = 'none';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.disabled    = false;
+  modal.classList.add('open');
+
+  _enrichAbort = new AbortController();
+
+  const body = allFiles ? {all: true} : {paths};
+
+  try {
+    const res = await fetch('/api/library/enrich', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+      signal: _enrichAbort.signal,
+    });
+
+    if (!res.ok) {
+      progLabel.textContent = 'Failed to start enrichment';
+      return;
+    }
+
+    let total = paths.length || 1;
+    progWrap.className = 'org-progress-wrap';
+
+    const reader = res.body.getReader();
+    const dec    = new TextDecoder();
+    let   buf    = '';
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        let ev;
+        try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
+
+        if (ev.type === 'error') {
+          progLabel.textContent = ev.message || 'Error';
+          return;
+        }
+        if (ev.type === 'total') {
+          total = ev.total || 1;
+        }
+        if (ev.type === 'progress') {
+          const pct = total > 0 ? Math.round((ev.done / total) * 100) : 0;
+          progFill.style.width  = pct + '%';
+          progLabel.textContent = `${ev.done} / ${total}`;
+          progSub.textContent   = `${ev.enriched} enriched · ${ev.moved} moved` +
+                                  (ev.errors ? ` · ${ev.errors} error${ev.errors !== 1 ? 's' : ''}` : '');
+          statsEl.style.display = 'flex';
+          _enrichSetStats(ev.enriched, ev.moved, ev.errors);
+        }
+        if (ev.type === 'done') {
+          progFill.style.width  = '100%';
+          progLabel.textContent = 'Done';
+          progSub.textContent   = `${ev.enriched} file${ev.enriched !== 1 ? 's' : ''} enriched` +
+                                  (ev.moved  ? ` · ${ev.moved} moved`  : '') +
+                                  (ev.errors ? ` · ${ev.errors} error${ev.errors !== 1 ? 's' : ''}` : '');
+          statsEl.style.display = 'flex';
+          _enrichSetStats(ev.enriched, ev.moved, ev.errors);
+          cancelBtn.textContent = 'Close';
+          _libEnrichSelectNone();
+          loadLibrary(_libPath);
+        }
+      }
+    }
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      progLabel.textContent = 'Request failed';
+    } else {
+      progLabel.textContent = 'Cancelled';
+    }
+  }
+}
+
+document.getElementById('enrich-close')          .addEventListener('click', () => { _enrichAbort?.abort(); document.getElementById('enrich-modal').classList.remove('open'); });
+document.getElementById('enrich-cancel-btn')      .addEventListener('click', () => { _enrichAbort?.abort(); document.getElementById('enrich-modal').classList.remove('open'); });
+document.getElementById('enrich-modal')           .addEventListener('click', e => { if (e.target === e.currentTarget) { _enrichAbort?.abort(); e.currentTarget.classList.remove('open'); } });
+document.getElementById('btn-lib-enrich-all')     .addEventListener('click', () => _enrichFiles([], true));
+document.getElementById('btn-lib-enrich-sel-all') .addEventListener('click', _libEnrichSelectAll);
+document.getElementById('btn-lib-enrich-sel-none').addEventListener('click', _libEnrichSelectNone);
+document.getElementById('btn-lib-enrich-sel-run') .addEventListener('click', () => _enrichFiles([..._libEnrichSel]));
 
 loadLibrary('');
 

@@ -645,7 +645,8 @@ def api_library_download():
 
 # ── Library organizer ─────────────────────────────────────────────────────────
 
-_AUDIO_EXTS = frozenset({".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".aac", ".wma"})
+_AUDIO_EXTS      = frozenset({".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".aac", ".wma"})
+_ENRICH_AUDIO    = frozenset({".flac", ".mp3", ".m4a"})  # formats we can write tags to
 _FEAT_RE    = re.compile(r"\s+(?:feat\.?|ft\.?|featuring)\s+.*$", re.IGNORECASE)
 
 
@@ -693,6 +694,173 @@ def _org_target(audio_easy, fmt: str, ext: str) -> str:
 
 def _sse(data: dict) -> str:
     return f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
+
+
+def _write_enriched_tags(abs_path: str, tags: dict) -> bool:
+    """Write enriched tag dict to a FLAC/MP3/M4A file. Returns True if saved."""
+    if not tags:
+        return False
+    ext = os.path.splitext(abs_path)[1].lower()
+    try:
+        if ext == ".flac":
+            from mutagen.flac import FLAC
+            audio = FLAC(abs_path)
+            for k, v in tags.items():
+                audio[k] = [str(v)]
+            audio.save()
+            return True
+        elif ext == ".mp3":
+            from mutagen.id3 import ID3, TCON, TPUB, TBPM, TSRC, TXXX
+            try:
+                audio = ID3(abs_path)
+            except Exception:
+                audio = ID3()
+            _FRAME_MAP: dict = {"GENRE": (TCON,), "BPM": (TBPM,), "ISRC": (TSRC,)}
+            for k, v in tags.items():
+                if k in _FRAME_MAP:
+                    audio.add(_FRAME_MAP[k][0](encoding=3, text=[str(v)]))
+                elif k == "ORGANIZATION":
+                    audio.add(TPUB(encoding=3, text=[str(v)]))
+                else:
+                    audio.add(TXXX(encoding=3, desc=k, text=[str(v)]))
+            audio.save(abs_path)
+            return True
+        elif ext == ".m4a":
+            from mutagen.mp4 import MP4, MP4FreeForm
+            audio = MP4(abs_path)
+            for k, v in tags.items():
+                if k == "GENRE":
+                    audio["\xa9gen"] = [str(v)]
+                elif k == "BPM":
+                    try:
+                        audio["tmpo"] = [int(v)]
+                    except (ValueError, TypeError):
+                        pass
+                else:
+                    audio[f"----:com.apple.iTunes:{k}"] = [MP4FreeForm(str(v).encode())]
+            audio.save()
+            return True
+    except Exception as exc:
+        log.warning("Tag write failed for %s: %s", abs_path, exc)
+    return False
+
+
+def _cleanup_empty_dirs_up(dirpath: str, root: str) -> None:
+    """Remove empty ancestor dirs from dirpath up to (but not including) root."""
+    real_root = os.path.realpath(os.path.abspath(root))
+    cur = os.path.realpath(os.path.abspath(dirpath))
+    while cur != real_root and cur.startswith(real_root + os.sep):
+        try:
+            if os.listdir(cur):
+                break
+            os.rmdir(cur)
+        except OSError:
+            break
+        cur = os.path.dirname(cur)
+
+
+@bp.post("/api/library/enrich")
+def api_library_enrich():
+    body       = request.get_json(silent=True) or {}
+    enrich_all = body.get("all", False)
+    rel_paths  = body.get("paths", [])
+
+    cfg        = _settings.load()
+    providers  = cfg.get("enrich_providers", ["deezer", "apple"])
+    use_mb     = cfg.get("enrich_musicbrainz", True)
+    fmt        = cfg.get("filename_fmt", "{artist}/{album}/{track} {title}")
+    root       = _lib_root()
+
+    if enrich_all:
+        rel_paths = []
+        for dp, _, fnames in os.walk(root):
+            for fname in sorted(fnames):
+                if os.path.splitext(fname)[1].lower() in _ENRICH_AUDIO:
+                    rel_paths.append(
+                        os.path.relpath(os.path.join(dp, fname), root).replace(os.sep, "/")
+                    )
+
+    def generate():
+        from mutagen import File as MFile
+        try:
+            from SpotiFLAC.core.metadata_enrichment import enrich_metadata as _enrich
+        except ImportError:
+            yield _sse({"type": "error", "message": "Metadata enrichment not available — upgrade SpotiFLAC"})
+            return
+        _mb_genre = None
+        if use_mb:
+            try:
+                from SpotiFLAC.core.musicbrainz import fetch_genre_sync as _mb_genre
+            except ImportError:
+                pass
+
+        total    = len(rel_paths)
+        enriched = moved = errors = 0
+        yield _sse({"type": "total", "total": total})
+
+        for i, rel in enumerate(rel_paths):
+            try:
+                abs_path = _safe_lib_path(rel)
+            except ValueError:
+                errors += 1
+                yield _sse({"type": "progress", "done": i + 1, "total": total,
+                            "enriched": enriched, "moved": moved, "errors": errors})
+                continue
+
+            if not os.path.isfile(abs_path):
+                errors += 1
+                yield _sse({"type": "progress", "done": i + 1, "total": total,
+                            "enriched": enriched, "moved": moved, "errors": errors})
+                continue
+
+            try:
+                audio = MFile(abs_path, easy=True)
+                if audio is None:
+                    raise ValueError("Unrecognised format")
+
+                title  = str((audio.get("title")       or [""])[0]).strip()
+                artist = str((audio.get("artist")      or
+                              audio.get("albumartist") or [""])[0]).strip()
+                isrc   = str((audio.get("isrc")        or [""])[0]).strip()
+
+                result = _enrich(title, artist, isrc=isrc, providers=providers, timeout_s=12)
+
+                if not result.genre and _mb_genre and isrc:
+                    result.genre = _mb_genre(isrc) or ""
+
+                tags     = result.as_tags()
+                did_save = _write_enriched_tags(abs_path, tags)
+                if did_save:
+                    enriched += 1
+
+                # Move file if updated tags shift its place in the filename format
+                audio2 = MFile(abs_path, easy=True)
+                if audio2:
+                    ext     = os.path.splitext(abs_path)[1]
+                    new_rel = _org_target(audio2, fmt, ext)
+                    cur_rel = os.path.relpath(abs_path, root).replace(os.sep, "/")
+                    if new_rel != cur_rel:
+                        dst_abs = os.path.join(root, *new_rel.replace("\\", "/").split("/"))
+                        if not os.path.exists(dst_abs):
+                            os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
+                            shutil.move(abs_path, dst_abs)
+                            moved += 1
+                            _cleanup_empty_dirs_up(os.path.dirname(abs_path), root)
+
+            except Exception as exc:
+                log.warning("Enrich failed for %s: %s", rel, exc)
+                errors += 1
+
+            yield _sse({"type": "progress", "done": i + 1, "total": total,
+                        "enriched": enriched, "moved": moved, "errors": errors})
+
+        yield _sse({"type": "done", "enriched": enriched, "moved": moved, "errors": errors})
+
+    return Response(
+        stream_with_context(generate()),
+        content_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 def _org_collect(root: str) -> list[tuple[str, str]]:
@@ -826,6 +994,21 @@ def api_settings_patch():
     for key in ("filename_fmt", "qobuz_token"):
         if key in body:
             updates[key] = str(body[key])
+
+    if "enrich_metadata" in body:
+        updates["enrich_metadata"] = bool(body["enrich_metadata"])
+
+    if "enrich_musicbrainz" in body:
+        updates["enrich_musicbrainz"] = bool(body["enrich_musicbrainz"])
+
+    if "enrich_providers" in body:
+        raw = body["enrich_providers"]
+        if not isinstance(raw, list):
+            errors["enrich_providers"] = "must be a list"
+        else:
+            valid_ep = {"deezer", "apple", "tidal", "qobuz"}
+            cleaned  = [p for p in raw if p in valid_ep]
+            updates["enrich_providers"] = cleaned or ["deezer", "apple"]
 
     if "services" in body:
         raw = body["services"]
