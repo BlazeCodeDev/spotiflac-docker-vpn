@@ -360,6 +360,29 @@ def _fetch_metadata(url: str) -> tuple[str | None, str | None, str | None]:
         return None, None, None
 
 
+def _validate_track(filepath: str, expected_s: int) -> tuple[bool, str]:
+    """Call SpotiFLAC download validation; returns (valid, english_reason)."""
+    if not filepath or expected_s <= 0:
+        return True, ""
+    try:
+        from SpotiFLAC.core.download_validation import validate_downloaded_track
+        ok, msg = validate_downloaded_track(filepath, expected_s)
+        if ok:
+            return True, ""
+        import re
+        m = re.search(r'file è (\d+)s', msg)
+        actual_s = m.group(1) if m else "?"
+        if "Preview" in msg:
+            reason = f"30s preview detected (got {actual_s}s, expected ~{expected_s}s) — file removed"
+        elif "troncato" in msg:
+            reason = f"File truncated ({actual_s}s actual, expected ~{expected_s}s) — file removed"
+        else:
+            reason = f"Duration mismatch ({actual_s}s actual, expected ~{expected_s}s) — file removed"
+        return False, reason
+    except ImportError:
+        return True, ""
+
+
 class _TrackingWorker(DownloadWorker):
     """DownloadWorker that fires callbacks after each track."""
 
@@ -444,21 +467,34 @@ class _TrackingWorker(DownloadWorker):
                                    self._is_album)
 
             if result.success:
-                try:
-                    size_mb = (
-                        os.path.getsize(result.file_path) / (1024 * 1024)
-                        if result.file_path and os.path.exists(result.file_path)
-                        else 0.0
-                    )
-                except OSError:
-                    size_mb = 0.0
-                manager.complete_download(track.id, result.file_path or "", size_mb)
-                if self._on_track_result:
-                    self._on_track_result({
-                        "track_id": track.id,
-                        "title": track.title, "artists": track.artists,
-                        "success": True, "error": None,
-                    })
+                expected_s = (track.duration_ms or 0) // 1000
+                valid, val_reason = _validate_track(result.file_path or "", expected_s)
+                if not valid:
+                    log.warning("Validation failed for %s: %s", track.title, val_reason)
+                    self._failed.append((track.id, track.title, track.artists, val_reason))
+                    manager.fail_download(track.id, val_reason)
+                    if self._on_track_result:
+                        self._on_track_result({
+                            "track_id": track.id,
+                            "title": track.title, "artists": track.artists,
+                            "success": False, "error": val_reason,
+                        })
+                else:
+                    try:
+                        size_mb = (
+                            os.path.getsize(result.file_path) / (1024 * 1024)
+                            if result.file_path and os.path.exists(result.file_path)
+                            else 0.0
+                        )
+                    except OSError:
+                        size_mb = 0.0
+                    manager.complete_download(track.id, result.file_path or "", size_mb)
+                    if self._on_track_result:
+                        self._on_track_result({
+                            "track_id": track.id,
+                            "title": track.title, "artists": track.artists,
+                            "success": True, "error": None,
+                        })
             else:
                 err = result.error or "unknown"
                 self._failed.append((track.id, track.title, track.artists, err))
