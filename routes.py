@@ -34,6 +34,62 @@ except Exception:
     _spotify = None
 
 
+def _patch_spotify_client(client):
+    """Backfill _get() for older SpotiFLAC builds that lack it.
+
+    Some intermediate releases ship a SpotifyMetaDataClient class whose
+    public methods (get_track, get_album_tracks, …) call self._get()
+    internally but the method itself was never defined.  We inject a
+    compatible implementation directly onto the instance so every call
+    path — our own and the library's — resolves correctly.
+    """
+    if client is None or hasattr(client, '_get'):
+        return client
+    import base64
+    import time
+    import types
+    import requests as _rq
+
+    _CID     = base64.b64decode("ODNlNDQzMGI0NzAwNDM0YmFhMjEyMjhhOWM3ZDExYzU=").decode()
+    _CSEC    = base64.b64decode("OWJiOWUxMzFmZjI4NDI0Y2I2YTQyMGFmZGY0MWQ0NGE=").decode()
+    _TOK_URL = "https://accounts.spotify.com/api/token"
+    _API_BASE = "https://api.spotify.com/v1"
+
+    def _get(self, path, **kwargs):
+        now = time.time()
+        if not getattr(self, '_compat_tok', '') or now >= getattr(self, '_compat_exp', 0) - 60:
+            auth = base64.b64encode(f"{_CID}:{_CSEC}".encode()).decode()
+            r = _rq.post(
+                _TOK_URL,
+                headers={"Authorization": f"Basic {auth}",
+                         "Content-Type": "application/x-www-form-urlencoded"},
+                data={"grant_type": "client_credentials"},
+                timeout=15,
+            )
+            r.raise_for_status()
+            body = r.json()
+            self._compat_tok = body["access_token"]
+            self._compat_exp = now + body.get("expires_in", 3600)
+        r = _rq.get(
+            f"{_API_BASE}/{path.lstrip('/')}",
+            headers={"Authorization": f"Bearer {self._compat_tok}"},
+            timeout=15,
+            **kwargs,
+        )
+        if r.status_code == 429:
+            time.sleep(int(r.headers.get("Retry-After", 5)) + 1)
+            return _get(self, path, **kwargs)
+        r.raise_for_status()
+        return r.json()
+
+    client._get = types.MethodType(_get, client)
+    return client
+
+
+if _spotify is not None:
+    _patch_spotify_client(_spotify)
+
+
 def _safe_int(value, default: int) -> int:
     try:
         return int(value)
@@ -198,7 +254,7 @@ def api_search():
         client = _spotify
         if client is None:
             from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient
-            client = SpotifyMetadataClient(timeout_s=15)
+            client = _patch_spotify_client(SpotifyMetadataClient(timeout_s=15))
         data   = client._get("/search", params={
             "q": q, "type": "track,album,playlist,artist",
             "limit": limit, "offset": offset,
@@ -292,7 +348,7 @@ def api_search_expand():
         client = _spotify
         if client is None:
             from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient
-            client = SpotifyMetadataClient(timeout_s=15)
+            client = _patch_spotify_client(SpotifyMetadataClient(timeout_s=15))
         name, tracks = client.get_url(url)
         return jsonify(
             title=name,
