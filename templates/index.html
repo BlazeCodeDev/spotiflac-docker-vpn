@@ -326,6 +326,16 @@ textarea[readonly], input[readonly] { opacity: .38; cursor: default; }
 .setting-group label { display: block; font-size: .6875rem; font-weight: 500; letter-spacing: .063em; color: var(--md-on-surface-variant); text-transform: uppercase; margin-bottom: 8px; }
 .setting-inline-label { font-size: .82rem; font-weight: 400; color: var(--md-on-surface-variant); text-transform: none; letter-spacing: 0; margin-bottom: 0; display: inline; }
 .hint { font-size: .75rem; color: var(--md-on-surface-variant); margin-top: 4px; opacity: .8; }
+.provider-health-row { display: flex; align-items: center; gap: 10px; font-size: .82rem; padding: 3px 0; }
+.ph-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.ph-dot.good    { background: #22c55e; }
+.ph-dot.degraded{ background: #eab308; }
+.ph-dot.bad     { background: var(--md-error, #b3261e); }
+.ph-dot.unknown { background: var(--md-outline-variant); }
+.ph-name  { font-weight: 500; min-width: 90px; }
+.ph-counts{ color: var(--md-on-surface-variant); flex: 1; font-variant-numeric: tabular-nums; }
+.ph-rate  { font-weight: 500; min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; }
+.ph-score { font-size: .72rem; color: var(--md-on-surface-variant); min-width: 52px; text-align: right; }
 
 /* ─── M3 List items (services) ───────────────────────────────────── */
 #services-list { display: flex; flex-direction: column; border-radius: 12px; overflow: hidden; }
@@ -1129,6 +1139,18 @@ html.theme-transitioning *::after {
           <div class="hint">Fetches the latest working Tidal proxy endpoints from upstream</div>
         </div>
 
+        <div class="setting-group">
+          <label>Provider Health</label>
+          <div id="provider-health-list" style="display:flex;flex-direction:column;gap:2px;min-height:20px">
+            <span style="font-size:.8rem;color:var(--md-on-surface-variant)">Loading…</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:.75rem;margin-top:10px;flex-wrap:wrap">
+            <button class="btn-ghost" id="btn-provider-reset">Reset Stats</button>
+            <span id="provider-reset-msg" style="font-size:.8rem;color:var(--md-on-surface-variant)"></span>
+          </div>
+          <div class="hint">Success/failure rates per provider — failing APIs are automatically deprioritised during rotation</div>
+        </div>
+
         <hr style="border:none;border-top:1px solid var(--md-outline-variant);margin:0">
 
         <div class="setting-group">
@@ -1708,10 +1730,43 @@ let _libPresence    = {};   // url → bool, cached for current search session
 let _selectedItems  = new Map();
 let _expandedResult = null;  // album/playlist being drilled into
 
+const _PROVIDER_DISPLAY = {
+  'tidal': 'Tidal', 'qobuz': 'Qobuz', 'apple-music': 'Apple Music',
+  'amazon': 'Amazon', 'deezer': 'Deezer', 'youtube': 'YouTube',
+};
+
+async function loadProviderStats() {
+  const el = document.getElementById('provider-health-list');
+  try {
+    const { providers } = await fetch('/api/providers').then(r => r.json());
+    if (!providers.length) {
+      el.innerHTML = '<span style="font-size:.8rem;color:var(--md-on-surface-variant)">No data yet — collected automatically during downloads</span>';
+      return;
+    }
+    el.innerHTML = providers.map(p => {
+      const name   = _PROVIDER_DISPLAY[p.name] || p.name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      const okStr  = `<span style="color:#22c55e">${p.successes}✓</span>`;
+      const errStr = p.failures ? `<span style="color:var(--md-error,#b3261e)">${p.failures}✗</span>` : `<span style="color:var(--md-on-surface-variant)">0✗</span>`;
+      const rateStr = p.rate !== null ? `${p.rate}%` : '—';
+      const scoreStr = `score ${p.score >= 0 ? '+' : ''}${Math.round(p.score)}`;
+      return `<div class="provider-health-row">
+        <span class="ph-dot ${esc(p.health)}"></span>
+        <span class="ph-name">${esc(name)}</span>
+        <span class="ph-counts">${okStr} ${errStr}</span>
+        <span class="ph-rate">${rateStr}</span>
+        <span class="ph-score">${scoreStr}</span>
+      </div>`;
+    }).join('');
+  } catch {
+    el.innerHTML = '<span style="font-size:.8rem;color:var(--md-on-surface-variant)">Failed to load stats</span>';
+  }
+}
+
 async function openSettingsModal() {
   document.getElementById('settings-modal').classList.add('open');
   document.body.style.overflow = 'hidden';
   buildColorPresets();
+  loadProviderStats();
   try {
     const d = await fetch('/api/settings').then(r => r.json());
     document.getElementById('cfg-retry-interval').value  = d.retry_interval_min ?? 5;
@@ -2155,6 +2210,21 @@ document.getElementById('btn-lib-rescan').addEventListener('click', async () => 
   }
   btn.disabled = false;
   setTimeout(() => { msg.textContent = ''; msg.style.color = ''; }, 4000);
+});
+document.getElementById('btn-provider-reset').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-provider-reset');
+  const msg = document.getElementById('provider-reset-msg');
+  btn.disabled = true;
+  msg.textContent = 'Resetting…';
+  try {
+    const res = await fetch('/api/providers', {method: 'DELETE'});
+    msg.textContent = res.ok ? '✓ Stats cleared' : '✗ Failed';
+    if (res.ok) loadProviderStats();
+  } catch {
+    msg.textContent = '✗ Network error';
+  }
+  btn.disabled = false;
+  setTimeout(() => { msg.textContent = ''; }, 3000);
 });
 document.getElementById('settings-modal').addEventListener('click', e => {
   if (e.target === e.currentTarget) closeSettingsModal();

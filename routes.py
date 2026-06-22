@@ -1086,6 +1086,59 @@ def api_org_apply():
     )
 
 
+# ── Provider stats ────────────────────────────────────────────────────────────
+
+@bp.get("/api/providers")
+def api_providers():
+    try:
+        from SpotiFLAC.core.provider_stats import ProviderScorer
+        scorer = ProviderScorer()
+        with scorer._stats_lock:
+            stats_items = list(scorer._stats.items())
+    except Exception as exc:
+        log.warning("Provider stats unavailable: %s", exc)
+        return jsonify(providers=[])
+
+    by_type: dict = {}
+    for key, stat in stats_items:
+        ptype, _, _ = key.partition(":")
+        g = by_type.setdefault(ptype, {
+            "name": ptype, "successes": 0, "failures": 0,
+            "last_outcome": "", "last_attempt": 0.0, "score": 0.0, "api_count": 0,
+        })
+        g["successes"]  += stat.successes
+        g["failures"]   += stat.failures
+        g["score"]      += stat.score()
+        g["api_count"]  += 1
+        if stat.last_attempt > g["last_attempt"]:
+            g["last_attempt"] = stat.last_attempt
+            g["last_outcome"] = stat.last_outcome
+
+    for g in by_type.values():
+        total = g["successes"] + g["failures"]
+        g["rate"] = round(g["successes"] / total * 100) if total else None
+        if g["last_outcome"] == "success":
+            g["health"] = "good"
+        elif g["last_outcome"] == "failure":
+            g["health"] = "bad" if (g["rate"] is None or g["rate"] < 50) else "degraded"
+        else:
+            g["health"] = "unknown"
+
+    providers = sorted(by_type.values(), key=lambda p: p["last_attempt"], reverse=True)
+    return jsonify(providers=providers)
+
+
+@bp.delete("/api/providers")
+def api_providers_reset():
+    try:
+        from SpotiFLAC.core.provider_stats import ProviderScorer
+        ProviderScorer().reset()
+        return jsonify(ok=True)
+    except Exception as exc:
+        log.warning("Provider stats reset failed: %s", exc)
+        return jsonify(error=str(exc)), 500
+
+
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 @bp.get("/api/settings")
