@@ -802,10 +802,25 @@ def _cleanup_empty_dirs_up(dirpath: str, root: str) -> None:
 
 
 def _run_enrich_bg(rel_paths: list, root: str, providers: list,
-                   use_mb: bool, fmt: str) -> None:
+                   use_mb: bool, fmt: str, enrich_all: bool = False) -> None:
     """Background thread: enriches files and updates _enrich_state."""
     global _enrich_state
     from mutagen import File as MFile
+
+    if enrich_all:
+        rel_paths = []
+        for dp, _, fnames in os.walk(root):
+            for fname in sorted(fnames):
+                if os.path.splitext(fname)[1].lower() in _ENRICH_AUDIO:
+                    rel_paths.append(
+                        os.path.relpath(os.path.join(dp, fname), root).replace(os.sep, "/")
+                    )
+        if not rel_paths:
+            with _enrich_lock:
+                _enrich_state.update(running=False, elapsed=0.0)
+            return
+        with _enrich_lock:
+            _enrich_state["total"] = len(rel_paths)
 
     try:
         from SpotiFLAC.core.metadata_enrichment import enrich_metadata as _enrich
@@ -927,28 +942,21 @@ def api_library_enrich():
     fmt       = cfg.get("filename_fmt", "{artist}/{album}/{track} {title}")
     root      = _lib_root()
 
-    if enrich_all:
-        rel_paths = []
-        for dp, _, fnames in os.walk(root):
-            for fname in sorted(fnames):
-                if os.path.splitext(fname)[1].lower() in _ENRICH_AUDIO:
-                    rel_paths.append(
-                        os.path.relpath(os.path.join(dp, fname), root).replace(os.sep, "/")
-                    )
-
-    if not rel_paths:
+    if not enrich_all and not rel_paths:
         return jsonify(error="No audio files found"), 400
 
     label = "all files" if enrich_all else f"{len(rel_paths)} file{'' if len(rel_paths) == 1 else 's'}"
     _enrich_cancel.clear()
     with _enrich_lock:
-        _enrich_state.update(running=True, label=label, total=len(rel_paths),
+        _enrich_state.update(running=True, label=label,
+                             total=len(rel_paths),  # 0 when enrich_all (updated by thread)
                              done=0, enriched=0, moved=0, errors=0, elapsed=None,
                              error_log=[], moved_log=[])
 
     threading.Thread(
         target=_run_enrich_bg,
         args=(rel_paths, root, providers, use_mb, fmt),
+        kwargs={"enrich_all": enrich_all},
         daemon=True, name="lib-enrich",
     ).start()
 
