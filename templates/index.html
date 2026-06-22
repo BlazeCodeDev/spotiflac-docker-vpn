@@ -3321,12 +3321,6 @@ function renderTasks(tasks) {
       if (nSkip > 0) chips.push(`<span class="task-log-stat stat-skip"><span class="material-icons">remove_circle_outline</span>${nSkip} unchanged</span>`);
       sections.push(`<div class="task-log-summary">${chips.join('')}</div>`);
 
-      if (movLog.length) {
-        const cap = nMv > movLog.length ? ` (first ${movLog.length})` : '';
-        sections.push(`<div class="task-log-section"><div class="task-log-section-title">Moves${cap}</div>${movLog.map(m =>
-          `<div class="task-log-entry entry-moved"><span class="entry-from">${esc(m.from)}</span><span class="entry-arrow">→</span><span class="entry-to">${esc(m.to)}</span></div>`
-        ).join('')}</div>`);
-      }
       if (errLog.length) {
         const cap = nErr > errLog.length ? ` (first ${errLog.length})` : '';
         sections.push(`<div class="task-log-section"><div class="task-log-section-title">Errors${cap}</div>${errLog.map(e =>

@@ -35,6 +35,7 @@ _enrich_state: dict = {
     "errors":      0,
     "label":       "",
     "elapsed":     None,
+    "started_at":  None,  # time.monotonic() when thread began; used for live ETA
     "error_log":   [],   # list of {"path": str, "error": str}
     "moved_log":   [],   # list of {"from": str, "to": str}
 }
@@ -648,10 +649,20 @@ def api_tasks():
         es = dict(_enrich_state)
     if es["running"] or es["elapsed"] is not None:
         if es["running"]:
-            pct     = f"{es['done']}/{es['total']}" if es["total"] else "…"
-            detail  = f"{pct} · {es['enriched']} enriched"
-            if es["moved"]:   detail += f" · {es['moved']} moved"
-            if es["errors"]:  detail += f" · {es['errors']} errors"
+            pct  = f"{es['done']}/{es['total']}" if es["total"] else "…"
+            done = es["done"]; total = es["total"]; t_start = es.get("started_at")
+            if done > 0 and total > 0 and t_start:
+                elapsed_now = time.monotonic() - t_start
+                eta_s       = elapsed_now / done * (total - done)
+                if eta_s < 60:
+                    eta_str = f"~{eta_s:.0f}s"
+                elif eta_s < 3600:
+                    eta_str = f"~{math.floor(eta_s/60)}m {eta_s%60:.0f}s"
+                else:
+                    eta_str = f"~{math.floor(eta_s/3600)}h {math.floor(eta_s%3600/60)}m"
+                detail = f"{pct} · {eta_str} remaining"
+            else:
+                detail = f"{pct} · estimating…"
         else:
             secs   = es["elapsed"] or 0
             dur    = f"{secs:.1f}s" if secs < 60 else f"{math.floor(secs/60)}m {secs%60:.0f}s"
@@ -851,7 +862,7 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
 
     with _enrich_lock:
         _enrich_state.update(total=total, done=0, enriched=0, moved=0, errors=0,
-                             error_log=[], moved_log=[])
+                             error_log=[], moved_log=[], started_at=t0)
 
     for i, rel in enumerate(rel_paths):
         if _enrich_cancel.is_set():
@@ -956,7 +967,7 @@ def api_library_enrich():
         _enrich_state.update(running=True, label=label,
                              total=len(rel_paths),  # 0 when enrich_all (updated by thread)
                              done=0, enriched=0, moved=0, errors=0, elapsed=None,
-                             error_log=[], moved_log=[])
+                             started_at=None, error_log=[], moved_log=[])
 
     threading.Thread(
         target=_run_enrich_bg,
