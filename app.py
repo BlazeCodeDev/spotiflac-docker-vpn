@@ -22,6 +22,7 @@ logging.basicConfig(
     format="[app] %(asctime)s %(message)s",
     datefmt="%H:%M:%S",
 )
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
 _cfg = _settings.load()
