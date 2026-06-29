@@ -1046,6 +1046,23 @@ html.theme-transitioning *::after {
     <div id="jobs-list"></div>
   </div>
 
+  <div class="card" id="lb-card" style="display:none">
+    <div class="card-header">
+      <div style="display:flex;align-items:center;gap:.5rem">
+        <span class="section-title">ListenBrainz</span>
+        <span id="lb-status-chip" style="font-size:.72rem;padding:2px 8px;border-radius:999px;background:var(--md-surface-container-highest);color:var(--md-on-surface-variant)"></span>
+      </div>
+      <div style="display:flex;align-items:center;gap:.5rem">
+        <span id="lb-last-check" style="font-size:.75rem;color:var(--md-on-surface-variant)"></span>
+        <button class="btn-ghost" id="btn-lb-sync" style="padding:.25rem .75rem;font-size:.8rem">Sync now</button>
+      </div>
+    </div>
+    <div id="lb-playlists" style="display:flex;flex-direction:column;gap:4px;min-height:20px">
+      <span style="font-size:.8rem;color:var(--md-on-surface-variant)">Loading…</span>
+    </div>
+    <div id="lb-error" style="display:none;font-size:.8rem;color:var(--s-error);margin-top:6px"></div>
+  </div>
+
   <div class="card">
     <div class="card-header">
       <span class="section-title">Library</span>
@@ -1234,6 +1251,23 @@ html.theme-transitioning *::after {
             <span id="lib-rescan-msg" style="font-size:.8rem;color:var(--md-on-surface-variant)"></span>
           </div>
           <div class="hint">Rebuilds the in-memory track index used for "In library" detection in search</div>
+        </div>
+
+        <hr style="border:none;border-top:1px solid var(--md-outline-variant);margin:0">
+
+        <div class="setting-group">
+          <label>ListenBrainz Recommendations</label>
+          <div class="toggle-row">
+            <span class="toggle-label">Auto-download recommendation playlists</span>
+            <label class="switch"><input type="checkbox" id="cfg-lb-enabled"><span class="slider"></span></label>
+          </div>
+          <input type="text" id="cfg-lb-username" placeholder="ListenBrainz username" style="margin-top:8px">
+          <div style="display:flex;align-items:center;gap:6px;margin-top:8px">
+            <label class="setting-inline-label">Check every</label>
+            <input type="number" id="cfg-lb-poll" min="5" max="10080" style="width:72px">
+            <label class="setting-inline-label">minutes</label>
+          </div>
+          <div class="hint">Monitors your recommendation playlists and queues new tracks automatically · Spotify IDs are read from playlist metadata; remaining tracks are resolved via MusicBrainz (rate-limited)</div>
         </div>
 
         <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:4px">
@@ -1779,6 +1813,9 @@ async function openSettingsModal() {
     document.getElementById('cfg-enrich-musicbrainz').checked = d.enrich_musicbrainz !== false;
     const activeProv = new Set(d.enrich_providers ?? ['deezer', 'apple']);
     document.querySelectorAll('.enrich-prov').forEach(cb => { cb.checked = activeProv.has(cb.value); });
+    document.getElementById('cfg-lb-enabled').checked  = !!(d.listenbrainz_enabled);
+    document.getElementById('cfg-lb-username').value   = d.listenbrainz_username ?? '';
+    document.getElementById('cfg-lb-poll').value       = d.listenbrainz_poll_minutes ?? 60;
     if (Array.isArray(d.services) && d.services.length) {
       _enabledSet = new Set(d.services);
       const disabledSvcs = svcOrder.filter(s => !_enabledSet.has(s.id));
@@ -2163,6 +2200,9 @@ document.getElementById('btn-cfg-save').addEventListener('click', async () => {
     enrich_metadata:    document.getElementById('cfg-enrich-metadata').checked,
     enrich_musicbrainz: document.getElementById('cfg-enrich-musicbrainz').checked,
     enrich_providers:   [...document.querySelectorAll('.enrich-prov:checked')].map(c => c.value),
+    listenbrainz_enabled:      document.getElementById('cfg-lb-enabled').checked,
+    listenbrainz_username:     document.getElementById('cfg-lb-username').value.trim(),
+    listenbrainz_poll_minutes: parseInt(document.getElementById('cfg-lb-poll').value, 10) || 60,
   };
   const numericFields = ['retry_interval_min', 'retry_max_count', 'track_delay_s', 'max_workers'];
   if (numericFields.some(k => isNaN(payload[k]))) { msg.textContent = 'Invalid values'; return; }
@@ -3461,6 +3501,94 @@ setInterval(() => {
     el.textContent = fmtCountdown(el.dataset.until);
   });
 }, 1000);
+
+// ── ListenBrainz card ─────────────────────────────────────────────────────────
+
+function _fmtAgo(isoStr) {
+  if (!isoStr) return '';
+  const diff = Math.floor((Date.now() - new Date(isoStr)) / 1000);
+  if (diff < 60)   return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+async function refreshLB() {
+  try {
+    const d = await fetch('/api/listenbrainz').then(r => r.json());
+    const card = document.getElementById('lb-card');
+    // Show card only when a username has been seen in state
+    const playlists = d.playlists || [];
+    const hasData   = playlists.length > 0 || d.last_check || d.running;
+
+    // Peek at settings to decide whether to show
+    // (We rely on the playlists or running state rather than fetching settings again)
+    if (!hasData) { card.style.display = 'none'; return; }
+    card.style.display = '';
+
+    const chip = document.getElementById('lb-status-chip');
+    chip.textContent = d.running ? 'Syncing…' : (d.last_error ? 'Error' : 'OK');
+    chip.style.background = d.running
+      ? 'var(--md-primary-container)'
+      : (d.last_error ? 'var(--md-error-container)' : 'var(--md-surface-container-highest)');
+    chip.style.color = d.running
+      ? 'var(--md-on-primary-container)'
+      : (d.last_error ? 'var(--md-on-error-container)' : 'var(--md-on-surface-variant)');
+
+    const lastCheckEl = document.getElementById('lb-last-check');
+    if (d.last_check) lastCheckEl.textContent = `Last sync: ${_fmtAgo(d.last_check)}`;
+    else if (d.running) lastCheckEl.textContent = 'Syncing…';
+    else lastCheckEl.textContent = 'Never synced';
+
+    const errEl = document.getElementById('lb-error');
+    if (d.last_error) { errEl.textContent = d.last_error; errEl.style.display = ''; }
+    else { errEl.style.display = 'none'; }
+
+    const list = document.getElementById('lb-playlists');
+    if (!playlists.length) {
+      list.innerHTML = '<span style="font-size:.8rem;color:var(--md-on-surface-variant)">No playlists found yet</span>';
+    } else {
+      list.innerHTML = playlists.map(p => {
+        const badge = p.new
+          ? `<span style="font-size:.68rem;padding:1px 6px;border-radius:999px;background:var(--md-primary-container);color:var(--md-on-primary-container);margin-left:4px">new</span>`
+          : '';
+        const counts = p.enqueued > 0
+          ? `<span style="color:var(--s-done)">${p.enqueued} queued</span>`
+          : (p.skipped > 0 ? `<span style="color:var(--md-on-surface-variant)">${p.skipped} unresolvable</span>` : '');
+        return `<div style="display:flex;align-items:center;justify-content:space-between;padding:3px 0;font-size:.82rem;border-bottom:1px solid var(--md-outline-variant)">
+          <span>${p.title}${badge} <span style="color:var(--md-on-surface-variant);font-size:.75rem">(${p.track_count} tracks)</span></span>
+          <span>${counts}</span>
+        </div>`;
+      }).join('');
+    }
+
+    document.getElementById('btn-lb-sync').disabled = d.running;
+  } catch { /* ignore */ }
+}
+
+document.getElementById('btn-lb-sync').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-lb-sync');
+  btn.disabled = true;
+  try {
+    const res  = await fetch('/api/listenbrainz/sync', {method: 'POST'});
+    const data = await res.json();
+    if (!res.ok) {
+      const errEl = document.getElementById('lb-error');
+      errEl.textContent = data.error || 'Sync failed';
+      errEl.style.display = '';
+    }
+  } catch { /* ignore */ }
+  setTimeout(refreshLB, 500);
+});
+
+refreshLB();
+setInterval(refreshLB, 30_000);
+
+// Also expose the LB card when settings are saved with LB enabled
+const _origSave = document.getElementById('btn-cfg-save').onclick;
+document.getElementById('cfg-lb-enabled').addEventListener('change', () => {
+  setTimeout(refreshLB, 200);
+});
 
 // Theme toggle — three states: auto (follow browser) → dark → light → auto
 const themeToggle = document.getElementById('theme-toggle');

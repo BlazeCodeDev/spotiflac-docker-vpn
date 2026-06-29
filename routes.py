@@ -1173,6 +1173,28 @@ def api_org_apply():
     )
 
 
+# ── ListenBrainz recommendations ─────────────────────────────────────────────
+
+@bp.get("/api/listenbrainz")
+def api_lb_state():
+    import listenbrainz as _lb
+    return jsonify(_lb.get_state())
+
+
+@bp.post("/api/listenbrainz/sync")
+def api_lb_sync():
+    import listenbrainz as _lb
+    cfg      = _settings.load()
+    username = cfg.get("listenbrainz_username", "").strip()
+    if not username:
+        return jsonify(error="No ListenBrainz username configured"), 400
+    state = _lb.get_state()
+    if state.get("running"):
+        return jsonify(error="Sync already in progress"), 409
+    _lb.sync_now_bg(username)
+    return jsonify(ok=True)
+
+
 # ── Provider stats ────────────────────────────────────────────────────────────
 
 @bp.get("/api/providers")
@@ -1262,6 +1284,19 @@ def api_settings_patch():
 
     if "enrich_musicbrainz" in body:
         updates["enrich_musicbrainz"] = bool(body["enrich_musicbrainz"])
+
+    if "listenbrainz_enabled" in body:
+        updates["listenbrainz_enabled"] = bool(body["listenbrainz_enabled"])
+
+    if "listenbrainz_username" in body:
+        updates["listenbrainz_username"] = str(body["listenbrainz_username"]).strip()
+
+    if "listenbrainz_poll_minutes" in body:
+        try:
+            v = int(body["listenbrainz_poll_minutes"])
+            updates["listenbrainz_poll_minutes"] = max(5, v)
+        except (TypeError, ValueError):
+            errors["listenbrainz_poll_minutes"] = "must be an integer"
 
     if "enrich_providers" in body:
         raw = body["enrich_providers"]

@@ -29,6 +29,10 @@ def _defaults() -> dict:
         "enrich_metadata":     os.environ.get("ENRICH_METADATA",     "1") == "1",
         "enrich_providers":    [s.strip() for s in os.environ.get("ENRICH_PROVIDERS",    "deezer,apple").split(",") if s.strip()],
         "enrich_musicbrainz":  os.environ.get("ENRICH_MUSICBRAINZ",  "1") == "1",
+        # ListenBrainz recommendations auto-download
+        "listenbrainz_enabled":       os.environ.get("LB_ENABLED",  "0") == "1",
+        "listenbrainz_username":      os.environ.get("LB_USERNAME",  ""),
+        "listenbrainz_poll_minutes":  int(os.environ.get("LB_POLL_MINUTES", "60")),
     }
 
 
