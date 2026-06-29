@@ -762,15 +762,15 @@ _FEAT_RE    = re.compile(r"\s+(?:feat\.?|ft\.?|featuring)\s+.*$", re.IGNORECASE)
 
 
 def _org_main_artist(audio_easy) -> str:
-    """Return the artist string, joining multiple tag values to match build_filename output."""
+    """Return the primary artist, matching the first_artist_only=True download behaviour."""
     for key in ("albumartist", "artist"):
         vals = audio_easy.get(key)
         if vals:
-            # Mutagen stores multi-artist tracks as a list of separate tag values.
-            # Re-join with ", " to match the comma-separated string that build_filename
-            # uses when constructing the download path.
-            raw = ", ".join(str(v).strip() for v in vals if str(v).strip())
+            # Mutagen may store multi-artist tracks as a list — take only the first
+            # entry to match build_filename with first_artist_only=True.
+            raw = str(vals[0]).strip()
             if raw:
+                # Strip featured-artist suffixes (feat./ft./featuring …)
                 cleaned = _FEAT_RE.sub("", raw).strip()
                 return cleaned if cleaned else raw
     return "Unknown Artist"
