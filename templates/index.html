@@ -357,24 +357,56 @@ html[data-theme="light"] .svc-amazon  { background: #fefce8; color: #92400e; bor
 html[data-theme="light"] .svc-deezer  { background: #eff6ff; color: #1e40af; border-color: #bfdbfe; }
 html[data-theme="light"] .svc-youtube { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
 
+/* ─── Settings tabs ─────────────────────────────────────────────── */
+.stab-bar { display: flex; padding: 0 20px; border-bottom: 1px solid var(--md-outline-variant); flex-shrink: 0; }
+.stab { background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; padding: 10px 16px; font-size: .875rem; font-weight: 500; color: var(--md-on-surface-variant); cursor: pointer; transition: color .15s, border-color .15s; letter-spacing: .006em; }
+.stab:hover { color: var(--md-on-surface); }
+.stab.active { color: var(--md-primary); border-bottom-color: var(--md-primary); }
+
+/* ─── Settings sections ─────────────────────────────────────────── */
+.sgroup { display: flex; flex-direction: column; }
+.sgroup-label { font-size: .6875rem; font-weight: 500; letter-spacing: .063em; color: var(--md-on-surface-variant); text-transform: uppercase; margin-bottom: 10px; }
+.sdivider { height: 1px; background: var(--md-outline-variant); margin: 14px 0; }
+.shint { font-size: .75rem; color: var(--md-on-surface-variant); margin-top: 5px; opacity: .8; }
+.saction-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.saction-msg { font-size: .8rem; color: var(--md-on-surface-variant); }
+
+/* ─── Settings number grid ──────────────────────────────────────── */
+.snum-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
+.snum-item { display: flex; flex-direction: column; gap: 4px; }
+.snum-label { font-size: .78rem; color: var(--md-on-surface-variant); }
+.snum-row { display: flex; align-items: center; gap: 6px; }
+.snum-unit { font-size: .8rem; color: var(--md-on-surface-variant); white-space: nowrap; }
+.snum-grid input[type=number] { width: 72px; }
+
+/* ─── Theme color preview ────────────────────────────────────────── */
+.stheme-preview { height: 36px; border-radius: 8px; overflow: hidden; display: flex; margin-bottom: 12px; }
+.stheme-p { flex: 5; background: var(--md-primary);           transition: background .3s; }
+.stheme-c { flex: 3; background: var(--md-primary-container); transition: background .3s; }
+.stheme-s { flex: 2; background: var(--md-secondary-container); transition: background .3s; }
+
+/* ─── Device accent swatch variant ─────────────────────────────── */
+.color-swatch--device { outline: 2px dashed rgba(255,255,255,.55); outline-offset: -3px; }
+
 /* ─── Buttons ────────────────────────────────────────────────────── */
 button { cursor: pointer; font-family: inherit; border: none; }
 
 /* Filled button */
-#btn-dl, #btn-search-dl {
+#btn-dl, #btn-search-dl, #btn-cfg-save {
   background: var(--md-primary); color: var(--md-on-primary);
   border-radius: 999px; height: 32px; padding: 0 16px;
   font-size: .875rem; font-weight: 500; letter-spacing: .006em;
   position: relative; overflow: hidden;
   transition: box-shadow .2s;
 }
-#btn-dl::before, #btn-search-dl::before {
+#btn-dl::before, #btn-search-dl::before, #btn-cfg-save::before {
   content: ''; position: absolute; inset: 0;
   background: var(--md-on-primary); opacity: 0; transition: opacity .2s;
 }
-#btn-dl:hover, #btn-search-dl:hover { box-shadow: 0 1px 2px rgba(0,0,0,.3),0 1px 3px 1px rgba(0,0,0,.15); }
-#btn-dl:hover::before, #btn-search-dl:hover::before { opacity: .08; }
-#btn-dl:active::before, #btn-search-dl:active::before { opacity: .12; }
+#btn-dl:hover, #btn-search-dl:hover, #btn-cfg-save:hover { box-shadow: 0 1px 2px rgba(0,0,0,.3),0 1px 3px 1px rgba(0,0,0,.15); }
+#btn-dl:hover::before, #btn-search-dl:hover::before, #btn-cfg-save:hover::before { opacity: .08; }
+#btn-dl:active::before, #btn-search-dl:active::before, #btn-cfg-save:active::before { opacity: .12; }
+#btn-cfg-save { padding: 0 20px; }
 
 /* Ghost / text buttons — M3 text button style */
 .btn-ghost {
@@ -1118,166 +1150,167 @@ html.theme-transitioning *::after {
       <span class="modal-title">Settings</span>
       <button class="modal-close" id="btn-settings-close" title="Close"><span class="material-icons">close</span></button>
     </div>
+
+    <div class="stab-bar">
+      <button class="stab active" data-stab="general">General</button>
+      <button class="stab" data-stab="system">System</button>
+    </div>
+
     <div class="modal-body">
-      <div class="settings-grid">
 
-        <div class="setting-group">
-          <label>Color Theme</label>
+      <!-- ── General ─────────────────────────────────────────────── -->
+      <div class="stab-panel" data-spanel="general" style="padding-top:16px">
+
+        <div class="sgroup">
+          <div class="sgroup-label">Accent color</div>
+          <div class="stheme-preview">
+            <div class="stheme-p"></div>
+            <div class="stheme-c"></div>
+            <div class="stheme-s"></div>
+          </div>
           <div class="color-presets" id="color-presets"></div>
-          <div class="hint">Accent color applied across the interface</div>
         </div>
 
-        <hr style="border:none;border-top:1px solid var(--md-outline-variant);margin:0">
+        <div class="sdivider"></div>
 
-        <div class="setting-group">
-          <label>Services &amp; Priority</label>
+        <div class="sgroup">
+          <div class="sgroup-label">Download sources</div>
           <div id="services-list"></div>
-          <div class="hint">Drag to reorder — enabled services are tried in order</div>
-        </div>
-
-        <div class="setting-group">
-          <label>Qobuz Token</label>
-          <input type="password" id="qobuz-token" placeholder="optional">
-        </div>
-
-        <div class="setting-group">
-          <label>Provider APIs</label>
-          <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
-            <button class="btn-ghost" id="btn-tidal-refresh">Refresh Tidal APIs</button>
-            <span id="tidal-refresh-msg" style="font-size:.8rem;color:var(--md-on-surface-variant)"></span>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
+            <label style="font-size:.82rem;color:var(--md-on-surface-variant);flex-shrink:0">Qobuz token</label>
+            <input type="password" id="qobuz-token" placeholder="optional" style="flex:1;min-width:0">
           </div>
-          <div class="hint">Fetches the latest working Tidal proxy endpoints from upstream</div>
+          <div class="shint">Drag to reorder · enabled sources are tried top-to-bottom</div>
         </div>
 
-        <div class="setting-group">
-          <label>Provider Health</label>
-          <div id="provider-health-list" style="display:flex;flex-direction:column;gap:2px;min-height:20px">
-            <span style="font-size:.8rem;color:var(--md-on-surface-variant)">Loading…</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:.75rem;margin-top:10px;flex-wrap:wrap">
-            <button class="btn-ghost" id="btn-provider-reset">Reset Stats</button>
-            <span id="provider-reset-msg" style="font-size:.8rem;color:var(--md-on-surface-variant)"></span>
-          </div>
-          <div class="hint">Success/failure rates per provider — failing APIs are automatically deprioritised during rotation</div>
-        </div>
+        <div class="sdivider"></div>
 
-        <hr style="border:none;border-top:1px solid var(--md-outline-variant);margin:0">
-
-        <div class="setting-group">
-          <label>Filename Format</label>
+        <div class="sgroup">
+          <div class="sgroup-label">File output</div>
           <input type="text" id="cfg-filename-fmt" value="{{ filename_fmt }}">
-          <div class="hint">Variables: {artist} {album} {title} {track} {year} · Use / to create subfolders</div>
+          <div class="shint">{artist} · {album} · {title} · {track} · {year} — use / for subfolders</div>
         </div>
 
-        <hr style="border:none;border-top:1px solid var(--md-outline-variant);margin:0">
+        <div class="sdivider"></div>
 
-        <div class="setting-group">
-          <label>Metadata Enrichment</label>
+        <div class="sgroup">
+          <div class="sgroup-label">Download behavior</div>
+          <div class="snum-grid">
+            <div class="snum-item">
+              <span class="snum-label">Auto-retry every</span>
+              <div class="snum-row">
+                <input type="number" id="cfg-retry-interval" min="0" max="1440">
+                <span class="snum-unit">min</span>
+              </div>
+            </div>
+            <div class="snum-item">
+              <span class="snum-label">Maximum retries</span>
+              <div class="snum-row">
+                <input type="number" id="cfg-retry-max" min="0" max="100">
+                <span class="snum-unit">times</span>
+              </div>
+            </div>
+            <div class="snum-item">
+              <span class="snum-label">Delay between tracks</span>
+              <div class="snum-row">
+                <input type="number" id="cfg-track-delay" min="0" step="0.5">
+                <span class="snum-unit">sec</span>
+              </div>
+            </div>
+            <div class="snum-item">
+              <span class="snum-label">Parallel jobs</span>
+              <div class="snum-row">
+                <input type="number" id="cfg-max-workers" min="1" max="20">
+                <span class="snum-unit">workers</span>
+              </div>
+            </div>
+          </div>
+          <div class="shint">Retry interval 0 = off · retries 0 = unlimited · increase delay if you hit rate limits</div>
+        </div>
+
+        <div class="sdivider"></div>
+
+        <div class="sgroup">
+          <div class="sgroup-label">Metadata enrichment</div>
           <div class="toggle-row">
             <span class="toggle-label">Fetch genre, label, BPM &amp; UPC after download</span>
             <label class="switch"><input type="checkbox" id="cfg-enrich-metadata"><span class="slider"></span></label>
           </div>
-          <div id="enrich-providers-row" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px">
-            <label style="display:flex;align-items:center;gap:5px;font-size:.82rem;cursor:pointer">
-              <input type="checkbox" class="enrich-prov" value="deezer" checked> Deezer
-            </label>
-            <label style="display:flex;align-items:center;gap:5px;font-size:.82rem;cursor:pointer">
-              <input type="checkbox" class="enrich-prov" value="apple" checked> Apple Music
-            </label>
-            <label style="display:flex;align-items:center;gap:5px;font-size:.82rem;cursor:pointer">
-              <input type="checkbox" class="enrich-prov" value="qobuz"> Qobuz
-            </label>
-            <label style="display:flex;align-items:center;gap:5px;font-size:.82rem;cursor:pointer">
-              <input type="checkbox" class="enrich-prov" value="tidal"> Tidal
-            </label>
+          <div id="enrich-providers-row" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+            <label style="display:flex;align-items:center;gap:5px;font-size:.82rem;cursor:pointer"><input type="checkbox" class="enrich-prov" value="deezer" checked> Deezer</label>
+            <label style="display:flex;align-items:center;gap:5px;font-size:.82rem;cursor:pointer"><input type="checkbox" class="enrich-prov" value="apple" checked> Apple Music</label>
+            <label style="display:flex;align-items:center;gap:5px;font-size:.82rem;cursor:pointer"><input type="checkbox" class="enrich-prov" value="qobuz"> Qobuz</label>
+            <label style="display:flex;align-items:center;gap:5px;font-size:.82rem;cursor:pointer"><input type="checkbox" class="enrich-prov" value="tidal"> Tidal</label>
           </div>
-          <div class="toggle-row" style="margin-top:8px">
-            <span class="toggle-label">MusicBrainz genre fallback (uses ISRC; rate-limited to 1 req/s)</span>
+          <div class="toggle-row" style="margin-top:10px">
+            <span class="toggle-label">MusicBrainz genre fallback <span style="opacity:.7">(rate-limited to 1 req/s)</span></span>
             <label class="switch"><input type="checkbox" id="cfg-enrich-musicbrainz" checked><span class="slider"></span></label>
           </div>
-          <div class="hint">Providers are queried in parallel; first result per field wins · Deezer &amp; Apple are free</div>
+          <div class="shint">Providers queried in parallel · first result per field wins · Deezer &amp; Apple are free</div>
         </div>
 
-        <hr style="border:none;border-top:1px solid var(--md-outline-variant);margin:0">
+        <div style="height:16px"></div>
+      </div>
 
-        <div class="setting-group">
-          <label>Auto-retry on failure</label>
-          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-            <div style="display:flex;align-items:center;gap:6px">
-              <label class="setting-inline-label">Every</label>
-              <input type="number" id="cfg-retry-interval" min="0" max="1440" style="width:72px">
-              <label class="setting-inline-label">min</label>
-            </div>
-            <div style="display:flex;align-items:center;gap:6px">
-              <label class="setting-inline-label">up to</label>
-              <input type="number" id="cfg-retry-max" min="0" max="100" style="width:60px">
-              <label class="setting-inline-label">times</label>
-            </div>
+      <!-- ── System ──────────────────────────────────────────────── -->
+      <div class="stab-panel" data-spanel="system" style="display:none;padding-top:16px">
+
+        <div class="sgroup">
+          <div class="sgroup-label">Provider health</div>
+          <div id="provider-health-list" style="display:flex;flex-direction:column;gap:2px;min-height:20px">
+            <span style="font-size:.8rem;color:var(--md-on-surface-variant)">Loading…</span>
           </div>
-          <div class="hint">Set interval to 0 to disable · set times to 0 for unlimited retries</div>
-        </div>
-
-        <div class="setting-group">
-          <label>Delay between tracks</label>
-          <div style="display:flex;align-items:center;gap:6px">
-            <input type="number" id="cfg-track-delay" min="0" step="0.5" style="width:80px">
-            <label class="setting-inline-label">seconds</label>
+          <div class="saction-row">
+            <button class="btn-ghost" id="btn-tidal-refresh">Refresh Tidal APIs</button>
+            <span id="tidal-refresh-msg" class="saction-msg"></span>
           </div>
-          <div class="hint">Increase to reduce provider rate-limit errors</div>
-        </div>
-
-        <div class="setting-group">
-          <label>Parallel downloads</label>
-          <div style="display:flex;align-items:center;gap:6px">
-            <input type="number" id="cfg-max-workers" min="1" max="20" style="width:72px">
-            <label class="setting-inline-label">workers</label>
+          <div class="saction-row">
+            <button class="btn-ghost" id="btn-provider-reset">Reset stats</button>
+            <span id="provider-reset-msg" class="saction-msg"></span>
           </div>
-          <div class="hint">Number of jobs processed simultaneously</div>
+          <div class="shint">Tidal refresh fetches the latest proxy endpoints · failing APIs are auto-deprioritised during rotation</div>
         </div>
 
-        <hr style="border:none;border-top:1px solid var(--md-outline-variant);margin:0">
+        <div class="sdivider"></div>
 
-        <div class="setting-group">
-          <label>Library Index</label>
-          <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
-            <button class="btn-ghost" id="btn-lib-rescan">Rescan Library</button>
-            <span id="lib-rescan-msg" style="font-size:.8rem;color:var(--md-on-surface-variant)"></span>
+        <div class="sgroup">
+          <div class="sgroup-label">Library index</div>
+          <div class="saction-row">
+            <button class="btn-ghost" id="btn-lib-rescan">Rescan</button>
+            <span id="lib-rescan-msg" class="saction-msg"></span>
           </div>
-          <div class="hint">Rebuilds the in-memory track index used for "In library" detection in search</div>
+          <div class="shint">Rebuilds the in-memory track index used for "In library" detection in search results</div>
         </div>
 
-        <hr style="border:none;border-top:1px solid var(--md-outline-variant);margin:0">
+        <div class="sdivider"></div>
 
-        <div class="setting-group">
-          <label>ListenBrainz Recommendations</label>
+        <div class="sgroup">
+          <div class="sgroup-label">ListenBrainz</div>
           <div class="toggle-row">
             <span class="toggle-label">Auto-download recommendation playlists</span>
             <label class="switch"><input type="checkbox" id="cfg-lb-enabled"><span class="slider"></span></label>
           </div>
-          <input type="text" id="cfg-lb-username" placeholder="ListenBrainz username" style="margin-top:8px">
-          <div style="display:flex;align-items:center;gap:6px;margin-top:8px">
-            <label class="setting-inline-label">Check every</label>
+          <input type="text" id="cfg-lb-username" placeholder="Username" style="margin-top:10px">
+          <div class="snum-row" style="margin-top:10px;gap:8px">
+            <span style="font-size:.82rem;color:var(--md-on-surface-variant);white-space:nowrap">Check every</span>
             <input type="number" id="cfg-lb-poll" min="5" max="10080" style="width:72px">
-            <label class="setting-inline-label">minutes</label>
+            <span class="snum-unit">minutes</span>
           </div>
-          <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
-            <button class="btn-ghost" id="btn-settings-lb-sync" style="padding:.25rem .75rem;font-size:.8rem">Sync now</button>
-            <span id="settings-lb-sync-msg" style="font-size:.75rem;color:var(--md-on-surface-variant)"></span>
+          <div class="saction-row">
+            <button class="btn-ghost" id="btn-settings-lb-sync">Sync now</button>
+            <span id="settings-lb-sync-msg" class="saction-msg"></span>
           </div>
-          <div class="hint">Monitors your recommendation playlists and queues new tracks automatically · Spotify IDs are read from playlist metadata; remaining tracks are resolved via MusicBrainz (rate-limited)</div>
+          <div class="shint">Monitors recommendation playlists · tracks already in the library are skipped · Spotify IDs resolved via MusicBrainz</div>
         </div>
 
-        <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:4px">
-          <span id="cfg-save-msg" style="font-size:.8rem;color:var(--md-on-surface-variant);align-self:center"></span>
-          <button id="btn-cfg-save" style="
-            background:var(--md-primary);color:var(--md-on-primary);
-            border:none;border-radius:999px;height:32px;padding:0 20px;
-            font-size:.875rem;font-weight:500;letter-spacing:.006em;
-            cursor:pointer;position:relative;overflow:hidden;transition:box-shadow .2s
-          ">Save</button>
-        </div>
-
+        <div style="height:16px"></div>
       </div>
+
+    </div>
+
+    <div class="modal-footer">
+      <span id="cfg-save-msg" class="saction-msg"></span>
+      <button id="btn-cfg-save">Save</button>
     </div>
   </div>
 </div>
@@ -1584,8 +1617,8 @@ function buildColorPresets() {
   let deviceSwatch = '';
   if (_deviceHex) {
     deviceSwatch = `
-    <button class="color-swatch${saved === 'device' ? ' active' : ''}" data-preset="device"
-      title="Device accent"
+    <button class="color-swatch color-swatch--device${saved === 'device' ? ' active' : ''}" data-preset="device"
+      title="System accent"
       style="background:${_deviceHex};--color-swatch-bg:${_deviceHex}">
       <span class="material-icons">check</span>
     </button>`;
@@ -1796,6 +1829,9 @@ async function loadProviderStats() {
 async function openSettingsModal() {
   document.getElementById('settings-modal').classList.add('open');
   document.body.style.overflow = 'hidden';
+  // Reset to General tab
+  document.querySelectorAll('.stab').forEach((t, i) => t.classList.toggle('active', i === 0));
+  document.querySelectorAll('.stab-panel').forEach((p, i) => { p.style.display = i === 0 ? '' : 'none'; });
   buildColorPresets();
   loadProviderStats();
   try {
@@ -2184,6 +2220,15 @@ document.getElementById('btn-msf-go').addEventListener('click', () => doSearch()
 });
 document.getElementById('btn-settings').addEventListener('click', openSettingsModal);
 document.getElementById('btn-settings-close').addEventListener('click', closeSettingsModal);
+
+document.querySelectorAll('.stab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    const target = tab.dataset.stab;
+    document.querySelectorAll('.stab').forEach(t => t.classList.toggle('active', t === tab));
+    document.querySelectorAll('.stab-panel').forEach(p => { p.style.display = p.dataset.spanel === target ? '' : 'none'; });
+    if (target === 'system') loadProviderStats();
+  });
+});
 document.getElementById('btn-cfg-save').addEventListener('click', async () => {
   const msg = document.getElementById('cfg-save-msg');
   const payload = {
