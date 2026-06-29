@@ -537,6 +537,137 @@ class _TrackingWorker(DownloadWorker):
         self._print_summary(elapsed)
         return self._failed
 
+    async def run_async(self):
+        """Async version of run() for SpotiFLAC 1.2.9+ (fully async API)."""
+        try:
+            from SpotiFLAC.downloader import download_one_async as _dl_one_async
+        except ImportError:
+            _dl_one_async = None
+
+        from SpotiFLAC.core.models import build_filename
+        from pathlib import Path as _Path
+
+        total    = len(self._tracks)
+        start    = time.perf_counter()
+        base_out = self._resolve_output_dir()
+        done     = 0
+
+        track_dirs:   list[str]          = []
+        pre_existing: list[_Path | None] = []
+        for i, track in enumerate(self._tracks):
+            out_dir = self._track_output_dir(base_out, track)
+            track_dirs.append(out_dir)
+            found: _Path | None = None
+            for ext in ('.flac', '.m4a', '.mp3'):
+                fname = build_filename(
+                    track,
+                    fmt                    = self._opts.filename_format,
+                    position               = i + 1,
+                    include_track_number   = self._opts.use_track_numbers,
+                    use_album_track_number = self._opts.use_track_numbers,
+                    first_artist_only      = self._opts.first_artist_only,
+                    extension              = ext,
+                )
+                candidate = _Path(out_dir) / fname
+                if candidate.exists() and candidate.stat().st_size > 0:
+                    found = candidate
+                    break
+            pre_existing.append(found)
+
+        skip_count = sum(1 for p in pre_existing if p)
+        if skip_count:
+            remaining = total - skip_count
+            log.info(
+                "Pre-scan: %d/%d tracks already on disk%s",
+                skip_count, total,
+                f", downloading {remaining} remaining" if remaining else " — nothing to download",
+            )
+
+        for i, track in enumerate(self._tracks):
+            coro = DownloadManager().start_download(track.id)
+            if _asyncio.iscoroutine(coro):
+                await coro
+            existing = pre_existing[i]
+
+            if existing:
+                size_mb = existing.stat().st_size / (1024 * 1024)
+                coro = DownloadManager().complete_download(track.id, str(existing), size_mb)
+                if _asyncio.iscoroutine(coro):
+                    await coro
+                if self._on_track_result:
+                    self._on_track_result({
+                        "track_id": track.id,
+                        "title": track.title, "artists": track.artists,
+                        "success": True, "error": None,
+                    })
+                done += 1
+                self._on_track_done(done)
+                continue
+
+            out_dir = track_dirs[i]
+            if _dl_one_async is not None:
+                result = await _dl_one_async(track, out_dir, self._providers, self._opts,
+                                             i + 1, self._is_album)
+            else:
+                result = download_one(track, out_dir, self._providers, self._opts,
+                                      i + 1, self._is_album)
+
+            if result.success:
+                expected_s = (track.duration_ms or 0) // 1000
+                valid, val_reason = _validate_track(result.file_path or "", expected_s)
+                if not valid:
+                    log.warning("Validation failed for %s: %s", track.title, val_reason)
+                    self._failed.append((track.id, track.title, track.artists, val_reason))
+                    coro = DownloadManager().fail_download(track.id, val_reason)
+                    if _asyncio.iscoroutine(coro):
+                        await coro
+                    if self._on_track_result:
+                        self._on_track_result({
+                            "track_id": track.id,
+                            "title": track.title, "artists": track.artists,
+                            "success": False, "error": val_reason,
+                        })
+                else:
+                    try:
+                        size_mb = (
+                            os.path.getsize(result.file_path) / (1024 * 1024)
+                            if result.file_path and os.path.exists(result.file_path)
+                            else 0.0
+                        )
+                    except OSError:
+                        size_mb = 0.0
+                    coro = DownloadManager().complete_download(track.id, result.file_path or "", size_mb)
+                    if _asyncio.iscoroutine(coro):
+                        await coro
+                    if self._on_track_result:
+                        self._on_track_result({
+                            "track_id": track.id,
+                            "title": track.title, "artists": track.artists,
+                            "success": True, "error": None,
+                        })
+            else:
+                err = result.error or "unknown"
+                self._failed.append((track.id, track.title, track.artists, err))
+                coro = DownloadManager().fail_download(track.id, err)
+                if _asyncio.iscoroutine(coro):
+                    await coro
+                if self._on_track_result:
+                    self._on_track_result({
+                        "track_id": track.id,
+                        "title": track.title, "artists": track.artists,
+                        "success": False, "error": err,
+                    })
+
+            done += 1
+            self._on_track_done(done)
+
+            if i < total - 1:
+                await _asyncio.sleep(self._opts.inter_track_delay_s)
+
+        elapsed = time.perf_counter() - start
+        self._print_summary(elapsed)
+        return self._failed
+
 
 class _TrackingDownloader(SpotiflacDownloader):
     """SpotiflacDownloader that reports on_progress(done, total) and per-track results."""
@@ -610,6 +741,47 @@ class _TrackingDownloader(SpotiflacDownloader):
             on_track_result = self._on_track_result,
         )
         worker.run()
+        return []
+
+    def run(self, url: str) -> None:
+        """Sync entry point: delegates to run_async for 1.2.9+, sync run for older."""
+        if hasattr(SpotiflacDownloader, 'run_async'):
+            _asyncio.run(self.run_async(url))
+        else:
+            super().run(url)
+
+    async def _run_worker_async(self, tracks, collection_name, info,
+                                is_album, is_playlist, opts=None):
+        """Override for SpotiFLAC 1.2.9+: swap DownloadWorker for _TrackingWorker."""
+        effective = opts if opts is not None else self._opts
+        manager   = DownloadManager()
+        updated_tracks = []
+        for i, t in enumerate(tracks):
+            track_item_id    = t.id or getattr(t, 'external_url', '') or f"queue-{i}-{uuid.uuid4().hex}"
+            track_spotify_id = t.id or getattr(t, 'external_url', '') or track_item_id
+            coro = manager.add_to_queue(track_item_id, t.title, t.artists, t.album, track_spotify_id)
+            if _asyncio.iscoroutine(coro):
+                await coro
+            if not t.id:
+                try:
+                    t = t.model_copy(update={"id": track_item_id})
+                except AttributeError:
+                    pass
+            updated_tracks.append(t)
+
+        total = len(updated_tracks)
+        self._on_progress(0, total)
+
+        worker = _TrackingWorker(
+            tracks          = updated_tracks,
+            opts            = effective,
+            collection_name = collection_name,
+            is_album        = is_album,
+            is_playlist     = is_playlist,
+            on_track_done   = lambda done: self._on_progress(done, total),
+            on_track_result = self._on_track_result,
+        )
+        await worker.run_async()
         return []
 
 
