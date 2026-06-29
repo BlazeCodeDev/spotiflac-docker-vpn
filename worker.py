@@ -15,7 +15,7 @@ try:
 except ImportError:
     from SpotiFLAC.downloader import download_one_async as _dl_async  # SpotiFLAC 1.2.7+ async
     def download_one(metadata, output_dir, providers, opts, position=1, is_album=False):
-        return _asyncio.run(_dl_async(metadata, output_dir, providers, opts, position, is_album))
+        return _run_coro_sync(_dl_async(metadata, output_dir, providers, opts, position, is_album))
 
 from SpotiFLAC.core.progress import DownloadManager
 
@@ -27,11 +27,42 @@ try:
 except Exception:
     _spotify_client = None
 
+# ── Persistent event loop ────────────────────────────────────────────────────
+# SpotiFLAC's asyncio.Queue (progress.py) binds to the first event loop it is
+# awaited from. Repeated asyncio.run() calls each produce a new loop, so the
+# queue raises "bound to a different event loop" on every job after the first.
+# Keeping a single loop alive for the process lifetime avoids this entirely.
+
+_spf_loop_lock                              = threading.Lock()
+_spf_loop:   _asyncio.AbstractEventLoop | None = None
+_spf_thread: threading.Thread | None           = None
+
+
+def _get_spf_loop() -> _asyncio.AbstractEventLoop:
+    global _spf_loop, _spf_thread
+    with _spf_loop_lock:
+        if _spf_loop is None or _spf_loop.is_closed():
+            _spf_loop   = _asyncio.new_event_loop()
+            _spf_thread = threading.Thread(
+                target=_spf_loop.run_forever,
+                daemon=True,
+                name="spotiflac-loop",
+            )
+            _spf_thread.start()
+    return _spf_loop
+
+
+def _run_coro_sync(coro) -> object:
+    """Submit a coroutine to the shared persistent loop; block until it completes."""
+    if not _asyncio.iscoroutine(coro):
+        return coro
+    return _asyncio.run_coroutine_threadsafe(coro, _get_spf_loop()).result()
+
 
 def _run_coro(result) -> None:
     """If result is an unawaited coroutine (async SpotiFLAC API), execute it synchronously."""
     if _asyncio.iscoroutine(result):
-        _asyncio.run(result)
+        _run_coro_sync(result)
 
 log       = logging.getLogger(__name__)
 _jobs:    dict[str, dict]            = {}
@@ -707,7 +738,7 @@ class _TrackingDownloader(SpotiflacDownloader):
         elif hasattr(self, '_resolve_metadata_async'):
             # SpotiFLAC 1.2.7+ async API
             try:
-                collection_name, tracks, info = _asyncio.run(
+                collection_name, tracks, info = _run_coro_sync(
                     self._resolve_metadata_async(spotify_url)
                 )
             except Exception as exc:
@@ -723,7 +754,7 @@ class _TrackingDownloader(SpotiflacDownloader):
             if hasattr(self._client, 'get_url'):
                 collection_name, tracks = self._client.get_url(spotify_url)
             else:
-                collection_name, tracks, *_ = _asyncio.run(
+                collection_name, tracks, *_ = _run_coro_sync(
                     self._client.get_url_async(spotify_url)
                 )
             if not tracks:
@@ -754,7 +785,7 @@ class _TrackingDownloader(SpotiflacDownloader):
     def run(self, url: str) -> None:
         """Sync entry point: delegates to run_async for 1.2.9+, sync run for older."""
         if hasattr(SpotiflacDownloader, 'run_async'):
-            _asyncio.run(self.run_async(url))
+            _run_coro_sync(self.run_async(url))
         else:
             super().run(url)
 
@@ -883,7 +914,7 @@ def _run(job_id: str) -> None:
                             if hasattr(client, 'get_track'):
                                 tracks.append(client.get_track(info["id"]))
                             else:
-                                tracks.append(_asyncio.run(client.get_track_async(info["id"])))
+                                tracks.append(_run_coro_sync(client.get_track_async(info["id"])))
                     except Exception as exc:
                         log.warning("Batch metadata fetch failed for %s: %s", burl, exc)
                 if not tracks:
