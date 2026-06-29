@@ -282,10 +282,19 @@ def api_search():
         playlists_obj = data.get("playlists", {})
         artists_obj   = data.get("artists", {})
 
+        _seen_tracks: set = set()
         for t in tracks_obj.get("items", []):
             if not t:
                 continue
-            artists  = ", ".join(a["name"] for a in t.get("artists", []))
+            artists      = ", ".join(a["name"] for a in t.get("artists", []))
+            first_artist = (t.get("artists") or [{}])[0].get("name", "")
+            # Deduplicate tracks by (title, first artist) — same song appears
+            # across multiple album editions (original, deluxe, remaster, etc.)
+            _track_key = (re.sub(r"[^\w]", "", t["name"].lower()),
+                          re.sub(r"[^\w]", "", first_artist.lower()))
+            if _track_key in _seen_tracks:
+                continue
+            _seen_tracks.add(_track_key)
             album    = t.get("album", {})
             imgs     = album.get("images", [])
             year     = (album.get("release_date") or "")[:4]
@@ -298,10 +307,20 @@ def api_search():
                 "duration_ms": t.get("duration_ms"),
                 "year":        year or None,
             })
+        _seen_albums: set = set()
         for a in albums_obj.get("items", []):
             if not a:
                 continue
-            artists = ", ".join(ar["name"] for ar in a.get("artists", []))
+            artists     = ", ".join(ar["name"] for ar in a.get("artists", []))
+            first_artist = (a.get("artists") or [{}])[0].get("name", "")
+            # Deduplicate: Spotify returns the same album multiple times for
+            # reissues/remasters under different release dates. Keep only the
+            # first (most relevant) result per (title, first artist) pair.
+            _album_key = (re.sub(r"[^\w]", "", a["name"].lower()),
+                          re.sub(r"[^\w]", "", first_artist.lower()))
+            if _album_key in _seen_albums:
+                continue
+            _seen_albums.add(_album_key)
             imgs    = a.get("images", [])
             year    = (a.get("release_date") or "")[:4]
             results.append({

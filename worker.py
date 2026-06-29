@@ -891,6 +891,7 @@ def _run(job_id: str) -> None:
                 quality             = quality,
                 inter_track_delay_s = cfg["track_delay_s"],
                 use_track_numbers   = True,
+                first_artist_only   = True,
                 **_enrich_kwargs,
             )
 
