@@ -34,7 +34,7 @@ RUN apk add --no-cache netcat-openbsd
 
 COPY entrypoint.sh /entrypoint.sh
 COPY patch_spotiflac.py /app/patch_spotiflac.py
-COPY app.py config.py worker.py vpn.py routes.py settings.py lib_index.py /app/
+COPY app.py config.py worker.py vpn.py routes.py settings.py lib_index.py listenbrainz.py /app/
 COPY templates/ /app/templates/
 COPY static/ /app/static/
 RUN chmod +x /entrypoint.sh

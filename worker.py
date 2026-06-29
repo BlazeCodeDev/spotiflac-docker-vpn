@@ -7,8 +7,23 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from SpotiFLAC.downloader import SpotiflacDownloader, DownloadWorker, DownloadOptions, download_one
+import asyncio as _asyncio
+
+from SpotiFLAC.downloader import SpotiflacDownloader, DownloadWorker, DownloadOptions
+try:
+    from SpotiFLAC.downloader import download_one  # SpotiFLAC ≤ 1.2.x sync API
+except ImportError:
+    from SpotiFLAC.downloader import download_one_async as _dl_async  # SpotiFLAC 1.2.7+ async
+    def download_one(metadata, output_dir, providers, opts, position=1, is_album=False):
+        return _asyncio.run(_dl_async(metadata, output_dir, providers, opts, position, is_album))
+
 from SpotiFLAC.core.progress import DownloadManager
+
+
+def _run_coro(result) -> None:
+    """If result is an unawaited coroutine (async SpotiFLAC API), execute it synchronously."""
+    if _asyncio.iscoroutine(result):
+        _asyncio.run(result)
 
 log       = logging.getLogger(__name__)
 _jobs:    dict[str, dict]            = {}
@@ -401,6 +416,12 @@ class _TrackingWorker(DownloadWorker):
         _os.makedirs(out, exist_ok=True)
         return out
 
+    def _track_output_dir(self, base: str, track) -> str:
+        # SpotiFLAC 1.2.7 moved this to _track_output_dir_async; provide the sync
+        # version here so _TrackingWorker.run() works with both API generations.
+        os.makedirs(base, exist_ok=True)
+        return base
+
     def run(self):
         from SpotiFLAC.core.models import build_filename
         from pathlib import Path as _Path
@@ -446,12 +467,12 @@ class _TrackingWorker(DownloadWorker):
             )
 
         for i, track in enumerate(self._tracks):
-            manager.start_download(track.id)
+            _run_coro(manager.start_download(track.id))
             existing = pre_existing[i]
 
             if existing:
                 size_mb = existing.stat().st_size / (1024 * 1024)
-                manager.complete_download(track.id, str(existing), size_mb)
+                _run_coro(manager.complete_download(track.id, str(existing), size_mb))
                 if self._on_track_result:
                     self._on_track_result({
                         "track_id": track.id,
@@ -472,7 +493,7 @@ class _TrackingWorker(DownloadWorker):
                 if not valid:
                     log.warning("Validation failed for %s: %s", track.title, val_reason)
                     self._failed.append((track.id, track.title, track.artists, val_reason))
-                    manager.fail_download(track.id, val_reason)
+                    _run_coro(manager.fail_download(track.id, val_reason))
                     if self._on_track_result:
                         self._on_track_result({
                             "track_id": track.id,
@@ -488,7 +509,7 @@ class _TrackingWorker(DownloadWorker):
                         )
                     except OSError:
                         size_mb = 0.0
-                    manager.complete_download(track.id, result.file_path or "", size_mb)
+                    _run_coro(manager.complete_download(track.id, result.file_path or "", size_mb))
                     if self._on_track_result:
                         self._on_track_result({
                             "track_id": track.id,
@@ -498,7 +519,7 @@ class _TrackingWorker(DownloadWorker):
             else:
                 err = result.error or "unknown"
                 self._failed.append((track.id, track.title, track.artists, err))
-                manager.fail_download(track.id, err)
+                _run_coro(manager.fail_download(track.id, err))
                 if self._on_track_result:
                     self._on_track_result({
                         "track_id": track.id,
@@ -534,7 +555,7 @@ class _TrackingDownloader(SpotiflacDownloader):
             is_album        = getattr(self._opts, 'is_album', False)
             is_playlist     = len(tracks) > 1
         elif hasattr(self, '_resolve_metadata'):
-            # SpotiFLAC 0.4.7+: handles Tidal, Apple Music, SoundCloud, YouTube too
+            # SpotiFLAC 0.4.7+ sync API
             try:
                 collection_name, tracks, info = self._resolve_metadata(spotify_url)
             except SpotiflacError as exc:
@@ -544,10 +565,28 @@ class _TrackingDownloader(SpotiflacDownloader):
                 return []
             is_album    = info.get("type") == "album"
             is_playlist = info.get("type") in ("playlist", "artist", "artist_discography")
+        elif hasattr(self, '_resolve_metadata_async'):
+            # SpotiFLAC 1.2.7+ async API
+            try:
+                collection_name, tracks, info = _asyncio.run(
+                    self._resolve_metadata_async(spotify_url)
+                )
+            except Exception as exc:
+                log.error("Metadata fetch failed: %s", exc)
+                return []
+            if not tracks:
+                return []
+            is_album    = info.get("type") == "album"
+            is_playlist = info.get("type") in ("playlist", "artist", "artist_discography")
         else:
             # SpotiFLAC 0.3.x fallback
             from SpotiFLAC.providers.spotify_metadata import parse_spotify_url
-            collection_name, tracks = self._client.get_url(spotify_url)
+            if hasattr(self._client, 'get_url'):
+                collection_name, tracks = self._client.get_url(spotify_url)
+            else:
+                collection_name, tracks, *_ = _asyncio.run(
+                    self._client.get_url_async(spotify_url)
+                )
             if not tracks:
                 return []
             info        = parse_spotify_url(spotify_url)
@@ -559,7 +598,7 @@ class _TrackingDownloader(SpotiflacDownloader):
 
         manager = DownloadManager()
         for t in tracks:
-            manager.add_to_queue(t.id, t.title, t.artists, t.album, t.id)
+            _run_coro(manager.add_to_queue(t.id, t.title, t.artists, t.album, t.id))
 
         worker = _TrackingWorker(
             tracks          = tracks,
@@ -659,7 +698,10 @@ def _run(job_id: str) -> None:
                     try:
                         info = parse_spotify_url(burl)
                         if info["type"] == "track":
-                            tracks.append(client.get_track(info["id"]))
+                            if hasattr(client, 'get_track'):
+                                tracks.append(client.get_track(info["id"]))
+                            else:
+                                tracks.append(_asyncio.run(client.get_track_async(info["id"])))
                     except Exception as exc:
                         log.warning("Batch metadata fetch failed for %s: %s", burl, exc)
                 if not tracks:
