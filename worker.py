@@ -19,6 +19,14 @@ except ImportError:
 
 from SpotiFLAC.core.progress import DownloadManager
 
+# Cached Spotify client — reuses OAuth token across jobs instead of re-fetching
+# on every _fetch_metadata call. SpotifyMetadataClient handles token refresh.
+try:
+    from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient as _SpotifyClient
+    _spotify_client = _SpotifyClient(timeout_s=15)
+except Exception:
+    _spotify_client = None
+
 
 def _run_coro(result) -> None:
     """If result is an unawaited coroutine (async SpotiFLAC API), execute it synchronously."""
@@ -330,7 +338,7 @@ def _fetch_metadata(url: str) -> tuple[str | None, str | None, str | None]:
         sid    = info["id"]
         if kind not in ("track", "album", "playlist"):
             return None, None, None
-        client = SpotifyMetadataClient(timeout_s=5)
+        client = _spotify_client or SpotifyMetadataClient(timeout_s=15)
         if not hasattr(client, '_get'):
             import base64, json, types, urllib.parse, urllib.request
             _CID  = base64.b64decode("ODNlNDQzMGI0NzAwNDM0YmFhMjEyMjhhOWM3ZDExYzU=").decode()
@@ -811,8 +819,10 @@ def _run(job_id: str) -> None:
         full_total        = j.get("full_total") or 0
         batch_urls        = j.get("_batch_urls") or []
 
-        # Skip metadata fetch if title already set (pre-filled batch or retry)
-        if not j.get("title"):
+        # Fetch metadata if title or cover are missing.
+        # LB-sourced jobs have pre_title set so title is already known, but
+        # cover_url is never pre-filled — fetch it whenever it is absent.
+        if not j.get("title") or not j.get("cover_url"):
             title, cover_url, artist = _fetch_metadata(url)
             meta: dict = {}
             if title:     meta["title"]     = title
