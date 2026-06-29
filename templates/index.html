@@ -1267,6 +1267,10 @@ html.theme-transitioning *::after {
             <input type="number" id="cfg-lb-poll" min="5" max="10080" style="width:72px">
             <label class="setting-inline-label">minutes</label>
           </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+            <button class="btn-ghost" id="btn-settings-lb-sync" style="padding:.25rem .75rem;font-size:.8rem">Sync now</button>
+            <span id="settings-lb-sync-msg" style="font-size:.75rem;color:var(--md-on-surface-variant)"></span>
+          </div>
           <div class="hint">Monitors your recommendation playlists and queues new tracks automatically · Spotify IDs are read from playlist metadata; remaining tracks are resolved via MusicBrainz (rate-limited)</div>
         </div>
 
@@ -2227,6 +2231,31 @@ document.getElementById('btn-tidal-refresh').addEventListener('click', async () 
     const data = await res.json();
     msg.textContent = res.ok ? `✓ ${data.count} endpoint(s) loaded` : `✗ ${data.error || 'Failed'}`;
     msg.style.color = res.ok ? 'var(--green)' : 'var(--red)';
+  } catch {
+    msg.textContent = '✗ Network error';
+    msg.style.color = 'var(--red)';
+  }
+  btn.disabled = false;
+  setTimeout(() => { msg.textContent = ''; msg.style.color = ''; }, 5000);
+});
+document.getElementById('btn-settings-lb-sync').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-settings-lb-sync');
+  const msg = document.getElementById('settings-lb-sync-msg');
+  btn.disabled = true;
+  msg.textContent = '';
+  msg.style.color = '';
+  try {
+    const res  = await fetch('/api/listenbrainz/sync', {method: 'POST'});
+    const data = await res.json();
+    if (res.ok) {
+      msg.textContent = '✓ Sync started';
+      msg.style.color = 'var(--green)';
+      setTimeout(refreshTasks, 600);
+      setTimeout(refreshLB,    600);
+    } else {
+      msg.textContent = `✗ ${data.error || 'Failed'}`;
+      msg.style.color = 'var(--red)';
+    }
   } catch {
     msg.textContent = '✗ Network error';
     msg.style.color = 'var(--red)';
@@ -3439,10 +3468,12 @@ function renderTasks(tasks) {
       }
       logHtml = `<div class="task-log">${sections.join('')}</div>`;
     }
+    const tIcon      = t.running ? 'sync' : (t.last_error ? 'error_outline' : 'check_circle');
+    const tIconStyle = !t.running && t.last_error ? ' style="color:var(--md-error,#b3261e)"' : '';
     return `
     <div class="task-row${isExp ? ' expanded' : ''}" data-task-id="${esc(t.id)}">
       <div class="task-icon">
-        <span class="material-icons${t.running ? ' spin' : ''}">${t.running ? 'sync' : 'check_circle'}</span>
+        <span class="material-icons${t.running ? ' spin' : ''}"${tIconStyle}>${tIcon}</span>
       </div>
       <div class="task-info">
         <div class="task-label">${esc(t.label)}</div>
@@ -3450,6 +3481,7 @@ function renderTasks(tasks) {
       </div>
       ${hasLog ? `<span class="material-icons task-expand-btn" title="Show details" style="font-size:18px;color:var(--md-on-surface-variant);cursor:pointer">${isExp ? 'expand_less' : 'expand_more'}</span>` : ''}
       ${t.cancellable ? `<button class="btn-ghost task-cancel-btn" data-id="${esc(t.id)}" style="padding:.2rem .5rem;font-size:.72rem;flex-shrink:0" title="Cancel">✕</button>` : ''}
+      ${t.syncable ? `<button class="btn-ghost task-sync-btn" data-id="${esc(t.id)}" style="padding:.2rem .5rem;font-size:.72rem;flex-shrink:0">Sync</button>` : ''}
       ${logHtml}
     </div>`;
   }).join('');
@@ -3469,6 +3501,16 @@ function renderTasks(tasks) {
       if (btn.dataset.id === 'lib-enrich') {
         await fetch('/api/library/enrich', {method: 'DELETE'});
         refreshTasks();
+      }
+    });
+  });
+
+  list.querySelectorAll('.task-sync-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (btn.dataset.id === 'lb-sync') {
+        btn.disabled = true;
+        await fetch('/api/listenbrainz/sync', {method: 'POST'}).catch(() => {});
+        setTimeout(refreshTasks, 500);
       }
     });
   });

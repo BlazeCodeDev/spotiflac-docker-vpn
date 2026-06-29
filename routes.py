@@ -684,6 +684,40 @@ def api_tasks():
             "moved_log":      es.get("moved_log", []),
         })
 
+    import listenbrainz as _lb
+    lb  = _lb.get_state()
+    cfg = _settings.load()
+    if cfg.get("listenbrainz_username", "").strip():
+        if lb.get("running"):
+            lb_detail = "Syncing…"
+        elif lb.get("last_error"):
+            lb_detail = lb["last_error"]
+        elif lb.get("last_check"):
+            from datetime import datetime, timezone as _tz
+            try:
+                dt   = datetime.fromisoformat(lb["last_check"].replace("Z", "+00:00"))
+                diff = int((datetime.now(_tz.utc) - dt).total_seconds())
+                if diff < 60:    ago = "just now"
+                elif diff < 3600:  ago = f"{diff // 60}m ago"
+                elif diff < 86400: ago = f"{diff // 3600}h ago"
+                else:              ago = f"{diff // 86400}d ago"
+            except Exception:
+                ago = lb["last_check"]
+            lb_detail = f"Last sync: {ago}"
+            n = lb.get("total_enqueued", 0)
+            if n:
+                lb_detail += f" · {n:,} tracks queued total"
+        else:
+            lb_detail = "Never synced"
+        tasks.append({
+            "id":         "lb-sync",
+            "label":      "ListenBrainz",
+            "running":    lb.get("running", False),
+            "detail":     lb_detail,
+            "syncable":   not lb.get("running", False),
+            "last_error": lb.get("last_error") or "",
+        })
+
     return jsonify(tasks=tasks, any_running=any(t["running"] for t in tasks))
 
 
