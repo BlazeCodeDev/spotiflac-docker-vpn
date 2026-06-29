@@ -246,16 +246,9 @@ header {
   background: color-mix(in srgb, var(--md-primary) 10%, transparent);
   font-size: .8rem; font-weight: 500; letter-spacing: .006em;
   color: var(--md-primary);
-  cursor: pointer; flex-shrink: 0; white-space: nowrap;
-  transition: background .2s;
-  position: relative; overflow: hidden;
+  flex-shrink: 0; white-space: nowrap;
 }
-#update-chip::before { content: ''; position: absolute; inset: 0; background: var(--md-primary); opacity: 0; transition: opacity .2s; }
-#update-chip:hover::before  { opacity: .08; }
-#update-chip:active::before { opacity: .14; }
-#update-chip .material-icons { font-size: 15px; position: relative; }
-#update-chip > span:last-child { position: relative; }
-#update-chip:disabled { opacity: .55; cursor: default; pointer-events: none; }
+#update-chip .material-icons { font-size: 15px; }
 
 /* ─── Tooltip / Surface popup ────────────────────────────────────── */
 .tooltip {
@@ -959,10 +952,10 @@ html.theme-transitioning *::after {
     </div>
   </div>
   <button id="btn-settings" title="Settings"><span class="material-icons">settings</span></button>
-  <button id="update-chip" title="">
+  <div id="update-chip" title="">
     <span class="material-icons">upgrade</span>
-    <span id="update-chip-label">Update</span>
-  </button>
+    <span id="update-chip-label">Update available</span>
+  </div>
   <div class="vpn-wrap">
       <div id="vpn-badge">
         <span class="dot"></span>
@@ -3387,7 +3380,6 @@ async function checkSpotiflacUpdate() {
     const d = await fetch('/api/spotiflac/version').then(r => r.json());
     const chip = document.getElementById('update-chip');
     if (d.update_available) {
-      chip.dataset.latest = d.latest;
       chip.title = `SpotiFLAC ${d.latest} available (installed: ${d.installed})`;
       chip.style.display = 'flex';
     } else {
@@ -3395,28 +3387,6 @@ async function checkSpotiflacUpdate() {
     }
   } catch {}
 }
-
-document.getElementById('update-chip').addEventListener('click', async () => {
-  const chip  = document.getElementById('update-chip');
-  const label = document.getElementById('update-chip-label');
-  if (!confirm(`Update SpotiFLAC to ${chip.dataset.latest ?? 'latest'}?\nThe app will restart briefly.`)) return;
-  chip.disabled = true;
-  label.textContent = 'Updating…';
-  try {
-    const res = await fetch('/api/spotiflac/update', { method: 'POST' });
-    if (res.ok) {
-      label.textContent = 'Restarting…';
-    } else {
-      const d = await res.json().catch(() => ({}));
-      alert('Update failed: ' + (d.error || 'unknown error'));
-      label.textContent = 'Update';
-      chip.disabled = false;
-    }
-  } catch {
-    label.textContent = 'Update';
-    chip.disabled = false;
-  }
-});
 
 checkSpotiflacUpdate();
 setInterval(checkSpotiflacUpdate, 3_600_000);

@@ -1426,28 +1426,3 @@ def api_spotiflac_version():
     return jsonify(installed=installed, latest=latest, update_available=update_available)
 
 
-@bp.post("/api/spotiflac/update")
-def api_spotiflac_update():
-    pip = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--upgrade",
-         "--target", "/spotiflac", "SpotiFLAC"],
-        capture_output=True, text=True,
-    )
-    if pip.returncode != 0:
-        return jsonify(error=pip.stderr or "pip failed"), 500
-
-    patch = subprocess.run(
-        [sys.executable, "/app/patch_spotiflac.py"],
-        capture_output=True, text=True,
-    )
-
-    # Kill the Gunicorn master — entrypoint.sh's monitor_tunnel watches APP_PID
-    # and calls exit 1 when it dies, which makes Docker restart the container.
-    # os.kill(1, SIGTERM) is unreliable: Linux silently ignores SIGTERM on PID 1
-    # when the process has no registered handler (init protection).
-    def _restart():
-        time.sleep(1)
-        os.kill(os.getppid(), signal.SIGTERM)
-    threading.Thread(target=_restart, daemon=True).start()
-
-    return jsonify(ok=True, pip=pip.stdout.strip(), patch=patch.stdout.strip())
