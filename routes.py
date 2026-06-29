@@ -762,15 +762,20 @@ _FEAT_RE    = re.compile(r"\s+(?:feat\.?|ft\.?|featuring)\s+.*$", re.IGNORECASE)
 
 
 def _org_main_artist(audio_easy) -> str:
-    """Return the primary artist, matching the first_artist_only=True download behaviour."""
+    """Return the primary artist, matching the first_artist_only=True download behaviour.
+
+    SpotiFLAC stores artists as a single comma-joined string in the ARTIST/ALBUMARTIST
+    tag when first_artist_only=False (the old default), e.g. "Artist A, Artist B".
+    We mirror SpotiFLAC's own first_artist property — split on "," and take element 0 —
+    so existing and future files resolve to the same folder.
+    """
     for key in ("albumartist", "artist"):
         vals = audio_easy.get(key)
         if vals:
-            # Mutagen may store multi-artist tracks as a list — take only the first
-            # entry to match build_filename with first_artist_only=True.
-            raw = str(vals[0]).strip()
+            # Take the first Mutagen tag value, then split on "," to isolate the
+            # primary artist from any comma-joined multi-artist string.
+            raw = str(vals[0]).strip().split(",")[0].strip()
             if raw:
-                # Strip featured-artist suffixes (feat./ft./featuring …)
                 cleaned = _FEAT_RE.sub("", raw).strip()
                 return cleaned if cleaned else raw
     return "Unknown Artist"
@@ -1053,13 +1058,18 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
                 cur_rel = os.path.relpath(abs_path, root).replace(os.sep, "/")
                 if new_rel != cur_rel:
                     dst_abs = os.path.join(root, *new_rel.replace("\\", "/").split("/"))
-                    if not os.path.exists(dst_abs):
-                        os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
+                    os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
+                    if os.path.exists(dst_abs):
+                        # A correctly-named copy already exists — remove the stale
+                        # duplicate (e.g. old "Artist A, Artist B/" after switching
+                        # to first_artist_only) rather than leaving it orphaned.
+                        os.remove(abs_path)
+                    else:
                         shutil.move(abs_path, dst_abs)
-                        moved += 1
-                        if len(moved_log) < 50:
-                            moved_log.append({"from": cur_rel, "to": new_rel})
-                        _cleanup_empty_dirs_up(os.path.dirname(abs_path), root)
+                    moved += 1
+                    if len(moved_log) < 50:
+                        moved_log.append({"from": cur_rel, "to": new_rel})
+                    _cleanup_empty_dirs_up(os.path.dirname(abs_path), root)
 
         except Exception as exc:
             log.warning("Enrich failed for %s: %s", rel, exc)
