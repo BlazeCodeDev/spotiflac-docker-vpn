@@ -32,6 +32,7 @@ _enrich_state: dict = {
     "done":        0,
     "enriched":    0,
     "moved":       0,
+    "dupes":       0,
     "errors":      0,
     "label":       "",
     "elapsed":     None,
@@ -692,6 +693,7 @@ def api_tasks():
             dur    = f"{secs:.1f}s" if secs < 60 else f"{math.floor(secs/60)}m {secs%60:.0f}s"
             detail = f"{es['enriched']} enriched in {dur}"
             if es["moved"]:  detail += f" · {es['moved']} moved"
+            if es["dupes"]:  detail += f" · {es['dupes']} dupes removed"
             if es["errors"]: detail += f" · {es['errors']} errors"
         tasks.append({
             "id":             "lib-enrich",
@@ -701,6 +703,7 @@ def api_tasks():
             "cancellable":    es["running"],
             "enriched_count": es["enriched"],
             "moved_count":    es["moved"],
+            "dupes_count":    es.get("dupes", 0),
             "errors_count":   es["errors"],
             "done_count":     es["done"],
             "total_count":    es["total"],
@@ -969,6 +972,65 @@ def _cleanup_empty_dirs_up(dirpath: str, root: str) -> None:
         cur = os.path.dirname(cur)
 
 
+# Quality rank for deduplication — lower is better
+_EXT_QUALITY = {".flac": 0, ".wav": 0, ".m4a": 1, ".mp3": 2,
+                ".ogg": 2, ".opus": 2, ".aac": 2, ".wma": 3}
+
+
+def _find_duplicate_tracks(rel_paths: list[str], root: str) -> list[str]:
+    """Return the rel-paths of duplicate tracks to remove, keeping the best copy.
+
+    Identity key: (normalised first artist, normalised title, duration bucket).
+    Duration is bucketed to ±5 s to tolerate minor format differences.
+    When two copies are found, the lower-quality or smaller file is discarded.
+    """
+    from mutagen import File as MFile
+
+    seen: dict[tuple, tuple[int, int, str]] = {}  # key → (quality, size, rel)
+    to_remove: list[str] = []
+
+    for rel in rel_paths:
+        abs_path = os.path.join(root, *rel.replace("\\", "/").split("/"))
+        if not os.path.isfile(abs_path):
+            continue
+        try:
+            audio = MFile(abs_path, easy=True)
+            if audio is None:
+                continue
+            title  = re.sub(r"[^\w]", "",
+                            str((audio.get("title") or [""])[0]).lower())
+            artist = re.sub(r"[^\w]", "",
+                            str((audio.get("albumartist") or
+                                 audio.get("artist") or [""])[0])
+                            .split(",")[0].lower())
+            if not title or not artist:
+                continue
+            # Bucket duration to nearest 5 s so minor encoding differences
+            # between formats don't prevent matching.
+            dur = round(getattr(audio.info, "length", 0) / 5) * 5
+            key = (artist, title, dur)
+
+            ext  = os.path.splitext(abs_path)[1].lower()
+            qual = _EXT_QUALITY.get(ext, 99)
+            size = os.path.getsize(abs_path)
+
+            if key in seen:
+                prev_qual, prev_size, prev_rel = seen[key]
+                if qual < prev_qual or (qual == prev_qual and size > prev_size):
+                    # Current copy is better — discard the previous one
+                    to_remove.append(prev_rel)
+                    seen[key] = (qual, size, rel)
+                else:
+                    # Previous copy is better or equal — discard current
+                    to_remove.append(rel)
+            else:
+                seen[key] = (qual, size, rel)
+        except Exception:
+            continue
+
+    return to_remove
+
+
 def _run_enrich_bg(rel_paths: list, root: str, providers: list,
                    use_mb: bool, fmt: str, enrich_all: bool = False) -> None:
     """Background thread: enriches files and updates _enrich_state."""
@@ -987,8 +1049,25 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
             with _enrich_lock:
                 _enrich_state.update(running=False, elapsed=0.0)
             return
-        with _enrich_lock:
-            _enrich_state["total"] = len(rel_paths)
+
+    # ── Deduplication pre-pass ────────────────────────────────────────────────
+    dupes = 0
+    dup_rels = _find_duplicate_tracks(rel_paths, root)
+    if dup_rels:
+        dup_set = set(dup_rels)
+        for rel in dup_rels:
+            abs_path = os.path.join(root, *rel.replace("\\", "/").split("/"))
+            try:
+                os.remove(abs_path)
+                _cleanup_empty_dirs_up(os.path.dirname(abs_path), root)
+                dupes += 1
+                log.info("Dedup: removed duplicate %s", rel)
+            except OSError as exc:
+                log.warning("Dedup: could not remove %s: %s", rel, exc)
+        rel_paths = [r for r in rel_paths if r not in dup_set]
+
+    with _enrich_lock:
+        _enrich_state["total"] = len(rel_paths)
 
     try:
         from SpotiFLAC.core.metadata_enrichment import enrich_metadata as _enrich
@@ -1013,8 +1092,8 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
     t0       = time.monotonic()
 
     with _enrich_lock:
-        _enrich_state.update(total=total, done=0, enriched=0, moved=0, errors=0,
-                             error_log=[], moved_log=[], started_at=t0)
+        _enrich_state.update(total=total, done=0, enriched=0, moved=0, dupes=dupes,
+                             errors=0, error_log=[], moved_log=[], started_at=t0)
 
     for i, rel in enumerate(rel_paths):
         if _enrich_cancel.is_set():
@@ -1111,10 +1190,11 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
     elapsed = time.monotonic() - t0
     with _enrich_lock:
         _enrich_state.update(running=False, elapsed=elapsed,
-                             enriched=enriched, moved=moved, errors=errors,
+                             enriched=enriched, moved=moved, dupes=dupes,
+                             errors=errors,
                              error_log=list(error_log), moved_log=list(moved_log))
-    log.info("Enrich done — %d enriched, %d moved, %d errors in %.1fs",
-             enriched, moved, errors, elapsed)
+    log.info("Enrich done — %d enriched, %d moved, %d dupes removed, %d errors in %.1fs",
+             enriched, moved, dupes, errors, elapsed)
 
 
 @bp.post("/api/library/enrich")
