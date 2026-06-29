@@ -142,6 +142,7 @@ def _do_sync(username: str, cancel: threading.Event | None = None) -> dict:
 
     import settings as _settings
     import worker
+    import lib_index
     from config import Config
 
     processed   = []
@@ -196,6 +197,11 @@ def _do_sync(username: str, cancel: threading.Event | None = None) -> dict:
             if not spotify:
                 skipped += 1
                 log.debug("LB: no Spotify URL for '%s'", track.get("title", "?"))
+                continue
+            track_title = track.get("title") or ""
+            if track_title and lib_index.check([track_title])[0]:
+                skipped += 1
+                log.debug("LB: already in library '%s'", track_title)
                 continue
             worker.enqueue(
                 url          = spotify,
