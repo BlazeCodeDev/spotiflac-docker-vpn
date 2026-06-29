@@ -311,13 +311,18 @@ def api_search():
         for a in albums_obj.get("items", []):
             if not a:
                 continue
-            artists     = ", ".join(ar["name"] for ar in a.get("artists", []))
+            artists      = ", ".join(ar["name"] for ar in a.get("artists", []))
             first_artist = (a.get("artists") or [{}])[0].get("name", "")
-            # Deduplicate: Spotify returns the same album multiple times for
-            # reissues/remasters under different release dates. Keep only the
-            # first (most relevant) result per (title, first artist) pair.
+            track_count  = a.get("total_tracks") or 0
+            # Deduplicate by (normalised title, first artist, track count).
+            # Spotify catalogues the same album under multiple IDs with different
+            # release dates. They always share the same name and track count, so
+            # that triple is a reliable identity signal.  Albums that genuinely
+            # differ (e.g. a Deluxe with bonus tracks) have a different count and
+            # are kept as separate results.
             _album_key = (re.sub(r"[^\w]", "", a["name"].lower()),
-                          re.sub(r"[^\w]", "", first_artist.lower()))
+                          re.sub(r"[^\w]", "", first_artist.lower()),
+                          track_count)
             if _album_key in _seen_albums:
                 continue
             _seen_albums.add(_album_key)
@@ -329,7 +334,7 @@ def api_search():
                 "subtitle":    artists,
                 "cover_url":   imgs[-1]["url"] if imgs else None,
                 "url":         f"https://open.spotify.com/album/{a['id']}",
-                "track_count": a.get("total_tracks"),
+                "track_count": track_count or None,
                 "year":        year or None,
             })
         for p in playlists_obj.get("items", []):
@@ -760,6 +765,25 @@ _AUDIO_EXTS      = frozenset({".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", 
 _ENRICH_AUDIO    = frozenset({".flac", ".mp3", ".m4a"})  # formats we can write tags to
 _FEAT_RE    = re.compile(r"\s+(?:feat\.?|ft\.?|featuring)\s+.*$", re.IGNORECASE)
 
+# Strips trailing edition/remaster/year noise from album names so that
+# "Album (2020 Remaster)", "Album (Deluxe Edition)", and "Album (1993)"
+# all normalise to "Album" for deduplication and folder organisation.
+_ALBUM_NOISE_RE = re.compile(
+    r'\s*[\(\[]\s*(?:'
+    r'(?:19|20)\d{2}(?:[\s\w]*)?'                             # (1993), (2020 Remaster), (2011 …)
+    r'|(?:deluxe|super|special|expanded|anniversary|'
+    r'   collectors?|limited|bonus|explicit)(?:\s+[\w\s]*)?'  # (Deluxe Edition), (Bonus Tracks)
+    r'|remaster(?:ed)?'                                       # (Remastered)
+    r')\s*[\)\]]'
+    r'|\s*[-–]\s*(?:(?:19|20)\d{2}\s+)?remaster(?:ed)?\s*$', # - Remastered / - 2020 Remastered
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _norm_album(name: str) -> str:
+    """Normalise album name: strip edition/year noise, then remove non-word chars."""
+    return re.sub(r"[^\w]", "", _ALBUM_NOISE_RE.sub("", name).strip().lower())
+
 
 def _org_main_artist(audio_easy) -> str:
     """Return the primary artist, matching the first_artist_only=True download behaviour.
@@ -788,8 +812,11 @@ def _org_san(s: str, fallback: str = "_") -> str:
 
 def _org_target(audio_easy, fmt: str, ext: str) -> str:
     """Compute the target relative path for an audio file given its easy tags."""
-    artist = _org_san(_org_main_artist(audio_easy))
-    album  = _org_san(str((audio_easy.get("album")  or ["Unknown Album"])[0]).strip() or "Unknown Album")
+    artist     = _org_san(_org_main_artist(audio_easy))
+    raw_album  = str((audio_easy.get("album") or ["Unknown Album"])[0]).strip() or "Unknown Album"
+    # Strip edition/year noise from album names so that "Album (2020 Remaster)"
+    # and "Album (1993)" both organise into the same "Album/" folder.
+    album      = _org_san(_ALBUM_NOISE_RE.sub("", raw_album).strip() or raw_album)
     title  = _org_san(str((audio_easy.get("title")  or ["Unknown Title"])[0]).strip()  or "Unknown Title")
 
     raw_trk = str((audio_easy.get("tracknumber") or ["0"])[0])
