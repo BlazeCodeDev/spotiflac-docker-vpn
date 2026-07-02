@@ -891,6 +891,24 @@ def _write_enriched_tags(abs_path: str, tags: dict) -> bool:
     return False
 
 
+def _has_mbid(abs_path: str) -> bool:
+    """Return True if the file already has a MusicBrainz recording id (mbid) tag."""
+    ext = os.path.splitext(abs_path)[1].lower()
+    try:
+        if ext == ".flac":
+            from mutagen.flac import FLAC
+            return bool(FLAC(abs_path).get("musicbrainz_trackid"))
+        elif ext == ".mp3":
+            from mutagen.id3 import ID3
+            return any(f.desc == "MUSICBRAINZ_TRACKID" for f in ID3(abs_path).getall("TXXX"))
+        elif ext == ".m4a":
+            from mutagen.mp4 import MP4
+            return "----:com.apple.iTunes:MUSICBRAINZ_TRACKID" in MP4(abs_path)
+    except Exception:
+        pass
+    return False
+
+
 def _has_cover(abs_path: str) -> bool:
     """Return True if the file already has embedded cover art."""
     ext = os.path.splitext(abs_path)[1].lower()
@@ -1078,12 +1096,19 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
         log.warning("Metadata enrichment not available — upgrade SpotiFLAC")
         return
 
-    _mb_genre = None
+    _mb_lookup = _mb_to_tags = None
     if use_mb:
         try:
-            from SpotiFLAC.core.musicbrainz import fetch_genre_sync as _mb_genre
+            from SpotiFLAC.core.musicbrainz import fetch_mb_metadata_smart, mb_result_to_tags as _mb_to_tags
+            _mb_lookup = lambda isrc, title, artist: fetch_mb_metadata_smart(isrc, title, artist)
         except ImportError:
-            pass
+            try:
+                # Older SpotiFLAC without the text-search fallback (see
+                # patch_spotiflac.py Patch 4) — ISRC-only lookup still works.
+                from SpotiFLAC.core.musicbrainz import fetch_mb_metadata, mb_result_to_tags as _mb_to_tags
+                _mb_lookup = lambda isrc, title, artist: fetch_mb_metadata(isrc)
+            except ImportError:
+                pass
 
     total    = len(rel_paths)
     enriched = moved = errors = 0
@@ -1129,14 +1154,20 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
 
             has_genre = bool(str((audio.get("genre") or [""])[0]).strip())
             has_bpm   = bool(str((audio.get("bpm")   or [""])[0]).strip())
+            has_mbid  = _has_mbid(abs_path)
 
-            if not (has_genre and has_bpm):
+            if not (has_genre and has_bpm and has_mbid):
                 result   = _enrich(title, artist, isrc=isrc, providers=providers, timeout_s=12)
-
-                if not result.genre and _mb_genre and isrc:
-                    result.genre = _mb_genre(isrc) or ""
-
                 tags     = result.as_tags()
+
+                if not has_mbid and (isrc or (title and artist)) and _mb_lookup and _mb_to_tags:
+                    try:
+                        mb_tags = _mb_to_tags(_mb_lookup(isrc, title, artist))
+                        for k, v in mb_tags.items():
+                            tags.setdefault(k, v)
+                    except Exception as exc:
+                        log.debug("MusicBrainz lookup failed for %s: %s", rel, exc)
+
                 did_save = _write_enriched_tags(abs_path, tags)
 
                 cover_url = result.cover_url_hd
