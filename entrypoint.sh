@@ -16,9 +16,69 @@ debug() {
 # ─────────────────────────────────────────────────────────────────────────────
 CREDS_DIR=/vpn
 mkdir -p "$CREDS_DIR"
-if ! chmod 700 "$CREDS_DIR" 2>/dev/null; then
-    log "WARN: chmod 700 on $CREDS_DIR failed — volume may be read-only"
+# 0711: the app runs as an unprivileged user (see run_as_app) and must be able
+# to *traverse* /vpn to reach its state subdir, but must NOT be able to list or
+# read the VPN credentials living directly in /vpn. Every secret file in here is
+# additionally locked to 0600 (see lock_down_creds), so 0711 exposes nothing.
+if ! chmod 711 "$CREDS_DIR" 2>/dev/null; then
+    log "WARN: chmod 711 on $CREDS_DIR failed — volume may be read-only"
 fi
+
+# ── Unprivileged app user + writable app-state dir ─────────────────────────────
+# The web app / SpotiFLAC must NOT run as root: this container holds NET_ADMIN,
+# so a root-run app (or a compromised SpotiFLAC pulled from PyPI) could flush the
+# kill-switch and leak the real IP. Running as an unprivileged user without
+# NET_ADMIN makes the kill-switch actually enforcing against the app.
+#
+# PUID/PGID default to 1000 and SHOULD be set to match the owner of the mounted
+# downloads share (e.g. the uid your CIFS/SMB mount uses) — otherwise writing
+# downloads may fail with permission errors.
+PUID="${PUID:-1000}"
+PGID="${PGID:-1000}"
+APP_USER=appuser
+APP_HOME=/home/appuser
+APP_STATE_DIR="$CREDS_DIR/state"        # app state, owned by the app user
+TUNNEL_UP_FILE="$APP_STATE_DIR/tunnel_up_since"
+
+addgroup -g "$PGID" "$APP_USER" 2>/dev/null || true
+adduser -D -H -u "$PUID" -G "$APP_USER" -h "$APP_HOME" "$APP_USER" 2>/dev/null || true
+mkdir -p "$APP_STATE_DIR" "$APP_HOME"
+
+# Migrate any pre-existing state from the old /vpn root location into the
+# app-owned subdir so upgrades don't lose settings / job history.
+for _f in jobs.json settings.json lb_state.json tunnel_up_since; do
+    if [ -f "$CREDS_DIR/$_f" ] && [ ! -f "$APP_STATE_DIR/$_f" ]; then
+        mv "$CREDS_DIR/$_f" "$APP_STATE_DIR/$_f" 2>/dev/null || true
+    fi
+done
+
+chown -R "$PUID:$PGID" "$APP_STATE_DIR" "$APP_HOME" 2>/dev/null || true
+# Best-effort: give the app user the downloads dir. No-op on CIFS/SMB mounts
+# (they honour the server-side uid) — hence the PUID guidance above.
+chown "$PUID:$PGID" /downloads 2>/dev/null || true
+
+# Point the app's state files at the writable, app-owned subdir. Exported so the
+# unprivileged child process (run_as_app) inherits them.
+export STATE_FILE="${STATE_FILE:-$APP_STATE_DIR/jobs.json}"
+export SETTINGS_FILE="${SETTINGS_FILE:-$APP_STATE_DIR/settings.json}"
+export LB_STATE_FILE="${LB_STATE_FILE:-$APP_STATE_DIR/lb_state.json}"
+export VPN_UPTIME_FILE="${VPN_UPTIME_FILE:-$TUNNEL_UP_FILE}"
+
+# Lock every credential file in /vpn to owner-only so the traversable (0711)
+# creds dir never exposes secrets to the app user.
+lock_down_creds() {
+    for _cf in config.ovpn auth.txt ca.crt tls.key wg0.conf openvpn.log; do
+        [ -f "$CREDS_DIR/$_cf" ] && chmod 600 "$CREDS_DIR/$_cf" 2>/dev/null || true
+    done
+    [ -d "$CREDS_DIR/configs" ] && chmod 700 "$CREDS_DIR/configs" 2>/dev/null || true
+}
+
+# Run a command as the unprivileged app user (drops root + NET_ADMIN). HOME is
+# injected explicitly because su-exec does not set it, and SpotiFLAC writes its
+# cache under $HOME/.cache.
+run_as_app() {
+    su-exec "$PUID:$PGID" env "HOME=$APP_HOME" "$@"
+}
 
 # ── Debug: env vars and system info at startup ────────────────────────────────
 if [ "$LOG_LEVEL" = "debug" ]; then
@@ -215,6 +275,41 @@ resolve_servers() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# DNS leak prevention
+# ─────────────────────────────────────────────────────────────────────────────
+# On a Docker network the container's resolver is Docker's embedded DNS
+# (127.0.0.11), which forwards queries UPSTREAM from the *host* namespace — i.e.
+# outside the tunnel and outside our iptables. So even with the kill-switch up,
+# every hostname lookup (deezer, tidal, musicbrainz, spotify …) would leak to
+# the ISP in cleartext, tying the real IP to the activity. Once the tunnel is up
+# we point resolv.conf at a public resolver so lookups egress through tun0/wg0.
+#
+# NOTE: musl libc (Alpine) queries all listed nameservers in parallel, so this
+# MUST be a full replacement — appending a public resolver next to 127.0.0.11
+# would still leak. During a reconnect we temporarily restore Docker's resolver
+# so OpenVPN can re-resolve the (whitelisted) server hostname while down.
+VPN_DNS="${VPN_DNS:-1.1.1.1 1.0.0.1}"
+
+set_vpn_dns() {
+    # WireGuard's wg-quick may already have installed tunnel DNS via resolvconf;
+    # only take over when resolv.conf still points at Docker's embedded resolver.
+    if ! grep -q '127.0.0.11' /etc/resolv.conf 2>/dev/null; then
+        log "DNS: resolver already changed from Docker default — leaving as-is"
+        return 0
+    fi
+    printf 'nameserver %s\n' $VPN_DNS > /etc/resolv.conf 2>/dev/null \
+        && log "DNS: lookups now routed through tunnel via: $VPN_DNS" \
+        || log "WARN: could not rewrite /etc/resolv.conf — DNS may leak"
+}
+
+restore_docker_dns() {
+    if [ -f /tmp/resolv.conf.docker ]; then
+        cat /tmp/resolv.conf.docker > /etc/resolv.conf 2>/dev/null \
+            && debug "DNS: restored Docker resolver for reconnect" || true
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Kill-switch
 # ─────────────────────────────────────────────────────────────────────────────
 apply_killswitch() {
@@ -245,10 +340,19 @@ apply_killswitch() {
     # VPN tunnel: allow all packets on the tunnel interface (no conntrack needed)
     iptables -A INPUT  -i "$IFACE_PATTERN" -j ACCEPT
     iptables -A OUTPUT -o "$IFACE_PATTERN" -j ACCEPT
-    # Web UI: allow only on the Docker bridge interface, not the VPN tunnel
+    # Web UI: allow only on the Docker bridge interface, not the VPN tunnel.
     iptables -A INPUT  -i "$DOCKER_IFACE" -p tcp --dport "$WEB_PORT" -j ACCEPT
-    iptables -A OUTPUT -o "$DOCKER_IFACE" -p tcp --sport "$WEB_PORT" -j ACCEPT
-    log "Web UI port $WEB_PORT: INPUT+OUTPUT ACCEPT on $DOCKER_IFACE only"
+    # Egress on the UI port is restricted to ESTABLISHED replies so a rogue
+    # process that binds local port 5000 can't use it as a plaintext bypass to
+    # arbitrary destinations. Fall back to the stateless rule if the conntrack
+    # match isn't available on this kernel.
+    if iptables -A OUTPUT -o "$DOCKER_IFACE" -p tcp --sport "$WEB_PORT" \
+            -m conntrack --ctstate ESTABLISHED -j ACCEPT 2>/dev/null; then
+        log "Web UI port $WEB_PORT: INPUT ACCEPT + OUTPUT ESTABLISHED-only on $DOCKER_IFACE"
+    else
+        iptables -A OUTPUT -o "$DOCKER_IFACE" -p tcp --sport "$WEB_PORT" -j ACCEPT
+        log "WARN: conntrack unavailable — Web UI port $WEB_PORT egress is stateless on $DOCKER_IFACE"
+    fi
 
     for target in $VPN_SERVERS; do
         iptables -A OUTPUT -d "$target" -j ACCEPT
@@ -340,7 +444,8 @@ wait_for_tunnel() {
     i=0
     while [ "$i" -lt "$max" ]; do
         if ip link show "$VPN_IFACE" > /dev/null 2>&1; then
-            date +%s > /vpn/tunnel_up_since
+            date +%s > "$TUNNEL_UP_FILE" 2>/dev/null || true
+            chown "$PUID:$PGID" "$TUNNEL_UP_FILE" 2>/dev/null || true
             log "Tunnel $VPN_IFACE is up"
             if [ "$LOG_LEVEL" = "debug" ]; then
                 echo "[vpn] ══════════════ Network after VPN start ══════════"
@@ -372,23 +477,39 @@ wait_for_tunnel() {
 # Update SpotiFLAC — runs after tunnel is up so pip can reach PyPI.
 # ─────────────────────────────────────────────────────────────────────────────
 update_spotiflac() {
-    log "Checking for SpotiFLAC updates..."
-    if _out=$(pip install --upgrade --target /spotiflac SpotiFLAC 2>&1); then
+    # SpotiFLAC is pulled from PyPI and even phones home at import time, so an
+    # auto-upgrade is a supply-chain surface. Set SPOTIFLAC_VERSION to pin an
+    # exact release (recommended) — this skips chasing "latest". The privilege
+    # drop in start_app is what contains the blast radius either way: a rogue
+    # release can't touch the kill-switch without NET_ADMIN.
+    if [ -n "$SPOTIFLAC_VERSION" ]; then
+        log "SpotiFLAC pinned to $SPOTIFLAC_VERSION — installing exact version"
+        _spec="SpotiFLAC==$SPOTIFLAC_VERSION"
+        _flags=""
+    else
+        log "Checking for SpotiFLAC updates (unpinned; set SPOTIFLAC_VERSION to pin)..."
+        _spec="SpotiFLAC"
+        _flags="--upgrade"
+    fi
+
+    if _out=$(pip install $_flags --target /spotiflac "$_spec" 2>&1); then
         _rc=0
     else
         _rc=$?
     fi
     if [ "$_rc" -ne 0 ]; then
-        err "SpotiFLAC update check failed: $(echo "$_out" | tail -1)"
+        err "SpotiFLAC install check failed: $(echo "$_out" | tail -1)"
         return
     fi
     if echo "$_out" | grep -qi "successfully installed"; then
         _ver=$(echo "$_out" | grep -o "SpotiFLAC-[0-9][^ ]*" | head -1)
-        log "SpotiFLAC upgraded to ${_ver:-new version} — re-patching"
+        log "SpotiFLAC installed ${_ver:-new version} — re-patching"
         python3 /app/patch_spotiflac.py 2>&1 | sed 's/^/[vpn] /' || true
     else
-        log "SpotiFLAC already up to date"
+        log "SpotiFLAC already at requested version"
     fi
+    # /spotiflac is written as root; make sure the app user can import it.
+    chmod -R a+rX /spotiflac 2>/dev/null || true
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -400,12 +521,14 @@ start_app() {
     APP_CMD="${APP_CMD:-gunicorn --bind 0.0.0.0:${PORT:-5000} --workers 1 --threads 4 --timeout 300 app:app}"
     WEB_PORT="${PORT:-5000}"
 
-    log "Starting app: $APP_CMD"
+    log "Starting app as ${APP_USER} (uid $PUID) — no NET_ADMIN, kill-switch enforcing"
 
     # Unbuffered Python output so logs appear immediately in docker logs
     export PYTHONUNBUFFERED=1
 
-    sh -c "$APP_CMD" 2>&1 &
+    # Drop root (and thus NET_ADMIN/NET_RAW): the app can no longer alter the
+    # kill-switch even if SpotiFLAC is compromised.
+    run_as_app sh -c "$APP_CMD" 2>&1 &
     APP_PID=$!
     log "App PID: $APP_PID"
 
@@ -441,6 +564,9 @@ start_app() {
 reconnect_vpn() {
     _max="${VPN_RECONNECT_TRIES:-3}"
     log "Reconnecting VPN (kill-switch stays active, up to $_max attempts)..."
+    # Tunnel is down: put Docker's resolver back so OpenVPN can re-resolve its
+    # (IP-whitelisted) server hostname. set_vpn_dns runs again once tunnel is up.
+    restore_docker_dns
     _try=1
     while [ "$_try" -le "$_max" ]; do
         log "Reconnect attempt $_try/$_max..."
@@ -471,7 +597,9 @@ reconnect_vpn() {
         _w=0
         while [ "$_w" -lt "$_max_wait" ]; do
             if ip link show "$VPN_IFACE" > /dev/null 2>&1; then
-                date +%s > /vpn/tunnel_up_since
+                date +%s > "$TUNNEL_UP_FILE" 2>/dev/null || true
+                chown "$PUID:$PGID" "$TUNNEL_UP_FILE" 2>/dev/null || true
+                set_vpn_dns
                 log "Tunnel $VPN_IFACE is up (attempt $_try)"
                 return 0
             fi
@@ -565,16 +693,22 @@ monitor_tunnel() {
 log "Applying SpotiFLAC patches..."
 python3 /app/patch_spotiflac.py 2>&1 | sed 's/^/[vpn] /' || true
 
+# Snapshot Docker's embedded resolver BEFORE we start swapping DNS, so it can
+# be restored during reconnects (see restore_docker_dns).
+cp /etc/resolv.conf /tmp/resolv.conf.docker 2>/dev/null || true
+
 case "$VPN_PROTOCOL" in
     openvpn)   setup_openvpn; _init_config_rotation ;;
     wireguard) setup_wireguard ;;
 esac
 
-resolve_servers
+lock_down_creds        # 0600 every secret in /vpn before the app user exists
+resolve_servers        # uses Docker DNS (still active — kill-switch not up yet)
 apply_killswitch
 start_vpn
 wait_for_tunnel
 setup_return_routing
+set_vpn_dns            # route DNS through the tunnel (fixes ISP DNS leak)
 update_spotiflac
 start_app
 monitor_tunnel

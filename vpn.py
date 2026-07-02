@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import subprocess
 import time
 import urllib.request
@@ -7,7 +8,9 @@ import urllib.request
 log               = logging.getLogger(__name__)
 _ip_cache:  dict  = {}
 _connected_since: float | None = None
-_VPN_UPTIME_FILE = "/vpn/tunnel_up_since"
+# The entrypoint writes this file; its location moved to an app-user-writable
+# state dir when the app was made to run unprivileged, so it's env-configurable.
+_VPN_UPTIME_FILE = os.environ.get("VPN_UPTIME_FILE", "/vpn/tunnel_up_since")
 
 
 def _read_tunnel_start() -> float | None:

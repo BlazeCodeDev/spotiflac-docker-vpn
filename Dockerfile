@@ -10,7 +10,13 @@ RUN apk add --no-cache \
     bash \
     bind-tools \
     iputils \
-    ffmpeg
+    ffmpeg \
+    su-exec
+
+# App runs as an unprivileged user (entrypoint drops root via su-exec) so a
+# compromised SpotiFLAC can't touch the NET_ADMIN kill-switch. The uid/gid are
+# re-created at runtime from PUID/PGID; this just seeds the home directory.
+RUN mkdir -p /home/appuser && chmod 755 /home/appuser
 
 # App dependencies (SpotiFLAC is installed separately for easy in-place upgrades)
 RUN pip install --no-cache-dir flask python-dotenv gunicorn
