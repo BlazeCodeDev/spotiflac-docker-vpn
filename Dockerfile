@@ -24,7 +24,10 @@ RUN pip install --no-cache-dir flask python-dotenv gunicorn
 # SpotiFLAC goes to /spotiflac so it can be upgraded via a named volume without
 # rebuilding the image.  Docker copies this directory into a fresh named volume
 # on first run, and subsequent pip upgrades via the UI persist there.
-RUN pip install --no-cache-dir --target /spotiflac SpotiFLAC
+# Pinned to a FIXED version (kept in lockstep with entrypoint.sh SPOTIFLAC_PINNED
+# and with patch_spotiflac.py, whose matches are version-specific). Not
+# auto-upgraded on boot. Bump only after re-verifying the patches apply.
+RUN pip install --no-cache-dir --target /spotiflac "SpotiFLAC==1.2.0"
 ENV PYTHONPATH=/spotiflac
 
 RUN mkdir -p /vpn /downloads /app/templates && \

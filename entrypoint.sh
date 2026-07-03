@@ -6,6 +6,12 @@ set -e
 # LOG_LEVEL=debug           — iptables, network, env vars, app status
 LOG_LEVEL="${LOG_LEVEL:-info}"
 
+# Pinned SpotiFLAC version — single source of truth. Kept in lockstep with the
+# Dockerfile build install and with patch_spotiflac.py (whose string matches are
+# version-specific). Bump only after re-verifying the patches against the new
+# release. Set the SPOTIFLAC_VERSION env to override at runtime.
+SPOTIFLAC_PINNED="1.2.0"
+
 log()   { echo "[vpn] $(date '+%H:%M:%S') INFO  $*"; }
 err()   { echo "[vpn] $(date '+%H:%M:%S') ERROR $*" >&2; }
 die()   { err "$*"; exit 1; }
@@ -477,36 +483,33 @@ wait_for_tunnel() {
 # Update SpotiFLAC — runs after tunnel is up so pip can reach PyPI.
 # ─────────────────────────────────────────────────────────────────────────────
 update_spotiflac() {
-    # SpotiFLAC is pulled from PyPI and even phones home at import time, so an
-    # auto-upgrade is a supply-chain surface. Set SPOTIFLAC_VERSION to pin an
-    # exact release (recommended) — this skips chasing "latest". The privilege
-    # drop in start_app is what contains the blast radius either way: a rogue
-    # release can't touch the kill-switch without NET_ADMIN.
-    if [ -n "$SPOTIFLAC_VERSION" ]; then
-        log "SpotiFLAC pinned to $SPOTIFLAC_VERSION — installing exact version"
-        _spec="SpotiFLAC==$SPOTIFLAC_VERSION"
-        _flags=""
-    else
-        log "Checking for SpotiFLAC updates (unpinned; set SPOTIFLAC_VERSION to pin)..."
-        _spec="SpotiFLAC"
-        _flags="--upgrade"
-    fi
+    # SpotiFLAC is pinned to a FIXED version, never auto-upgraded to "latest".
+    # Rationale:
+    #   * Reproducibility — the same code runs on every boot.
+    #   * Supply chain — SpotiFLAC is pulled from PyPI and phones home at import
+    #     time; auto-chasing latest would silently ingest unreviewed releases.
+    #   * Patch compatibility — patch_spotiflac.py (the mbid fixes etc.) matches
+    #     this version's source; a newer release can reformat those lines and
+    #     silently skip the patches.
+    # Override with SPOTIFLAC_VERSION only after re-verifying the patches apply.
+    SPOTIFLAC_VERSION="${SPOTIFLAC_VERSION:-$SPOTIFLAC_PINNED}"
+    log "Installing SpotiFLAC (pinned) $SPOTIFLAC_VERSION..."
 
-    if _out=$(pip install $_flags --target /spotiflac "$_spec" 2>&1); then
+    if _out=$(pip install --target /spotiflac "SpotiFLAC==$SPOTIFLAC_VERSION" 2>&1); then
         _rc=0
     else
         _rc=$?
     fi
     if [ "$_rc" -ne 0 ]; then
-        err "SpotiFLAC install check failed: $(echo "$_out" | tail -1)"
+        err "SpotiFLAC install failed: $(echo "$_out" | tail -1)"
         return
     fi
     if echo "$_out" | grep -qi "successfully installed"; then
         _ver=$(echo "$_out" | grep -o "SpotiFLAC-[0-9][^ ]*" | head -1)
-        log "SpotiFLAC installed ${_ver:-new version} — re-patching"
+        log "SpotiFLAC installed ${_ver:-$SPOTIFLAC_VERSION} — re-patching"
         python3 /app/patch_spotiflac.py 2>&1 | sed 's/^/[vpn] /' || true
     else
-        log "SpotiFLAC already at requested version"
+        log "SpotiFLAC already at pinned version $SPOTIFLAC_VERSION"
     fi
     # /spotiflac is written as root; make sure the app user can import it.
     chmod -R a+rX /spotiflac 2>/dev/null || true
