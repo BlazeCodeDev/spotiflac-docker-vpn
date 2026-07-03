@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir flask python-dotenv gunicorn
 # Pinned to a FIXED version (kept in lockstep with entrypoint.sh SPOTIFLAC_PINNED
 # and with patch_spotiflac.py, whose matches are version-specific). Not
 # auto-upgraded on boot. Bump only after re-verifying the patches apply.
-RUN pip install --no-cache-dir --target /spotiflac "SpotiFLAC==1.2.0"
+RUN pip install --no-cache-dir --target /spotiflac "SpotiFLAC==1.3.1"
 ENV PYTHONPATH=/spotiflac
 
 RUN mkdir -p /vpn /downloads /app/templates && \

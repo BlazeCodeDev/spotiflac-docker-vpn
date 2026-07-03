@@ -1,30 +1,36 @@
 """
-Build-time patches for SpotiFLAC:
+Build-time patches for SpotiFLAC (targets the pinned version — see
+entrypoint.sh SPOTIFLAC_PINNED / Dockerfile). Every patch is a guarded,
+idempotent string replacement: if the anchor text isn't found (e.g. a version
+bump reformatted it) the patch reports and skips rather than corrupting a file.
 
-1. models.py — fix build_filename so / in a filename format is kept as a
-   directory separator instead of being stripped by the sanitize() call.
+Ensure the missing MusicBrainz recording id (mbid) — and the rest of the MB
+tag set — actually lands on *every* downloaded track:
 
-2. downloader.py — forward opts.quality to provider.download_track(), mapping
-   abstract quality levels ("lossless", "hires") to provider-specific strings.
+  A. core/musicbrainz.py — the built-in lookup is ISRC-only, and a large share
+     of tracks either have no ISRC or one MusicBrainz doesn't index, so they
+     silently get no mbid. Add a title+artist text-search fallback, exposed as
+     fetch_mb_metadata_smart (sync) and fetch_mb_metadata_smart_async (async),
+     and route AsyncMBFetch through it.
 
-3. providers/deezer.py — the MusicBrainz tags (incl. MUSICBRAINZ_TRACKID, the
-   recording mbid) were only embedded when downloading an album (is_album=True),
-   so single-track downloads never got an mbid. Every other provider embeds
-   mb_tags unconditionally — align deezer.py with that.
+  B. providers/*.py — providers only attempted a MB lookup when an ISRC was
+     present (`AsyncMBFetch(isrc) if isrc else None`, or `if metadata.isrc:`),
+     so ISRC-less tracks (common on YouTube, not rare elsewhere) never got a
+     lookup. Always look up, passing title/artist for the text fallback.
 
-4. core/musicbrainz.py — MusicBrainz lookups were ISRC-only, and a huge
-   fraction of tracks either have no ISRC or have one MusicBrainz doesn't
-   index, so they silently never got an mbid. Adds a title+artist text-search
-   fallback (fetch_mb_metadata_smart) used whenever the ISRC lookup comes up
-   empty.
+  C. providers/deezer.py — additionally, Deezer only embedded the MB tags for
+     album downloads (`extra_tags=mb_tags if is_album else {}`), so single-track
+     Deezer downloads never got an mbid even when the lookup succeeded.
 
-5. providers/*.py — every provider only attempted a MusicBrainz lookup at all
-   when metadata.isrc was truthy, so tracks without an ISRC (very common for
-   YouTube, and not rare elsewhere) never got a lookup attempt in the first
-   place. Always construct AsyncMBFetch (passing title/artist along for the
-   new text-search fallback) instead of gating on ISRC presence.
+NOTE for version bumps: SpotiFLAC ships both a sync provider style
+(AsyncMBFetch) and an async one (await fetch_mb_metadata_async). Both are
+handled below. If a future release changes these call shapes, the affected
+patch will log "pattern not found — skipping" and the mbid feature must be
+re-ported (see git history for the 1.2.0 -> 1.3.1 port).
 """
-import importlib.util, pathlib, sys
+import importlib.util
+import pathlib
+import sys
 
 _spec = importlib.util.find_spec("SpotiFLAC")
 if _spec is None or _spec.origin is None:
@@ -32,227 +38,82 @@ if _spec is None or _spec.origin is None:
     sys.exit(1)
 _BASE = pathlib.Path(_spec.origin).parent
 
-# ---------------------------------------------------------------------------
-# Patch 1: models.py — preserve / as directory separator in build_filename
-# ---------------------------------------------------------------------------
 
-_MODELS = _BASE / "core/models.py"
+def _apply(rel_path, old, new, note, *, already_marker=None):
+    """Idempotent single replacement with clear logging."""
+    fpath = _BASE / rel_path
+    if not fpath.exists():
+        print(f"[patch] {rel_path}: file not found — skipping")
+        return
+    text = fpath.read_text()
+    marker = already_marker if already_marker is not None else new
+    if marker in text:
+        print(f"[patch] {rel_path}: already patched — skipping")
+        return
+    if old not in text:
+        print(f"[patch] {rel_path}: pattern not found — skipping (different version?)")
+        return
+    fpath.write_text(text.replace(old, new, 1))
+    print(f"[patch] {rel_path}: {note}")
 
-_MODELS_OLD = "    result = sanitize(result)\n"
-_MODELS_NEW = (
-    "    # Sanitize each path component individually so / separators are kept.\n"
-    "    result = \"/\".join(\n"
-    "        re.sub(r'[\\\\*?:\"<>|]', \"\", part).strip()\n"
-    "        for part in result.split(\"/\")\n"
-    "        if part.strip()\n"
-    "    )\n"
-)
-
-text = _MODELS.read_text()
-if _MODELS_OLD not in text:
-    print(f"[patch] {_MODELS.name}: already patched or different version — skipping")
-else:
-    _MODELS.write_text(text.replace(_MODELS_OLD, _MODELS_NEW, 1))
-    print(f"[patch] {_MODELS.name}: build_filename patched to preserve / separators")
 
 # ---------------------------------------------------------------------------
-# Patch 2: downloader.py — forward quality per provider
+# Patch A: core/musicbrainz.py — title/artist text-search fallback
 # ---------------------------------------------------------------------------
+# Reuses the existing helpers already present in this module:
+#   _query_recordings / _query_recordings_async, _parse_mb_response,
+#   should_skip_mb, set_mb_status, fetch_mb_metadata[_async].
 
-_DOWNLOADER = _BASE / "downloader.py"
-
-_DL_INSERT_BEFORE = "def _provider_extension(name: str) -> str:\n"
-_DL_QUALITY_MAP = (
-    "_QUALITY_MAP: dict[str, dict[str, str]] = {\n"
-    "    \"tidal\":  {\"high\": \"LOSSLESS\", \"lossless\": \"LOSSLESS\", \"hires\": \"HI_RES\"},\n"
-    "    \"qobuz\":  {\"high\": \"6\",        \"lossless\": \"7\",        \"hires\": \"27\"},\n"
-    "}\n"
-    "\n"
-    "def _resolve_quality(provider_name: str, quality: str) -> str:\n"
-    "    return _QUALITY_MAP.get(provider_name, {}).get(quality, quality)\n"
-    "\n"
-    "\n"
-)
-
-_DL_TRACK_OLD = (
-    "            first_artist_only   = opts.first_artist_only,\n"
-    "            allow_fallback      = opts.allow_fallback,\n"
-)
-_DL_TRACK_NEW = (
-    "            first_artist_only   = opts.first_artist_only,\n"
-    "            quality             = _resolve_quality(provider.name, opts.quality),\n"
-    "            allow_fallback      = opts.allow_fallback,\n"
-)
-
-dl_text = _DOWNLOADER.read_text()
-
-if _DL_TRACK_NEW in dl_text:
-    print(f"[patch] {_DOWNLOADER.name}: already patched — skipping")
-else:
-    if _DL_INSERT_BEFORE not in dl_text or _DL_TRACK_OLD not in dl_text:
-        print(f"[patch] {_DOWNLOADER.name}: pattern not found — skipping (different version?)")
-    else:
-        dl_text = dl_text.replace(_DL_INSERT_BEFORE, _DL_QUALITY_MAP + _DL_INSERT_BEFORE, 1)
-        dl_text = dl_text.replace(_DL_TRACK_OLD, _DL_TRACK_NEW, 1)
-        _DOWNLOADER.write_text(dl_text)
-        print(f"[patch] {_DOWNLOADER.name}: quality forwarded to provider.download_track()")
-
-# ---------------------------------------------------------------------------
-# Patch 3: providers/deezer.py — always embed MusicBrainz tags (mbid), not
-# only for album downloads.
-# ---------------------------------------------------------------------------
-
-_DEEZER = _BASE / "providers/deezer.py"
-
-_DEEZER_OLD = "                extra_tags              = mb_tags if is_album else {},\n"
-_DEEZER_NEW = "                extra_tags              = mb_tags,\n"
-
-deezer_text = _DEEZER.read_text()
-if _DEEZER_OLD not in deezer_text:
-    print(f"[patch] {_DEEZER.name}: already patched or different version — skipping")
-else:
-    _DEEZER.write_text(deezer_text.replace(_DEEZER_OLD, _DEEZER_NEW, 1))
-    print(f"[patch] {_DEEZER.name}: MusicBrainz tags (mbid) now embedded for single-track downloads too")
-
-# ---------------------------------------------------------------------------
-# Patch 4: core/musicbrainz.py — title/artist text-search fallback for tracks
-# whose ISRC is missing or isn't indexed by MusicBrainz.
-# ---------------------------------------------------------------------------
-
-_MB_CORE = _BASE / "core/musicbrainz.py"
-
-_MB_NEW_FUNCS = r'''def _parse_mb_recording(data: dict) -> dict:
-    """Shared response parser for both ISRC and text-search recording lookups."""
-    parsed: dict = {
-        "genre": "", "original_date": "", "bpm": "", "mbid_track": "",
-        "mbid_album": "", "mbid_artist": "", "mbid_relgroup": "",
-        "mbid_albumartist": "", "albumartist_sort": "", "catalognumber": "",
-        "label": "", "barcode": "", "organization": "",
-        "country": "", "script": "", "status": "",
-        "media": "", "type": "", "artist_sort": ""
-    }
-
-    recs = data.get("recordings", [])
-    if recs:
-        rec = recs[0]
-        parsed["mbid_track"] = rec.get("id", "")
-        parsed["original_date"] = rec.get("first-release-date", "")
-        parsed["bpm"] = str(rec.get("bpm", "")) if rec.get("bpm") else ""
-
-        credits = rec.get("artist-credit", [])
-        if credits:
-            artist_ids = []
-            sort_names = []
-            for c in credits:
-                artist_obj = c.get("artist", {})
-                a_id = artist_obj.get("id")
-                a_sort = artist_obj.get("sort-name", "")
-                phrase = c.get("joinphrase", "")
-                if a_id: artist_ids.append(a_id)
-                if a_sort: sort_names.append(a_sort + phrase)
-            parsed["mbid_artist"] = "; ".join(artist_ids)
-            parsed["artist_sort"] = "".join(sort_names)
-
-        all_tags = rec.get("tags", [])
-        for c in credits:
-            all_tags.extend(c.get("artist", {}).get("tags", []))
-        if all_tags:
-            sorted_tags = sorted(all_tags, key=lambda x: x.get("count", 0), reverse=True)
-            genres = []
-            for t in sorted_tags:
-                name = t.get("name", "").title()
-                if name and name not in genres: genres.append(name)
-            parsed["genre"] = "; ".join(genres[:5])
-
-        releases = rec.get("releases", [])
-        if releases:
-            def _release_score(r: dict) -> int:
-                score = 0
-                if r.get("barcode"): score += 2
-                if r.get("label-info"): score += 2
-                if r.get("country"): score += 1
-                if r.get("status") == "Official": score += 1
-                return score
-
-            rel = max(releases, key=_release_score)
-            parsed["mbid_album"]    = rel.get("id", "")
-            parsed["mbid_relgroup"] = rel.get("release-group", {}).get("id", "")
-            parsed["status"]        = rel.get("status", "")
-            parsed["type"]          = rel.get("release-group", {}).get("primary-type", "")
-            parsed["country"]       = rel.get("country", "")
-            parsed["script"]        = rel.get("text-representation", {}).get("script", "")
-            media = rel.get("media", [])
-            if media:
-                parsed["media"] = media[0].get("format", "")
-
-            rel_credits = rel.get("artist-credit", [])
-            if rel_credits:
-                aa_ids = []
-                aa_sort_names = []
-                for c in rel_credits:
-                    artist_obj = c.get("artist", {})
-                    a_id   = artist_obj.get("id")
-                    a_sort = artist_obj.get("sort-name", "")
-                    phrase = c.get("joinphrase", "")
-                    if a_id:   aa_ids.append(a_id)
-                    if a_sort: aa_sort_names.append(a_sort + phrase)
-                parsed["mbid_albumartist"] = "; ".join(aa_ids)
-                parsed["albumartist_sort"] = "".join(aa_sort_names)
-
-            for r in releases:
-                if not parsed.get("barcode") and r.get("barcode"):
-                    parsed["barcode"] = r["barcode"]
-                for li in r.get("label-info", []):
-                    lbl = li.get("label") or {}
-                    if not parsed.get("label") and lbl.get("name"):
-                        parsed["label"]        = lbl["name"]
-                        parsed["organization"] = lbl["name"]
-                    if not parsed.get("catalognumber") and li.get("catalog-number"):
-                        parsed["catalognumber"] = li["catalog-number"]
-                if parsed.get("barcode") and parsed.get("label") and parsed.get("catalognumber"):
-                    break
-
-    return parsed
-
-
-def _lucene_escape(s: str) -> str:
-    """Escape Lucene special characters so free-text titles/artists (which
-    often contain parentheses, colons, etc.) don't break the MB query syntax."""
+_MB_NEW_FUNCS = r'''def _lucene_escape(s: str) -> str:
+    """Escape Lucene specials so free-text titles/artists (parentheses, colons,
+    etc.) don't break the MusicBrainz query syntax."""
     specials = set('+-!(){}[]^"~*?:\\/')
     return "".join(("\\" + ch) if ch in specials else ch for ch in s.strip())
 
 
+def _mb_text_query(title: str, artist: str) -> str:
+    return f'recording:"{_lucene_escape(title)}" AND artist:"{_lucene_escape(artist)}"'
+
+
 def fetch_mb_metadata_by_text(title: str, artist: str) -> dict:
-    """
-    Fallback for tracks with no ISRC, or whose ISRC MusicBrainz doesn't have
-    indexed: text-search MusicBrainz for a matching recording by title + artist.
-    Not cached/deduplicated like fetch_mb_metadata() — callers should only
-    reach this after an ISRC lookup has already failed to find an mbid.
-    """
+    """Sync fallback: match a recording by title + artist when ISRC lookup fails."""
     if not title or not artist:
         return {}
-
     if should_skip_mb():
         logger.debug("[musicbrainz] text search skipped (offline recently)")
         return {}
-
-    query = f'recording:"{_lucene_escape(title)}" AND artist:"{_lucene_escape(artist)}"'
-
     try:
-        data = _query_recordings(query)
+        data = _query_recordings(_mb_text_query(title, artist))
         set_mb_status(True)
-        return _parse_mb_recording(data)
+        return _parse_mb_response(data)
     except Exception as e:
         set_mb_status(False)
-        logger.debug("[musicbrainz] text search failed for %r / %r: %s", title, artist, e)
+        logger.debug("[musicbrainz] text search failed for %r/%r: %s", title, artist, e)
+        return {}
+
+
+async def fetch_mb_metadata_by_text_async(title: str, artist: str) -> dict:
+    """Async fallback: match a recording by title + artist when ISRC lookup fails."""
+    if not title or not artist:
+        return {}
+    if should_skip_mb():
+        logger.debug("[musicbrainz] text search skipped (offline recently)")
+        return {}
+    try:
+        data = await _query_recordings_async(_mb_text_query(title, artist))
+        set_mb_status(True)
+        return _parse_mb_response(data)
+    except Exception as e:
+        set_mb_status(False)
+        logger.debug("[musicbrainz] text search (async) failed for %r/%r: %s", title, artist, e)
         return {}
 
 
 def fetch_mb_metadata_smart(isrc: str, title: str = "", artist: str = "") -> dict:
-    """ISRC lookup first (cached, rate-limited), falling back to a title/artist
+    """ISRC lookup first (cached, rate-limited); fall back to a title/artist
     text search when the ISRC is missing or MusicBrainz has no match for it.
-    This is what actually guarantees an mbid gets found for tracks whose ISRC
-    isn't in MusicBrainz's ISRC index (a very common gap)."""
+    This is what actually guarantees an mbid for tracks whose ISRC isn't in
+    MusicBrainz's ISRC index (a very common gap)."""
     res = fetch_mb_metadata(isrc) if isrc else {}
     if res.get("mbid_track"):
         return res
@@ -263,189 +124,145 @@ def fetch_mb_metadata_smart(isrc: str, title: str = "", artist: str = "") -> dic
     return res
 
 
+async def fetch_mb_metadata_smart_async(isrc: str, title: str = "", artist: str = "") -> dict:
+    """Async twin of fetch_mb_metadata_smart (for providers on the async path)."""
+    res = await fetch_mb_metadata_async(isrc) if isrc else {}
+    if res.get("mbid_track"):
+        return res
+    if title and artist:
+        text_res = await fetch_mb_metadata_by_text_async(title, artist)
+        if text_res.get("mbid_track"):
+            return text_res
+    return res
+
+
 '''
 
-_MB_INSERT_BEFORE = "def fetch_mb_metadata(isrc: str) -> dict:\n"
-
-_MB_PARSE_BLOCK_OLD = '''        parsed: dict = {
-            "genre": "", "original_date": "", "bpm": "", "mbid_track": "",
-            "mbid_album": "", "mbid_artist": "", "mbid_relgroup": "",
-            "mbid_albumartist": "", "albumartist_sort": "", "catalognumber": "",
-            "label": "", "barcode": "", "organization": "",
-            "country": "", "script": "", "status": "",
-            "media": "", "type": "", "artist_sort": ""
-        }
-
-        recs = data.get("recordings", [])
-        if recs:
-            rec = recs[0]
-            parsed["mbid_track"] = rec.get("id", "")
-            parsed["original_date"] = rec.get("first-release-date", "")
-            parsed["bpm"] = str(rec.get("bpm", "")) if rec.get("bpm") else ""
-
-            credits = rec.get("artist-credit", [])
-            if credits:
-                artist_ids = []
-                sort_names = []
-                for c in credits:
-                    artist_obj = c.get("artist", {})
-                    a_id = artist_obj.get("id")
-                    a_sort = artist_obj.get("sort-name", "")
-                    phrase = c.get("joinphrase", "")
-                    if a_id: artist_ids.append(a_id)
-                    if a_sort: sort_names.append(a_sort + phrase)
-                parsed["mbid_artist"] = "; ".join(artist_ids)
-                parsed["artist_sort"] = "".join(sort_names)
-
-            all_tags = rec.get("tags", [])
-            for c in credits:
-                all_tags.extend(c.get("artist", {}).get("tags", []))
-            if all_tags:
-                sorted_tags = sorted(all_tags, key=lambda x: x.get("count", 0), reverse=True)
-                genres = []
-                for t in sorted_tags:
-                    name = t.get("name", "").title()
-                    if name and name not in genres: genres.append(name)
-                parsed["genre"] = "; ".join(genres[:5])
-
-            releases = rec.get("releases", [])
-            if releases:
-                def _release_score(r: dict) -> int:
-                    score = 0
-                    if r.get("barcode"): score += 2
-                    if r.get("label-info"): score += 2
-                    if r.get("country"): score += 1
-                    if r.get("status") == "Official": score += 1
-                    return score
-
-                rel = max(releases, key=_release_score)
-                parsed["mbid_album"]    = rel.get("id", "")
-                parsed["mbid_relgroup"] = rel.get("release-group", {}).get("id", "")
-                parsed["status"]        = rel.get("status", "")
-                parsed["type"]          = rel.get("release-group", {}).get("primary-type", "")
-                parsed["country"]       = rel.get("country", "")
-                parsed["script"]        = rel.get("text-representation", {}).get("script", "")
-                media = rel.get("media", [])
-                if media:
-                    parsed["media"] = media[0].get("format", "")
-
-                rel_credits = rel.get("artist-credit", [])
-                if rel_credits:
-                    aa_ids = []
-                    aa_sort_names = []
-                    for c in rel_credits:
-                        artist_obj = c.get("artist", {})
-                        a_id   = artist_obj.get("id")
-                        a_sort = artist_obj.get("sort-name", "")
-                        phrase = c.get("joinphrase", "")
-                        if a_id:   aa_ids.append(a_id)
-                        if a_sort: aa_sort_names.append(a_sort + phrase)
-                    parsed["mbid_albumartist"] = "; ".join(aa_ids)
-                    parsed["albumartist_sort"] = "".join(aa_sort_names)
-
-                for r in releases:
-                    if not parsed.get("barcode") and r.get("barcode"):
-                        parsed["barcode"] = r["barcode"]
-                    for li in r.get("label-info", []):
-                        lbl = li.get("label") or {}
-                        if not parsed.get("label") and lbl.get("name"):
-                            parsed["label"]        = lbl["name"]
-                            parsed["organization"] = lbl["name"]
-                        if not parsed.get("catalognumber") and li.get("catalog-number"):
-                            parsed["catalognumber"] = li["catalog-number"]
-                    if parsed.get("barcode") and parsed.get("label") and parsed.get("catalognumber"):
-                        break
-
-        res = parsed  # Lookup riuscito
-'''
-_MB_PARSE_BLOCK_NEW = '        res = _parse_mb_recording(data)  # Lookup riuscito\n'
-
-_MB_INIT_OLD = (
-    "    def __init__(self, isrc: str):\n"
-    "        self.isrc = isrc\n"
-    "        try:\n"
-    "            self.future = self._get_executor().submit(fetch_mb_metadata, isrc)\n"
-    "        except RuntimeError:\n"
-    "            # executor spento e non ancora ricreato — retry\n"
-    "            self.future = self._get_executor().submit(fetch_mb_metadata, isrc)\n"
-)
-_MB_INIT_NEW = (
-    "    def __init__(self, isrc: str, title: str = \"\", artist: str = \"\"):\n"
-    "        self.isrc = isrc\n"
-    "        try:\n"
-    "            self.future = self._get_executor().submit(fetch_mb_metadata_smart, isrc, title, artist)\n"
-    "        except RuntimeError:\n"
-    "            # executor spento e non ancora ricreato — retry\n"
-    "            self.future = self._get_executor().submit(fetch_mb_metadata_smart, isrc, title, artist)\n"
+_apply(
+    "core/musicbrainz.py",
+    "def fetch_mb_metadata(isrc: str) -> dict:\n",
+    _MB_NEW_FUNCS + "def fetch_mb_metadata(isrc: str) -> dict:\n",
+    "added ISRC->text-search mbid fallback (fetch_mb_metadata_smart[_async])",
+    already_marker="def fetch_mb_metadata_smart",
 )
 
-mb_text = _MB_CORE.read_text()
-if "_parse_mb_recording" in mb_text:
-    print(f"[patch] {_MB_CORE.name}: already patched or different version — skipping")
-elif _MB_INSERT_BEFORE not in mb_text or _MB_PARSE_BLOCK_OLD not in mb_text or _MB_INIT_OLD not in mb_text:
-    print(f"[patch] {_MB_CORE.name}: pattern not found — skipping (different version?)")
-else:
-    mb_text = mb_text.replace(_MB_INSERT_BEFORE, _MB_NEW_FUNCS + _MB_INSERT_BEFORE, 1)
-    mb_text = mb_text.replace(_MB_PARSE_BLOCK_OLD, _MB_PARSE_BLOCK_NEW, 1)
-    mb_text = mb_text.replace(_MB_INIT_OLD, _MB_INIT_NEW, 1)
-    _MB_CORE.write_text(mb_text)
-    print(f"[patch] {_MB_CORE.name}: added ISRC->text-search mbid fallback (fetch_mb_metadata_smart)")
+# AsyncMBFetch: accept title/artist and route through the smart lookup.
+_apply(
+    "core/musicbrainz.py",
+    (
+        "    def __init__(self, isrc: str):\n"
+        "        self.isrc = isrc\n"
+        "        try:\n"
+        "            self.future = self._get_executor().submit(fetch_mb_metadata, isrc)\n"
+        "        except RuntimeError:\n"
+        "            self.future = self._get_executor().submit(fetch_mb_metadata, isrc)\n"
+    ),
+    (
+        "    def __init__(self, isrc: str, title: str = \"\", artist: str = \"\"):\n"
+        "        self.isrc = isrc\n"
+        "        try:\n"
+        "            self.future = self._get_executor().submit(fetch_mb_metadata_smart, isrc, title, artist)\n"
+        "        except RuntimeError:\n"
+        "            self.future = self._get_executor().submit(fetch_mb_metadata_smart, isrc, title, artist)\n"
+    ),
+    "AsyncMBFetch now takes title/artist and uses the smart lookup",
+    already_marker="def __init__(self, isrc: str, title: str = \"\"",
+)
 
 # ---------------------------------------------------------------------------
-# Patch 5: providers/*.py — always attempt a MusicBrainz lookup (passing
-# title/artist for the text-search fallback), instead of skipping it entirely
-# when metadata.isrc is empty.
+# Patch B (sync-style providers): amazon, apple_music, pandora, youtube, gdstudio
+# `AsyncMBFetch(_isrc_for_mb) if _isrc_for_mb else None`
+#   -> always construct, passing title/artist for the text fallback.
 # ---------------------------------------------------------------------------
+_SYNC_OLD = "            mb_fetcher = AsyncMBFetch(_isrc_for_mb) if _isrc_for_mb else None\n"
+_SYNC_NEW = "            mb_fetcher = AsyncMBFetch(_isrc_for_mb, metadata.title, metadata.first_artist)\n"
+for _p in (
+    "providers/amazon.py",
+    "providers/apple_music.py",
+    "providers/pandora.py",
+    "providers/youtube.py",
+    "providers/gdstudio.py",
+):
+    _apply(_p, _SYNC_OLD, _SYNC_NEW, "MusicBrainz lookup no longer gated on ISRC presence")
 
-_PROVIDER_MB_EDITS = [
-    ("providers/gdstudio.py",
-     "            mb_fetcher = AsyncMBFetch(metadata.isrc) if metadata.isrc else None\n",
-     "            mb_fetcher = AsyncMBFetch(metadata.isrc, metadata.title, metadata.first_artist)\n"),
-    ("providers/apple_music.py",
-     "            # Trigger Asincrono MusicBrainz\n"
-     "            mb_fetcher = None\n"
-     "            if metadata.isrc:\n"
-     "                mb_fetcher = AsyncMBFetch(metadata.isrc)\n",
-     "            # Trigger Asincrono MusicBrainz\n"
-     "            mb_fetcher = AsyncMBFetch(metadata.isrc, metadata.title, metadata.first_artist)\n"),
-    ("providers/amazon.py",
-     "            from ..core.musicbrainz import AsyncMBFetch\n"
-     "            mb_fetcher = AsyncMBFetch(metadata.isrc) if getattr(metadata, \"isrc\", None) else None\n",
-     "            from ..core.musicbrainz import AsyncMBFetch\n"
-     "            mb_fetcher = AsyncMBFetch(getattr(metadata, \"isrc\", \"\") or \"\", metadata.title, metadata.first_artist)\n"),
-    ("providers/pandora.py",
-     "            mb_fetcher = AsyncMBFetch(metadata.isrc) if metadata.isrc else None\n",
-     "            mb_fetcher = AsyncMBFetch(metadata.isrc, metadata.title, metadata.first_artist)\n"),
-    ("providers/deezer.py",
-     "            mb_fetcher = AsyncMBFetch(isrc_to_use) if isrc_to_use else None\n",
-     "            mb_fetcher = AsyncMBFetch(isrc_to_use, metadata.title, metadata.first_artist)\n"),
-    ("providers/qobuz.py",
-     "            mb_fetcher = None\n"
-     "            if (enrich_metadata or embed_genre) and metadata.isrc:\n"
-     "                mb_fetcher = AsyncMBFetch(metadata.isrc)\n",
-     "            mb_fetcher = None\n"
-     "            if enrich_metadata or embed_genre:\n"
-     "                mb_fetcher = AsyncMBFetch(metadata.isrc, metadata.title, metadata.first_artist)\n"),
-    ("providers/tidal.py",
-     "            mb_fetcher = None\n"
-     "            if metadata.isrc:\n"
-     "                mb_fetcher = AsyncMBFetch(metadata.isrc)\n",
-     "            mb_fetcher = AsyncMBFetch(metadata.isrc, metadata.title, metadata.first_artist)\n"),
-    ("providers/youtube.py",
-     "            mb_fetcher = AsyncMBFetch(metadata.isrc) if metadata.isrc else None\n",
-     "            mb_fetcher = AsyncMBFetch(metadata.isrc, metadata.title, metadata.first_artist)\n"),
-]
+# ---------------------------------------------------------------------------
+# Patch B (async-style providers): deezer, qobuz, tidal
+# Add the smart-async import, then always look up via title/artist fallback.
+# ---------------------------------------------------------------------------
+_ASYNC_IMPORT_OLD = "from ..core.musicbrainz import fetch_mb_metadata_async, mb_result_to_tags\n"
+_ASYNC_IMPORT_NEW = "from ..core.musicbrainz import fetch_mb_metadata_async, fetch_mb_metadata_smart_async, mb_result_to_tags\n"
+for _p in ("providers/deezer.py", "providers/qobuz.py", "providers/tidal.py"):
+    _apply(_p, _ASYNC_IMPORT_OLD, _ASYNC_IMPORT_NEW,
+           "import fetch_mb_metadata_smart_async",
+           already_marker="fetch_mb_metadata_smart_async")
 
-for rel_path, old, new in _PROVIDER_MB_EDITS:
-    fpath = _BASE / rel_path
-    if not fpath.exists():
-        print(f"[patch] {rel_path}: file not found — skipping")
-        continue
-    ftext = fpath.read_text()
-    if new in ftext:
-        print(f"[patch] {rel_path}: already patched — skipping")
-    elif old not in ftext:
-        print(f"[patch] {rel_path}: pattern not found — skipping (different version?)")
-    else:
-        fpath.write_text(ftext.replace(old, new, 1))
-        print(f"[patch] {rel_path}: MusicBrainz lookup no longer gated on ISRC presence")
+# deezer: concurrent MB task — always create, with title/artist fallback.
+_apply(
+    "providers/deezer.py",
+    (
+        "            mb_task = (\n"
+        "                asyncio.create_task(fetch_mb_metadata_async(isrc_to_use))\n"
+        "                if isrc_to_use\n"
+        "                else None\n"
+        "            )\n"
+    ),
+    (
+        "            mb_task = asyncio.create_task(\n"
+        "                fetch_mb_metadata_smart_async(\n"
+        "                    isrc_to_use, metadata.title, metadata.first_artist\n"
+        "                )\n"
+        "            )\n"
+    ),
+    "MB lookup task always created (title/artist fallback)",
+    already_marker="fetch_mb_metadata_smart_async(",
+)
+
+# deezer: stop gating the MB tags behind is_album (single tracks got no mbid).
+_apply(
+    "providers/deezer.py",
+    "                extra_tags=mb_tags if is_album else {},\n",
+    "                extra_tags=mb_tags,\n",
+    "MB tags (mbid) now embedded for single-track downloads too",
+)
+
+# qobuz: always look up (was `if metadata.isrc:`), with title/artist fallback.
+_apply(
+    "providers/qobuz.py",
+    (
+        "            mb_tags: dict[str, str] = {}\n"
+        "            if metadata.isrc:\n"
+        "                mb_tags = mb_result_to_tags(\n"
+        "                    await fetch_mb_metadata_async(metadata.isrc)\n"
+        "                )\n"
+    ),
+    (
+        "            mb_tags: dict[str, str] = {}\n"
+        "            mb_tags = mb_result_to_tags(\n"
+        "                await fetch_mb_metadata_smart_async(\n"
+        "                    metadata.isrc, metadata.title, metadata.first_artist\n"
+        "                )\n"
+        "            )\n"
+    ),
+    "MusicBrainz lookup no longer gated on ISRC presence",
+    already_marker="fetch_mb_metadata_smart_async(",
+)
+
+# tidal: always look up (was `if metadata.isrc:`), with title/artist fallback.
+_apply(
+    "providers/tidal.py",
+    (
+        "            mb_tags: dict[str, str] = {}\n"
+        "            if metadata.isrc:\n"
+        "                mb_data = await fetch_mb_metadata_async(metadata.isrc)\n"
+        "                mb_tags = mb_result_to_tags(mb_data)\n"
+    ),
+    (
+        "            mb_tags: dict[str, str] = {}\n"
+        "            mb_data = await fetch_mb_metadata_smart_async(\n"
+        "                metadata.isrc, metadata.title, metadata.first_artist\n"
+        "            )\n"
+        "            mb_tags = mb_result_to_tags(mb_data)\n"
+    ),
+    "MusicBrainz lookup no longer gated on ISRC presence",
+    already_marker="fetch_mb_metadata_smart_async(",
+)

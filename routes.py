@@ -1090,11 +1090,20 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
     try:
         from SpotiFLAC.core.metadata_enrichment import enrich_metadata as _enrich
     except ImportError:
-        with _enrich_lock:
-            _enrich_state["running"] = False
-            _enrich_state["elapsed"] = 0.0
-        log.warning("Metadata enrichment not available — upgrade SpotiFLAC")
-        return
+        try:
+            # SpotiFLAC 1.3+ exposes only the async enricher — wrap it on the
+            # worker's persistent event loop so this threaded, sync function is
+            # otherwise unchanged.
+            from SpotiFLAC.core.metadata_enrichment import enrich_metadata_async as _enrich_async
+            from worker import _run_coro_sync
+            def _enrich(*a, **k):
+                return _run_coro_sync(_enrich_async(*a, **k))
+        except ImportError:
+            with _enrich_lock:
+                _enrich_state["running"] = False
+                _enrich_state["elapsed"] = 0.0
+            log.warning("Metadata enrichment not available — upgrade SpotiFLAC")
+            return
 
     _mb_lookup = _mb_to_tags = None
     if use_mb:

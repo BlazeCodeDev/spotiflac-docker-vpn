@@ -419,8 +419,13 @@ def _validate_track(filepath: str, expected_s: int) -> tuple[bool, str]:
     if not filepath or expected_s <= 0:
         return True, ""
     try:
-        from SpotiFLAC.core.download_validation import validate_downloaded_track
-        ok, msg = validate_downloaded_track(filepath, expected_s)
+        try:
+            from SpotiFLAC.core.download_validation import validate_downloaded_track
+            ok, msg = validate_downloaded_track(filepath, expected_s)
+        except ImportError:
+            # SpotiFLAC 1.3+ exposes only the async validator.
+            from SpotiFLAC.core.download_validation import validate_downloaded_track_async
+            ok, msg = _run_coro_sync(validate_downloaded_track_async(filepath, expected_s))
         if ok:
             return True, ""
         import re
