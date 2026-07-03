@@ -56,7 +56,20 @@ def _run_coro_sync(coro) -> object:
     """Submit a coroutine to the shared persistent loop; block until it completes."""
     if not _asyncio.iscoroutine(coro):
         return coro
-    return _asyncio.run_coroutine_threadsafe(coro, _get_spf_loop()).result()
+    loop = _get_spf_loop()
+    try:
+        running = _asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if running is loop:
+        # Blocking on .result() from the loop's own thread deadlocks the loop
+        # (job hangs at "running" forever). Fail loudly so the job errors instead.
+        coro.close()
+        raise RuntimeError(
+            "_run_coro_sync called from the spotiflac loop thread — "
+            "would deadlock; await the coroutine directly instead"
+        )
+    return _asyncio.run_coroutine_threadsafe(coro, loop).result()
 
 
 def _run_coro(result) -> None:
@@ -414,8 +427,28 @@ def _fetch_metadata(url: str) -> tuple[str | None, str | None, str | None]:
         return None, None, None
 
 
+def _explain_validation(ok: bool, msg: str, expected_s: int) -> tuple[bool, str]:
+    """Translate SpotiFLAC's (Italian) validation result to (valid, english_reason)."""
+    if ok:
+        return True, ""
+    import re
+    m = re.search(r'file è (\d+)s', msg)
+    actual_s = m.group(1) if m else "?"
+    if "Preview" in msg:
+        reason = f"30s preview detected (got {actual_s}s, expected ~{expected_s}s) — file removed"
+    elif "troncato" in msg:
+        reason = f"File truncated ({actual_s}s actual, expected ~{expected_s}s) — file removed"
+    else:
+        reason = f"Duration mismatch ({actual_s}s actual, expected ~{expected_s}s) — file removed"
+    return False, reason
+
+
 def _validate_track(filepath: str, expected_s: int) -> tuple[bool, str]:
-    """Call SpotiFLAC download validation; returns (valid, english_reason)."""
+    """Call SpotiFLAC download validation; returns (valid, english_reason).
+
+    Sync-path only: must never run on the spotiflac loop thread, because the
+    async fallback blocks on that loop (use _validate_track_async there).
+    """
     if not filepath or expected_s <= 0:
         return True, ""
     try:
@@ -426,20 +459,25 @@ def _validate_track(filepath: str, expected_s: int) -> tuple[bool, str]:
             # SpotiFLAC 1.3+ exposes only the async validator.
             from SpotiFLAC.core.download_validation import validate_downloaded_track_async
             ok, msg = _run_coro_sync(validate_downloaded_track_async(filepath, expected_s))
-        if ok:
-            return True, ""
-        import re
-        m = re.search(r'file è (\d+)s', msg)
-        actual_s = m.group(1) if m else "?"
-        if "Preview" in msg:
-            reason = f"30s preview detected (got {actual_s}s, expected ~{expected_s}s) — file removed"
-        elif "troncato" in msg:
-            reason = f"File truncated ({actual_s}s actual, expected ~{expected_s}s) — file removed"
-        else:
-            reason = f"Duration mismatch ({actual_s}s actual, expected ~{expected_s}s) — file removed"
-        return False, reason
+        return _explain_validation(ok, msg, expected_s)
     except ImportError:
         return True, ""
+
+
+async def _validate_track_async(filepath: str, expected_s: int) -> tuple[bool, str]:
+    """Async twin of _validate_track for code already running on the spotiflac loop."""
+    if not filepath or expected_s <= 0:
+        return True, ""
+    try:
+        from SpotiFLAC.core.download_validation import validate_downloaded_track_async
+        ok, msg = await validate_downloaded_track_async(filepath, expected_s)
+    except ImportError:
+        try:
+            from SpotiFLAC.core.download_validation import validate_downloaded_track
+            ok, msg = validate_downloaded_track(filepath, expected_s)
+        except ImportError:
+            return True, ""
+    return _explain_validation(ok, msg, expected_s)
 
 
 class _TrackingWorker(DownloadWorker):
@@ -658,7 +696,7 @@ class _TrackingWorker(DownloadWorker):
 
             if result.success:
                 expected_s = (track.duration_ms or 0) // 1000
-                valid, val_reason = _validate_track(result.file_path or "", expected_s)
+                valid, val_reason = await _validate_track_async(result.file_path or "", expected_s)
                 if not valid:
                     log.warning("Validation failed for %s: %s", track.title, val_reason)
                     self._failed.append((track.id, track.title, track.artists, val_reason))
