@@ -18,7 +18,7 @@ This software does not condone, facilitate, or encourage copyright infringement 
 
 SpotiFLAC Docker wraps the [SpotiFLAC](https://github.com/streamingflac/spotiflac) Python library in a small Flask web server so you can queue downloads from a browser instead of running a CLI. You paste Spotify URLs (tracks, albums, or playlists), pick a quality level and which streaming services to try, and the container downloads the audio in the background.
 
-Because downloading from services like Tidal or Qobuz often requires connecting from a specific country, the container starts a VPN tunnel before the app launches and enforces a kill-switch: if the tunnel drops, all outbound traffic is blocked immediately and the container exits, so downloads never leak through your real IP.
+Because downloading from services like Tidal or Qobuz often requires connecting from a specific country, the container starts a VPN tunnel before the app launches and enforces a kill-switch: if the tunnel drops, all outbound traffic is blocked immediately and the container exits, so downloads never leak through your real IP. DNS lookups are routed through the tunnel as well (not just the payload traffic), and the app itself runs as an unprivileged user so it cannot tamper with the kill-switch — see [Security hardening](#security-hardening).
 
 The UI polls the backend every few seconds and shows live progress, toast notifications on completion, and per-job controls for cancelling, retrying, and reordering.
 
@@ -44,6 +44,21 @@ If `VPN_USER` and `VPN_PASS` are set alongside any of the above, the entrypoint 
 - `WG_CONFIG_FILE` — a path to a mounted WireGuard config.
 - Individual fields: `WG_PRIVATE_KEY`, `WG_ADDRESS`, `WG_SERVER_PUBLIC_KEY`, `WG_ENDPOINT`, and optional `WG_DNS`, `WG_PRESHARED_KEY`, `WG_ALLOWED_IPS`, `WG_KEEPALIVE`. The entrypoint generates a `wg0.conf` from these.
 
+### Security hardening
+
+Several measures beyond the basic kill-switch reduce the chance of leaking your real IP or credentials:
+
+- **DNS through the tunnel.** On a Docker network the container's resolver (`127.0.0.11`) forwards queries from the *host* namespace — outside the tunnel — so hostname lookups for Deezer, Tidal, MusicBrainz, etc. would otherwise leak to your ISP even with the kill-switch up. Once the tunnel is established the entrypoint rewrites `/etc/resolv.conf` to a public resolver (`VPN_DNS`, default `1.1.1.1 1.0.0.1`) so lookups egress through the tunnel. During a reconnect it temporarily restores the Docker resolver so OpenVPN can re-resolve its (IP-whitelisted) server.
+- **Unprivileged app.** The container needs `NET_ADMIN` to manage the kill-switch, but the web app / SpotiFLAC do **not** run as root — the entrypoint drops to an unprivileged user (`PUID`/`PGID`, default `1000`) via `su-exec`. Without `NET_ADMIN` the app cannot flush iptables, so the kill-switch is enforcing even against a compromised dependency. VPN credentials in `/vpn` are locked to `0600` and the app's state lives in an app-owned `/vpn/state` subdir.
+- **Pinned dependency.** SpotiFLAC is installed at a **fixed** version and is not auto-upgraded on boot, for reproducibility and to avoid silently ingesting an unreviewed PyPI release. Override with `SPOTIFLAC_VERSION` (see the env reference).
+- **Stateful UI egress rule.** Outbound traffic on the web-UI port is restricted to established replies, so a rogue process binding that port can't use it as a bypass.
+
+> **Set `PUID`/`PGID` to match the owner of your downloads mount.** CIFS/SMB shares honour the server-side uid, so if the app's uid doesn't match, writing downloads will fail with permission errors. This is the most common upgrade gotcha.
+
+### Metadata tagging
+
+Downloaded files are tagged with cover art, lyrics (optional), and MusicBrainz identifiers. Every track gets a MusicBrainz recording id (`MUSICBRAINZ_TRACKID`) and the associated MB tag set: lookups try the track's ISRC first and fall back to a title + artist search when the ISRC is missing or unindexed, so tracks without a usable ISRC (common on YouTube) still get tagged. The library **Enrich** action applies the same tagging to files already in your library, skipping ones that are already tagged.
+
 ---
 
 ## Docker Compose setup
@@ -60,6 +75,8 @@ services:
       - /dev/net/tun:/dev/net/tun
     environment:
       - TZ=Europe/Berlin
+      - PUID=1000            # must match the owner of your downloads mount
+      - PGID=1000
       - OUTPUT_DIR=/downloads
       - SPOTIFLAC_SERVICES=tidal,qobuz,amazon,spoti,youtube
       - FILENAME_FORMAT={artist}/{year} - {album}/{track}. {title}
@@ -94,7 +111,7 @@ A few things worth understanding about this compose file:
 
 **`cap_add: NET_ADMIN, NET_RAW`** — `NET_ADMIN` lets the entrypoint configure network interfaces, routing tables, and iptables rules. `NET_RAW` is required by OpenVPN for raw socket access. Without these, the kill-switch cannot be applied and the VPN cannot start.
 
-**`volumes: spotiflac_config:/vpn`** — This named volume serves two purposes: it is where you place your `config.ovpn` (or WireGuard config) before first run, and it is where the job state file is written so downloads survive container restarts. Because it is a named volume, Docker manages its lifecycle separately from the container.
+**`volumes: spotiflac_config:/vpn`** — This named volume serves two purposes: it is where you place your `config.ovpn` (or WireGuard config) before first run, and it is where the app's state (job history, settings, ListenBrainz sync state) is written under `/vpn/state` so downloads survive container restarts. Credential files sit directly in `/vpn` locked to `0600`; the app runs unprivileged and only has access to the `/vpn/state` subdir. Because it is a named volume, Docker manages its lifecycle separately from the container.
 
 **`volumes: music:/downloads`** — All downloaded files land here. Mount this wherever your media library lives, or use a bind mount if you prefer a specific host path:
 
@@ -113,7 +130,7 @@ volumes:
 docker build -t spotiflac-docker-vpn .
 ```
 
-The Dockerfile uses `python:3.12-alpine` as the base and installs OpenVPN, WireGuard tools, iptables, ffmpeg, and the SpotiFLAC Python package. The build-time patch script runs during the image build so the patched library is baked in.
+The Dockerfile uses `python:3.12-alpine` as the base and installs OpenVPN, WireGuard tools, iptables, `su-exec`, ffmpeg, and a **pinned** version of the SpotiFLAC Python package. The build-time patch script runs during the image build so the patched library is baked in; the entrypoint re-runs it on every start so an in-place `SPOTIFLAC_VERSION` override is patched automatically.
 
 ### Placing your VPN config
 
@@ -137,6 +154,9 @@ Then set `VPN_CONFIG_BASE64` in the compose environment and remove the `VPN_CONF
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `PUID` | `1000` | UID the app runs as. Set it to match the owner of your downloads mount, or writing files may fail |
+| `PGID` | `1000` | GID the app runs as (see `PUID`) |
+| `SPOTIFLAC_VERSION` | (pinned) | Pin an exact SpotiFLAC release to install instead of the built-in pinned version. Only override after verifying the patches still apply |
 | `OUTPUT_DIR` | `./downloads` | Where downloaded files are written inside the container |
 | `SPOTIFLAC_SERVICES` | `tidal,qobuz,amazon,youtube` | Comma-separated list of services to try, in order |
 | `FILENAME_FORMAT` | `{artist} - {year} - {album}/{track}. {title}` | Filename template. Use `/` to create subdirectories |
@@ -147,6 +167,7 @@ Then set `VPN_CONFIG_BASE64` in the compose environment and remove the `VPN_CONF
 | `PORT` | `5000` | Port the Flask app listens on |
 | `UI_PASSWORD` | — | If set, enables HTTP Basic Auth. The username field is ignored; only the password is checked |
 | `VPN_PROTOCOL` | `openvpn` | `openvpn` or `wireguard` |
+| `VPN_DNS` | `1.1.1.1 1.0.0.1` | Resolver(s) used through the tunnel once it is up, to prevent DNS leaks. Space-separated |
 | `VPN_COUNTRY` | — | Display-only label shown in the UI VPN badge |
 | `VPN_CONFIG_FILE` | — | Path to `.ovpn` file inside the container |
 | `VPN_CONFIG_BASE64` | — | Base64-encoded `.ovpn` file content |
@@ -172,7 +193,7 @@ Then set `VPN_CONFIG_BASE64` in the compose environment and remove the `VPN_CONF
 | `WG_KEEPALIVE` | `25` | PersistentKeepalive in seconds |
 | `ALLOW_SUBNETS` | — | Comma-separated extra subnets to allow through the kill-switch (e.g. local NAS) |
 | `LOG_LEVEL` | `info` | `info` or `debug`. Debug logs iptables rules, network state, and env vars at startup |
-| `APP_CMD` | `python /app/app.py` | Command used to start the Flask app |
+| `APP_CMD` | `gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 300 app:app` | Command used to start the Flask app (run as the `PUID`/`PGID` user) |
 
 ---
 
