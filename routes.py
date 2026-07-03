@@ -1501,12 +1501,26 @@ def api_settings_patch():
     if "listenbrainz_username" in body:
         updates["listenbrainz_username"] = str(body["listenbrainz_username"]).strip()
 
-    if "listenbrainz_poll_minutes" in body:
+    if "listenbrainz_days" in body:
+        raw = body["listenbrainz_days"]
+        if not isinstance(raw, list):
+            errors["listenbrainz_days"] = "must be a list"
+        else:
+            try:
+                days = sorted({int(d) for d in raw if 0 <= int(d) <= 6})
+                updates["listenbrainz_days"] = days or list(range(7))
+            except (TypeError, ValueError):
+                errors["listenbrainz_days"] = "must be integers 0-6 (Mon-Sun)"
+
+    if "listenbrainz_time" in body:
+        raw = str(body["listenbrainz_time"]).strip()
         try:
-            v = int(body["listenbrainz_poll_minutes"])
-            updates["listenbrainz_poll_minutes"] = max(5, v)
+            hh, mm = (int(p) for p in raw.split(":")[:2])
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                raise ValueError
+            updates["listenbrainz_time"] = f"{hh:02d}:{mm:02d}"
         except (TypeError, ValueError):
-            errors["listenbrainz_poll_minutes"] = "must be an integer"
+            errors["listenbrainz_time"] = "must be HH:MM"
 
     if "enrich_providers" in body:
         raw = body["enrich_providers"]

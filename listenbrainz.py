@@ -5,7 +5,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +25,6 @@ _state: dict = {
     "total_enqueued": 0,
 }
 
-_poll_event   = threading.Event()
 _mb_rate_lock = threading.Lock()
 _mb_last_req  = 0.0
 
@@ -276,42 +275,72 @@ def sync_now_bg(username: str = "") -> None:
     threading.Thread(target=_run_sync, args=(u,), daemon=True, name="lb-sync").start()
 
 
-def trigger_sync() -> None:
-    """Wake up the poll loop so it runs immediately."""
-    _poll_event.set()
+def _next_run(days, time_str) -> datetime:
+    """Next local datetime matching the weekday set (Mon=0 … Sun=6) at HH:MM."""
+    try:
+        hh, mm = (int(p) for p in str(time_str).split(":")[:2])
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            raise ValueError
+    except (TypeError, ValueError):
+        hh, mm = 6, 0
+    try:
+        wanted = {int(d) for d in days if 0 <= int(d) <= 6} or set(range(7))
+    except (TypeError, ValueError):
+        wanted = set(range(7))
+    now = datetime.now()
+    for offset in range(8):
+        cand = (now + timedelta(days=offset)).replace(
+            hour=hh, minute=mm, second=0, microsecond=0
+        )
+        if cand > now and cand.weekday() in wanted:
+            return cand
+    return now + timedelta(days=1)  # unreachable — wanted is never empty
 
 
 def _poll_loop() -> None:
+    """Fire a sync on the configured weekdays at the configured local time.
+
+    Sleeps in ≤60s slices so settings changes are picked up within a minute
+    without needing cross-module wake-up plumbing.
+    """
     import settings as _settings
-    poll_min = 60
+    target: datetime | None = None
+    sched = None  # (days, time) the current target was computed from
     while True:
+        remaining = 60.0
         try:
             cfg      = _settings.load()
             enabled  = cfg.get("listenbrainz_enabled", False)
             username = cfg.get("listenbrainz_username", "").strip()
-            poll_min = max(5, int(cfg.get("listenbrainz_poll_minutes", 60)))
-
-            if enabled and username:
-                _run_sync(username)
-
-            next_ts  = datetime.now(timezone.utc).timestamp() + poll_min * 60
-            next_iso = datetime.fromtimestamp(next_ts, tz=timezone.utc).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"
+            cur = (
+                tuple(cfg.get("listenbrainz_days") or ()),
+                cfg.get("listenbrainz_time", "06:00"),
             )
-            with _lock:
-                _state["next_check"] = next_iso
-            _save()
-        except Exception as exc:
-            log.error("LB poll loop error: %s", exc)
 
-        _poll_event.wait(timeout=poll_min * 60)
-        _poll_event.clear()
+            if target is not None and sched == cur and datetime.now() >= target:
+                if enabled and username:
+                    _run_sync(username)
+                target = None
+
+            if target is None or sched != cur:
+                sched  = cur
+                target = _next_run(cur[0], cur[1])
+                next_iso = target.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                with _lock:
+                    _state["next_check"] = next_iso
+                _save()
+
+            remaining = (target - datetime.now()).total_seconds()
+        except Exception as exc:
+            log.error("LB scheduler error: %s", exc)
+
+        time.sleep(min(60.0, max(1.0, remaining)))
 
 
 def start() -> None:
     _load()
     threading.Thread(target=_poll_loop, daemon=True, name="lb-poll").start()
-    log.info("ListenBrainz poller started")
+    log.info("ListenBrainz scheduler started")
 
 
 def get_state() -> dict:

@@ -30,9 +30,11 @@ def _defaults() -> dict:
         "enrich_providers":    [s.strip() for s in os.environ.get("ENRICH_PROVIDERS",    "deezer,apple").split(",") if s.strip()],
         "enrich_musicbrainz":  os.environ.get("ENRICH_MUSICBRAINZ",  "1") == "1",
         # ListenBrainz recommendations auto-download
+        # Schedule: weekdays (Mon=0 … Sun=6) + local time of day. Default: daily 06:00.
         "listenbrainz_enabled":       os.environ.get("LB_ENABLED",  "0") == "1",
         "listenbrainz_username":      os.environ.get("LB_USERNAME",  ""),
-        "listenbrainz_poll_minutes":  int(os.environ.get("LB_POLL_MINUTES", "60")),
+        "listenbrainz_days":          [int(x) for x in os.environ.get("LB_DAYS", "0,1,2,3,4,5,6").split(",") if x.strip().isdigit()],
+        "listenbrainz_time":          os.environ.get("LB_TIME", "06:00"),
     }
 
 

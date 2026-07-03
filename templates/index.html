@@ -371,6 +371,17 @@ html[data-theme="light"] .svc-youtube { background: #fef2f2; color: #991b1b; bor
 .saction-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 .saction-msg { font-size: .8rem; color: var(--md-on-surface-variant); }
 
+/* ─── Weekday picker ─────────────────────────────────────────────── */
+.lb-day {
+  min-width: 34px; padding: 5px 0; border-radius: 999px; border: 1px solid var(--md-outline-variant);
+  background: transparent; color: var(--md-on-surface-variant); font-size: .72rem; font-weight: 500;
+  cursor: pointer; text-align: center; transition: background .15s, color .15s, border-color .15s;
+}
+.lb-day.active {
+  background: var(--md-primary-container); color: var(--md-on-primary-container);
+  border-color: var(--md-primary-container);
+}
+
 /* ─── Settings number grid ──────────────────────────────────────── */
 .snum-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
 .snum-item { display: flex; flex-direction: column; gap: 4px; }
@@ -1071,23 +1082,6 @@ html.theme-transitioning *::after {
     <div id="jobs-list"></div>
   </div>
 
-  <div class="card" id="lb-card" style="display:none">
-    <div class="card-header">
-      <div style="display:flex;align-items:center;gap:.5rem">
-        <span class="section-title">ListenBrainz</span>
-        <span id="lb-status-chip" style="font-size:.72rem;padding:2px 8px;border-radius:999px;background:var(--md-surface-container-highest);color:var(--md-on-surface-variant)"></span>
-      </div>
-      <div style="display:flex;align-items:center;gap:.5rem">
-        <span id="lb-last-check" style="font-size:.75rem;color:var(--md-on-surface-variant)"></span>
-        <button class="btn-ghost" id="btn-lb-sync" style="padding:.25rem .75rem;font-size:.8rem">Sync now</button>
-      </div>
-    </div>
-    <div id="lb-playlists" style="display:flex;flex-direction:column;gap:4px;min-height:20px">
-      <span style="font-size:.8rem;color:var(--md-on-surface-variant)">Loading…</span>
-    </div>
-    <div id="lb-error" style="display:none;font-size:.8rem;color:var(--s-error);margin-top:6px"></div>
-  </div>
-
   <div class="card">
     <div class="card-header">
       <span class="section-title">Library</span>
@@ -1292,15 +1286,26 @@ html.theme-transitioning *::after {
           </div>
           <input type="text" id="cfg-lb-username" placeholder="Username" style="margin-top:10px">
           <div class="snum-row" style="margin-top:10px;gap:8px">
-            <span style="font-size:.82rem;color:var(--md-on-surface-variant);white-space:nowrap">Check every</span>
-            <input type="number" id="cfg-lb-poll" min="5" max="10080" style="width:72px">
-            <span class="snum-unit">minutes</span>
+            <span style="font-size:.82rem;color:var(--md-on-surface-variant);white-space:nowrap">Sync on</span>
+            <div id="cfg-lb-days" style="display:flex;gap:4px;flex-wrap:wrap">
+              <button type="button" class="lb-day" data-day="0">Mon</button>
+              <button type="button" class="lb-day" data-day="1">Tue</button>
+              <button type="button" class="lb-day" data-day="2">Wed</button>
+              <button type="button" class="lb-day" data-day="3">Thu</button>
+              <button type="button" class="lb-day" data-day="4">Fri</button>
+              <button type="button" class="lb-day" data-day="5">Sat</button>
+              <button type="button" class="lb-day" data-day="6">Sun</button>
+            </div>
+          </div>
+          <div class="snum-row" style="margin-top:10px;gap:8px">
+            <span style="font-size:.82rem;color:var(--md-on-surface-variant);white-space:nowrap">at</span>
+            <input type="time" id="cfg-lb-time" value="06:00" style="width:110px">
           </div>
           <div class="saction-row">
             <button class="btn-ghost" id="btn-settings-lb-sync">Sync now</button>
             <span id="settings-lb-sync-msg" class="saction-msg"></span>
           </div>
-          <div class="shint">Monitors recommendation playlists · tracks already in the library are skipped · Spotify IDs resolved via MusicBrainz</div>
+          <div class="shint">Monitors recommendation playlists on the selected days · tracks already in the library are skipped · Spotify IDs resolved via MusicBrainz</div>
         </div>
 
         <div style="height:16px"></div>
@@ -1848,7 +1853,9 @@ async function openSettingsModal() {
     document.querySelectorAll('.enrich-prov').forEach(cb => { cb.checked = activeProv.has(cb.value); });
     document.getElementById('cfg-lb-enabled').checked  = !!(d.listenbrainz_enabled);
     document.getElementById('cfg-lb-username').value   = d.listenbrainz_username ?? '';
-    document.getElementById('cfg-lb-poll').value       = d.listenbrainz_poll_minutes ?? 60;
+    const lbDays = new Set((Array.isArray(d.listenbrainz_days) && d.listenbrainz_days.length ? d.listenbrainz_days : [0,1,2,3,4,5,6]).map(Number));
+    document.querySelectorAll('.lb-day').forEach(b => b.classList.toggle('active', lbDays.has(+b.dataset.day)));
+    document.getElementById('cfg-lb-time').value       = d.listenbrainz_time ?? '06:00';
     if (Array.isArray(d.services) && d.services.length) {
       _enabledSet = new Set(d.services);
       const disabledSvcs = svcOrder.filter(s => !_enabledSet.has(s.id));
@@ -2244,7 +2251,8 @@ document.getElementById('btn-cfg-save').addEventListener('click', async () => {
     enrich_providers:   [...document.querySelectorAll('.enrich-prov:checked')].map(c => c.value),
     listenbrainz_enabled:      document.getElementById('cfg-lb-enabled').checked,
     listenbrainz_username:     document.getElementById('cfg-lb-username').value.trim(),
-    listenbrainz_poll_minutes: parseInt(document.getElementById('cfg-lb-poll').value, 10) || 60,
+    listenbrainz_days:         [...document.querySelectorAll('.lb-day.active')].map(b => +b.dataset.day),
+    listenbrainz_time:         document.getElementById('cfg-lb-time').value || '06:00',
   };
   const numericFields = ['retry_interval_min', 'retry_max_count', 'track_delay_s', 'max_workers'];
   if (numericFields.some(k => isNaN(payload[k]))) { msg.textContent = 'Invalid values'; return; }
@@ -2276,6 +2284,9 @@ document.getElementById('btn-tidal-refresh').addEventListener('click', async () 
   btn.disabled = false;
   setTimeout(() => { msg.textContent = ''; msg.style.color = ''; }, 5000);
 });
+document.querySelectorAll('.lb-day').forEach(btn => {
+  btn.addEventListener('click', () => btn.classList.toggle('active'));
+});
 document.getElementById('btn-settings-lb-sync').addEventListener('click', async () => {
   const btn = document.getElementById('btn-settings-lb-sync');
   const msg = document.getElementById('settings-lb-sync-msg');
@@ -2289,7 +2300,6 @@ document.getElementById('btn-settings-lb-sync').addEventListener('click', async 
       msg.textContent = '✓ Sync started';
       msg.style.color = 'var(--green)';
       setTimeout(refreshTasks, 600);
-      setTimeout(refreshLB,    600);
     } else {
       msg.textContent = `✗ ${data.error || 'Failed'}`;
       msg.style.color = 'var(--red)';
@@ -3559,93 +3569,6 @@ setInterval(() => {
   });
 }, 1000);
 
-// ── ListenBrainz card ─────────────────────────────────────────────────────────
-
-function _fmtAgo(isoStr) {
-  if (!isoStr) return '';
-  const diff = Math.floor((Date.now() - new Date(isoStr)) / 1000);
-  if (diff < 60)   return 'just now';
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
-}
-
-async function refreshLB() {
-  try {
-    const d = await fetch('/api/listenbrainz').then(r => r.json());
-    const card = document.getElementById('lb-card');
-    // Show card only when a username has been seen in state
-    const playlists = d.playlists || [];
-    const hasData   = playlists.length > 0 || d.last_check || d.running;
-
-    // Peek at settings to decide whether to show
-    // (We rely on the playlists or running state rather than fetching settings again)
-    if (!hasData) { card.style.display = 'none'; return; }
-    card.style.display = '';
-
-    const chip = document.getElementById('lb-status-chip');
-    chip.textContent = d.running ? 'Syncing…' : (d.last_error ? 'Error' : 'OK');
-    chip.style.background = d.running
-      ? 'var(--md-primary-container)'
-      : (d.last_error ? 'var(--md-error-container)' : 'var(--md-surface-container-highest)');
-    chip.style.color = d.running
-      ? 'var(--md-on-primary-container)'
-      : (d.last_error ? 'var(--md-on-error-container)' : 'var(--md-on-surface-variant)');
-
-    const lastCheckEl = document.getElementById('lb-last-check');
-    if (d.last_check) lastCheckEl.textContent = `Last sync: ${_fmtAgo(d.last_check)}`;
-    else if (d.running) lastCheckEl.textContent = 'Syncing…';
-    else lastCheckEl.textContent = 'Never synced';
-
-    const errEl = document.getElementById('lb-error');
-    if (d.last_error) { errEl.textContent = d.last_error; errEl.style.display = ''; }
-    else { errEl.style.display = 'none'; }
-
-    const list = document.getElementById('lb-playlists');
-    if (!playlists.length) {
-      list.innerHTML = '<span style="font-size:.8rem;color:var(--md-on-surface-variant)">No playlists found yet</span>';
-    } else {
-      list.innerHTML = playlists.map(p => {
-        const badge = p.new
-          ? `<span style="font-size:.68rem;padding:1px 6px;border-radius:999px;background:var(--md-primary-container);color:var(--md-on-primary-container);margin-left:4px">new</span>`
-          : '';
-        const counts = p.enqueued > 0
-          ? `<span style="color:var(--s-done)">${p.enqueued} queued</span>`
-          : (p.skipped > 0 ? `<span style="color:var(--md-on-surface-variant)">${p.skipped} unresolvable</span>` : '');
-        return `<div style="display:flex;align-items:center;justify-content:space-between;padding:3px 0;font-size:.82rem;border-bottom:1px solid var(--md-outline-variant)">
-          <span>${p.title}${badge} <span style="color:var(--md-on-surface-variant);font-size:.75rem">(${p.track_count} tracks)</span></span>
-          <span>${counts}</span>
-        </div>`;
-      }).join('');
-    }
-
-    document.getElementById('btn-lb-sync').disabled = d.running;
-  } catch { /* ignore */ }
-}
-
-document.getElementById('btn-lb-sync').addEventListener('click', async () => {
-  const btn = document.getElementById('btn-lb-sync');
-  btn.disabled = true;
-  try {
-    const res  = await fetch('/api/listenbrainz/sync', {method: 'POST'});
-    const data = await res.json();
-    if (!res.ok) {
-      const errEl = document.getElementById('lb-error');
-      errEl.textContent = data.error || 'Sync failed';
-      errEl.style.display = '';
-    }
-  } catch { /* ignore */ }
-  setTimeout(refreshLB, 500);
-});
-
-refreshLB();
-setInterval(refreshLB, 30_000);
-
-// Also expose the LB card when settings are saved with LB enabled
-const _origSave = document.getElementById('btn-cfg-save').onclick;
-document.getElementById('cfg-lb-enabled').addEventListener('change', () => {
-  setTimeout(refreshLB, 200);
-});
 
 // Theme toggle — three states: auto (follow browser) → dark → light → auto
 const themeToggle = document.getElementById('theme-toggle');
