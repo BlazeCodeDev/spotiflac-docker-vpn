@@ -26,7 +26,7 @@ NOTE for version bumps: SpotiFLAC ships both a sync provider style
 (AsyncMBFetch) and an async one (await fetch_mb_metadata_async). Both are
 handled below. If a future release changes these call shapes, the affected
 patch will log "pattern not found — skipping" and the mbid feature must be
-re-ported (see git history for the 1.2.0 -> 1.3.1 port).
+re-ported (see git history for the 1.2.0 -> 1.3.1 and 1.3.1 -> 1.4.5 ports).
 """
 import importlib.util
 import pathlib

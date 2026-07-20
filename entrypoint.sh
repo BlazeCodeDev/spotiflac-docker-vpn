@@ -10,7 +10,7 @@ LOG_LEVEL="${LOG_LEVEL:-info}"
 # Dockerfile build install and with patch_spotiflac.py (whose string matches are
 # version-specific). Bump only after re-verifying the patches against the new
 # release. Set the SPOTIFLAC_VERSION env to override at runtime.
-SPOTIFLAC_PINNED="1.3.1"
+SPOTIFLAC_PINNED="1.4.5"
 
 log()   { echo "[vpn] $(date '+%H:%M:%S') INFO  $*"; }
 err()   { echo "[vpn] $(date '+%H:%M:%S') ERROR $*" >&2; }
