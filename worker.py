@@ -413,7 +413,11 @@ def _fetch_metadata(url: str) -> tuple[str | None, str | None, str | None]:
                     return json.loads(resp.read())
             client._get = types.MethodType(_get, client)
         if kind == "track":
-            meta   = client.get_track(sid)
+            if hasattr(client, 'get_track'):
+                meta = client.get_track(sid)
+            else:
+                # SpotifyMetadataClient has only ever exposed get_track_async.
+                meta = _run_coro_sync(client.get_track_async(sid))
             artist = meta.artists or None
             label  = f"{meta.artists} — {meta.title}" if meta.artists else meta.title
             return label, meta.cover_url or None, artist
