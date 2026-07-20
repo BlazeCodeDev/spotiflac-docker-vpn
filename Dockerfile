@@ -27,7 +27,10 @@ RUN pip install --no-cache-dir flask python-dotenv gunicorn
 # Pinned to a FIXED version (kept in lockstep with entrypoint.sh SPOTIFLAC_PINNED
 # and with patch_spotiflac.py, whose matches are version-specific). Not
 # auto-upgraded on boot. Bump only after re-verifying the patches apply.
-RUN pip install --no-cache-dir --target /spotiflac "SpotiFLAC==1.4.5"
+# requests is pulled in unconditionally by SpotiFLAC's core/signed_session_desktop.py
+# but isn't declared in SpotiFLAC's own dependencies (upstream packaging gap as of
+# 1.4.5) — install it explicitly or the app fails to import at all.
+RUN pip install --no-cache-dir --target /spotiflac "SpotiFLAC==1.4.5" requests
 ENV PYTHONPATH=/spotiflac
 
 RUN mkdir -p /vpn /downloads /app/templates && \

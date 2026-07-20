@@ -495,7 +495,9 @@ update_spotiflac() {
     SPOTIFLAC_VERSION="${SPOTIFLAC_VERSION:-$SPOTIFLAC_PINNED}"
     log "Installing SpotiFLAC (pinned) $SPOTIFLAC_VERSION..."
 
-    if _out=$(pip install --target /spotiflac "SpotiFLAC==$SPOTIFLAC_VERSION" 2>&1); then
+    # requests: see Dockerfile — SpotiFLAC 1.4.5 imports it unconditionally
+    # (core/signed_session_desktop.py) without declaring it as a dependency.
+    if _out=$(pip install --target /spotiflac "SpotiFLAC==$SPOTIFLAC_VERSION" requests 2>&1); then
         _rc=0
     else
         _rc=$?
