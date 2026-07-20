@@ -1,6 +1,10 @@
 FROM python:3.12-alpine
 
 # VPN + networking tools
+# flac: SpotiFLAC 1.4.5's flac_validation.py shells out to the `flac` binary to
+# verify integrity; without it every download is treated as corrupted (repair
+# via ffmpeg is attempted, and if that also fails the raw file is left behind
+# untagged in the output root — see patch_spotiflac.py Patch D).
 RUN apk add --no-cache \
     openvpn \
     wireguard-tools \
@@ -11,6 +15,7 @@ RUN apk add --no-cache \
     bind-tools \
     iputils \
     ffmpeg \
+    flac \
     su-exec
 
 # App runs as an unprivileged user (entrypoint drops root via su-exec) so a

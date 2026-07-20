@@ -266,3 +266,35 @@ _apply(
     "MusicBrainz lookup no longer gated on ISRC presence",
     already_marker="fetch_mb_metadata_smart_async(",
 )
+
+# ---------------------------------------------------------------------------
+# Patch D: providers/amazon.py — clean up the orphaned FLAC on Antra repair failure
+# ---------------------------------------------------------------------------
+# When the Antra direct-download path's post-download integrity check fails
+# (e.g. the `flac` binary is missing, or the file is genuinely corrupt), the
+# code logs a warning and falls through to try the next Amazon quality tier —
+# but never deletes the file it just wrote. It sits in output_dir's root,
+# named by ASIN (not the tagged filename), forever. Delete it before moving on.
+_apply(
+    "providers/amazon.py",
+    (
+        "                                    logger.warning(\n"
+        "                                        \"[amazon] Antra FLAC repair failed: %s\",\n"
+        "                                        repair_msg,\n"
+        "                                    )\n"
+        "                                else:\n"
+        "                                    logger.warning(\"[amazon] Antra FLAC remux failed.\")\n"
+    ),
+    (
+        "                                    logger.warning(\n"
+        "                                        \"[amazon] Antra FLAC repair failed: %s\",\n"
+        "                                        repair_msg,\n"
+        "                                    )\n"
+        "                                    if os.path.exists(out):\n"
+        "                                        os.remove(out)\n"
+        "                                else:\n"
+        "                                    logger.warning(\"[amazon] Antra FLAC remux failed.\")\n"
+    ),
+    "orphaned FLAC (from a failed integrity repair) now cleaned up before falling back",
+    already_marker="if os.path.exists(out):\n                                        os.remove(out)",
+)
