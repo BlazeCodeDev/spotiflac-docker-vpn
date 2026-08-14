@@ -10,7 +10,7 @@ LOG_LEVEL="${LOG_LEVEL:-info}"
 # Dockerfile build install and with patch_spotiflac.py (whose string matches are
 # version-specific). Bump only after re-verifying the patches against the new
 # release. Set the SPOTIFLAC_VERSION env to override at runtime.
-SPOTIFLAC_PINNED="1.4.5"
+SPOTIFLAC_PINNED="1.7.8"
 
 log()   { echo "[vpn] $(date '+%H:%M:%S') INFO  $*"; }
 err()   { echo "[vpn] $(date '+%H:%M:%S') ERROR $*" >&2; }
@@ -495,8 +495,8 @@ update_spotiflac() {
     SPOTIFLAC_VERSION="${SPOTIFLAC_VERSION:-$SPOTIFLAC_PINNED}"
     log "Installing SpotiFLAC (pinned) $SPOTIFLAC_VERSION..."
 
-    # requests: see Dockerfile — SpotiFLAC 1.4.5 imports it unconditionally
-    # (core/signed_session_desktop.py) without declaring it as a dependency.
+    # requests: see Dockerfile — declared as a real SpotiFLAC dependency as of
+    # 1.7.8, kept explicit here in case the pin is ever rolled back to 1.4.5.
     if _out=$(pip install --target /spotiflac "SpotiFLAC==$SPOTIFLAC_VERSION" requests 2>&1); then
         _rc=0
     else

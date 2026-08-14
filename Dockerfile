@@ -1,10 +1,12 @@
 FROM python:3.12-alpine
 
 # VPN + networking tools
-# flac: SpotiFLAC 1.4.5's flac_validation.py shells out to the `flac` binary to
-# verify integrity; without it every download is treated as corrupted (repair
-# via ffmpeg is attempted, and if that also fails the raw file is left behind
-# untagged in the output root — see patch_spotiflac.py Patch D).
+# flac: core/flac_validation.py shells out to the `flac` binary to verify FLAC
+# integrity. As of 1.7.8 upstream treats a missing binary as "valid, skip the
+# check" rather than a false-positive corruption (was not the case in 1.4.5,
+# where every download was treated as corrupted and, if ffmpeg repair also
+# failed, the raw file leaked into the output root untagged — see
+# patch_spotiflac.py Patch D, kept as a belt-and-suspenders cleanup).
 RUN apk add --no-cache \
     openvpn \
     wireguard-tools \
@@ -32,10 +34,10 @@ RUN pip install --no-cache-dir flask python-dotenv gunicorn
 # Pinned to a FIXED version (kept in lockstep with entrypoint.sh SPOTIFLAC_PINNED
 # and with patch_spotiflac.py, whose matches are version-specific). Not
 # auto-upgraded on boot. Bump only after re-verifying the patches apply.
-# requests is pulled in unconditionally by SpotiFLAC's core/signed_session_desktop.py
-# but isn't declared in SpotiFLAC's own dependencies (upstream packaging gap as of
-# 1.4.5) — install it explicitly or the app fails to import at all.
-RUN pip install --no-cache-dir --target /spotiflac "SpotiFLAC==1.4.5" requests
+# requests is declared as a real dependency by SpotiFLAC itself as of 1.7.8
+# (wasn't in 1.4.5 — that was an upstream packaging gap); kept explicit here
+# so a future downgrade of the pin doesn't silently reopen that gap.
+RUN pip install --no-cache-dir --target /spotiflac "SpotiFLAC==1.7.8" requests
 ENV PYTHONPATH=/spotiflac
 
 RUN mkdir -p /vpn /downloads /app/templates && \

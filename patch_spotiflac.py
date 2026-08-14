@@ -26,7 +26,8 @@ NOTE for version bumps: SpotiFLAC ships both a sync provider style
 (AsyncMBFetch) and an async one (await fetch_mb_metadata_async). Both are
 handled below. If a future release changes these call shapes, the affected
 patch will log "pattern not found — skipping" and the mbid feature must be
-re-ported (see git history for the 1.2.0 -> 1.3.1 and 1.3.1 -> 1.4.5 ports).
+re-ported (see git history for the 1.2.0 -> 1.3.1, 1.3.1 -> 1.4.5, and
+1.4.5 -> 1.7.8 ports).
 """
 import importlib.util
 import pathlib
@@ -147,8 +148,17 @@ _apply(
 )
 
 # AsyncMBFetch: accept title/artist and route through the smart lookup.
-_apply(
-    "core/musicbrainz.py",
+# NOTE: 1.7.8 added a `-> None` return annotation vs 1.4.5 — both variants are
+# tried since older pins may still hit this same patch file.
+for _init_old in (
+    (
+        "    def __init__(self, isrc: str) -> None:\n"
+        "        self.isrc = isrc\n"
+        "        try:\n"
+        "            self.future = self._get_executor().submit(fetch_mb_metadata, isrc)\n"
+        "        except RuntimeError:\n"
+        "            self.future = self._get_executor().submit(fetch_mb_metadata, isrc)\n"
+    ),
     (
         "    def __init__(self, isrc: str):\n"
         "        self.isrc = isrc\n"
@@ -157,17 +167,19 @@ _apply(
         "        except RuntimeError:\n"
         "            self.future = self._get_executor().submit(fetch_mb_metadata, isrc)\n"
     ),
-    (
-        "    def __init__(self, isrc: str, title: str = \"\", artist: str = \"\"):\n"
-        "        self.isrc = isrc\n"
-        "        try:\n"
-        "            self.future = self._get_executor().submit(fetch_mb_metadata_smart, isrc, title, artist)\n"
-        "        except RuntimeError:\n"
-        "            self.future = self._get_executor().submit(fetch_mb_metadata_smart, isrc, title, artist)\n"
-    ),
-    "AsyncMBFetch now takes title/artist and uses the smart lookup",
-    already_marker="def __init__(self, isrc: str, title: str = \"\"",
-)
+):
+    _apply(
+        "core/musicbrainz.py",
+        _init_old,
+        _init_old.replace(
+            "def __init__(self, isrc: str)",
+            "def __init__(self, isrc: str, title: str = \"\", artist: str = \"\")",
+        ).replace(
+            "submit(fetch_mb_metadata, isrc)", "submit(fetch_mb_metadata_smart, isrc, title, artist)"
+        ),
+        "AsyncMBFetch now takes title/artist and uses the smart lookup",
+        already_marker="def __init__(self, isrc: str, title: str = \"\"",
+    )
 
 # ---------------------------------------------------------------------------
 # Patch B (sync-style providers): amazon, apple_music, pandora, youtube, gdstudio
@@ -189,12 +201,15 @@ for _p in (
 # Patch B (async-style providers): deezer, qobuz, tidal
 # Add the smart-async import, then always look up via title/artist fallback.
 # ---------------------------------------------------------------------------
-_ASYNC_IMPORT_OLD = "from ..core.musicbrainz import fetch_mb_metadata_async, mb_result_to_tags\n"
-_ASYNC_IMPORT_NEW = "from ..core.musicbrainz import fetch_mb_metadata_async, fetch_mb_metadata_smart_async, mb_result_to_tags\n"
-for _p in ("providers/deezer.py", "providers/qobuz.py", "providers/tidal.py"):
-    _apply(_p, _ASYNC_IMPORT_OLD, _ASYNC_IMPORT_NEW,
-           "import fetch_mb_metadata_smart_async",
-           already_marker="fetch_mb_metadata_smart_async")
+# 1.7.8 switched providers from relative (`from ..core.musicbrainz import`) to
+# absolute (`from SpotiFLAC.core.musicbrainz import`) imports — try both.
+for _import_style in ("..core.musicbrainz", "SpotiFLAC.core.musicbrainz"):
+    _ASYNC_IMPORT_OLD = f"from {_import_style} import fetch_mb_metadata_async, mb_result_to_tags\n"
+    _ASYNC_IMPORT_NEW = f"from {_import_style} import fetch_mb_metadata_async, fetch_mb_metadata_smart_async, mb_result_to_tags\n"
+    for _p in ("providers/deezer.py", "providers/qobuz.py", "providers/tidal.py"):
+        _apply(_p, _ASYNC_IMPORT_OLD, _ASYNC_IMPORT_NEW,
+               "import fetch_mb_metadata_smart_async",
+               already_marker="fetch_mb_metadata_smart_async")
 
 # deezer: concurrent MB task — always create, with title/artist fallback.
 _apply(
@@ -226,26 +241,28 @@ _apply(
 )
 
 # qobuz: always look up (was `if metadata.isrc:`), with title/artist fallback.
-_apply(
-    "providers/qobuz.py",
-    (
-        "            mb_tags: dict[str, str] = {}\n"
-        "            if metadata.isrc:\n"
-        "                mb_tags = mb_result_to_tags(\n"
-        "                    await fetch_mb_metadata_async(metadata.isrc)\n"
-        "                )\n"
-    ),
-    (
-        "            mb_tags: dict[str, str] = {}\n"
-        "            mb_tags = mb_result_to_tags(\n"
-        "                await fetch_mb_metadata_smart_async(\n"
-        "                    metadata.isrc, metadata.title, metadata.first_artist\n"
-        "                )\n"
-        "            )\n"
-    ),
-    "MusicBrainz lookup no longer gated on ISRC presence",
-    already_marker="fetch_mb_metadata_smart_async(",
-)
+# 1.7.8's Black formatting added a trailing comma after the call — try both.
+for _qobuz_call_close in (")\n", "),\n"):
+    _apply(
+        "providers/qobuz.py",
+        (
+            "            mb_tags: dict[str, str] = {}\n"
+            "            if metadata.isrc:\n"
+            "                mb_tags = mb_result_to_tags(\n"
+            f"                    await fetch_mb_metadata_async(metadata.isrc{_qobuz_call_close}"
+            "                )\n"
+        ),
+        (
+            "            mb_tags: dict[str, str] = {}\n"
+            "            mb_tags = mb_result_to_tags(\n"
+            "                await fetch_mb_metadata_smart_async(\n"
+            "                    metadata.isrc, metadata.title, metadata.first_artist\n"
+            "                )\n"
+            "            )\n"
+        ),
+        "MusicBrainz lookup no longer gated on ISRC presence",
+        already_marker="fetch_mb_metadata_smart_async(",
+    )
 
 # tidal: always look up (was `if metadata.isrc:`), with title/artist fallback.
 _apply(
