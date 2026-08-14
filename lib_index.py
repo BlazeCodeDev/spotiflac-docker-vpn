@@ -12,9 +12,10 @@ _TRACK_NUM_RE = re.compile(r'^\d+\s+')
 _SPECIAL_RE   = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _PAREN_RE     = re.compile(r'\s*[\(\[].*?[\)\]]\s*$')
 
-_index:        set[str]         = set()
-_album_counts: dict             = {}   # normalised album name → track count
-_index_lock:   threading.RLock = threading.RLock()
+_index:           set[str]        = set()
+_album_counts:    dict            = {}   # normalised album name → track count
+_by_artist_title: dict[str, str]  = {}   # folded "artist|title" → absolute path
+_index_lock:      threading.RLock = threading.RLock()
 _scan_event:   threading.Event = threading.Event()
 _root_fn       = None
 _ready         = False
@@ -41,9 +42,43 @@ def _base(s: str) -> str:
     return _PAREN_RE.sub("", s).strip()
 
 
-def _build_index(root: str) -> tuple[set[str], dict]:
-    stems:        set[str]  = set()
-    album_counts: dict      = {}
+def _fold(s: str) -> str:
+    """Casefold and strip punctuation for artist/title identity matching —
+    collapses near-identical text so the same song is recognised even when
+    written slightly differently (spacing, punctuation)."""
+    return re.sub(r"\W+", " ", _nfc(str(s or "")).casefold()).strip()
+
+
+def _artist_title_key(artist: str, title: str) -> str:
+    return f"{_fold(artist)}|{_fold(title)}"
+
+
+def _read_artist_title(path: str) -> tuple[str, str] | None:
+    try:
+        from mutagen import File as _MutagenFile
+        f = _MutagenFile(path, easy=True)
+        if f is None:
+            return None
+        artist = (f.get("artist") or [""])[0].strip()
+        title  = (f.get("title") or [""])[0].strip()
+        if not artist or not title:
+            return None
+        return artist, title
+    except Exception:
+        return None
+
+
+def _build_index(root: str) -> tuple[set[str], dict, dict[str, str]]:
+    """Full library scan. Also reads each audio file's embedded artist/title
+    tags (see _read_artist_title) to build an identity index that's robust to
+    album metadata varying between provider results for the same song — this
+    used to run synchronously inside every download job's pre-scan (blocking
+    every job start on a full-library tag read, brutal over network storage),
+    now lives here in the existing background scan instead.
+    """
+    stems:            set[str]        = set()
+    album_counts:     dict            = {}
+    by_artist_title:  dict[str, str]  = {}
     try:
         for dirpath, _, files in os.walk(root):
             audio = [f for f in files if os.path.splitext(f)[1].lower() in _AUDIO_EXTS]
@@ -56,6 +91,12 @@ def _build_index(root: str) -> tuple[set[str], dict]:
                 if base != stem:
                     stems.add(base)  # also index without "(Remastered)" etc.
 
+                full = os.path.join(dirpath, fname)
+                tags = _read_artist_title(full)
+                if tags:
+                    artist, title = tags
+                    by_artist_title[_artist_title_key(artist, title)] = full
+
             rel   = os.path.relpath(dirpath, root)
             parts = [p for p in rel.replace("\\", "/").split("/") if p and p != "."]
             if parts:
@@ -63,11 +104,11 @@ def _build_index(root: str) -> tuple[set[str], dict]:
                 album_counts[key] = album_counts.get(key, 0) + len(audio)
     except Exception as exc:
         _log.warning("lib_index scan error: %s", exc)
-    return stems, album_counts
+    return stems, album_counts, by_artist_title
 
 
 def _worker():
-    global _index, _album_counts, _ready, _scanning, _last_elapsed, _last_scanned
+    global _index, _album_counts, _by_artist_title, _ready, _scanning, _last_elapsed, _last_scanned
     while True:
         _scan_event.wait()
         _scan_event.clear()
@@ -78,13 +119,14 @@ def _worker():
             continue
 
         _scanning = True
-        t0        = time.monotonic()
-        stems, ac = _build_index(root)
-        elapsed   = time.monotonic() - t0
+        t0            = time.monotonic()
+        stems, ac, at = _build_index(root)
+        elapsed       = time.monotonic() - t0
 
         with _index_lock:
-            _index        = stems
-            _album_counts = ac
+            _index           = stems
+            _album_counts    = ac
+            _by_artist_title = at
         _scanning     = False
         _ready        = True
         _last_elapsed = elapsed
@@ -132,6 +174,30 @@ def check(titles: list[str]) -> list[bool]:
         else:
             result.append(_base(norm) in idx)
     return result
+
+
+def find_by_artist_title(artist: str, title: str) -> str | None:
+    """Returns the path of an existing library track matching this artist+title
+    (normalised), regardless of album/folder metadata — catches the same song
+    downloaded again under a different album-derived path (different
+    providers/playlist entries often disagree on album metadata for the same
+    track). Used by worker.py's download pre-scan as a fallback when the
+    exact expected-filename check misses.
+    """
+    if not artist or not title:
+        return None
+    with _index_lock:
+        return _by_artist_title.get(_artist_title_key(artist, title))
+
+
+def add_track(artist: str, title: str, path: str) -> None:
+    """Incrementally registers a freshly-downloaded track so later tracks in
+    the same (or a concurrent) job see it immediately, without waiting for
+    the next full background rescan."""
+    if not artist or not title:
+        return
+    with _index_lock:
+        _by_artist_title[_artist_title_key(artist, title)] = path
 
 
 def check_album(album: str, total: int | None) -> str:
