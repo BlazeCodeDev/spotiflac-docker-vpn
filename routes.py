@@ -1017,9 +1017,24 @@ def _cleanup_empty_dirs_up(dirpath: str, root: str) -> None:
         cur = os.path.dirname(cur)
 
 
-# Quality rank for deduplication — lower is better
-_EXT_QUALITY = {".flac": 0, ".wav": 0, ".m4a": 1, ".mp3": 2,
-                ".ogg": 2, ".opus": 2, ".aac": 2, ".wma": 3}
+def _metadata_score(abs_path: str, audio) -> int:
+    """Counts "this file's metadata is complete/verified" signals.
+
+    Used as the primary tiebreaker between duplicate copies of the same song
+    (see _find_duplicate_tracks) — the better-tagged copy is worth keeping
+    even over a technically higher-bitrate but poorly-tagged one, since a
+    poorly-tagged file just gets re-enriched anyway (cost: one API round
+    trip) while a wrongly-kept low-quality file is permanent.
+    """
+    score = 0
+    if _has_mbid(abs_path):
+        score += 1
+    for field in ("genre", "bpm", "album", "isrc"):
+        if str((audio.get(field) or [""])[0]).strip():
+            score += 1
+    if _has_cover(abs_path):
+        score += 1
+    return score
 
 
 def _find_duplicate_tracks(rel_paths: list[str], root: str) -> list[str]:
@@ -1027,11 +1042,17 @@ def _find_duplicate_tracks(rel_paths: list[str], root: str) -> list[str]:
 
     Identity key: (normalised first artist, normalised title, duration bucket).
     Duration is bucketed to ±5 s to tolerate minor format differences.
-    When two copies are found, the lower-quality or smaller file is discarded.
+
+    "Best" is decided by metadata correctness first (_metadata_score — has a
+    verified MusicBrainz id, genre/BPM/album/ISRC tags present, cover art),
+    then by actual audio bitrate as a tiebreaker between two similarly
+    (in)complete copies. Bitrate rather than file extension/size: format
+    alone doesn't capture a poorly-encoded FLAC vs. a clean high-bitrate M4A,
+    and size conflates quality with track length.
     """
     from mutagen import File as MFile
 
-    seen: dict[tuple, tuple[int, int, str]] = {}  # key → (quality, size, rel)
+    seen: dict[tuple, tuple[int, int, str]] = {}  # key → (meta_score, bitrate, rel)
     to_remove: list[str] = []
 
     for rel in rel_paths:
@@ -1055,21 +1076,20 @@ def _find_duplicate_tracks(rel_paths: list[str], root: str) -> list[str]:
             dur = round(getattr(audio.info, "length", 0) / 5) * 5
             key = (artist, title, dur)
 
-            ext  = os.path.splitext(abs_path)[1].lower()
-            qual = _EXT_QUALITY.get(ext, 99)
-            size = os.path.getsize(abs_path)
+            meta_score = _metadata_score(abs_path, audio)
+            bitrate    = getattr(audio.info, "bitrate", 0) or 0
 
             if key in seen:
-                prev_qual, prev_size, prev_rel = seen[key]
-                if qual < prev_qual or (qual == prev_qual and size > prev_size):
+                prev_score, prev_bitrate, prev_rel = seen[key]
+                if meta_score > prev_score or (meta_score == prev_score and bitrate > prev_bitrate):
                     # Current copy is better — discard the previous one
                     to_remove.append(prev_rel)
-                    seen[key] = (qual, size, rel)
+                    seen[key] = (meta_score, bitrate, rel)
                 else:
                     # Previous copy is better or equal — discard current
                     to_remove.append(rel)
             else:
-                seen[key] = (qual, size, rel)
+                seen[key] = (meta_score, bitrate, rel)
         except Exception:
             continue
 

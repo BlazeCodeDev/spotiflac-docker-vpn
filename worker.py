@@ -582,16 +582,53 @@ def _write_m3u(output_dir: str, name: str, entries: list[dict]) -> str | None:
     return m3u_path
 
 
-def _index_existing_files(base: str) -> dict[str, tuple[str, int]]:
-    """One-pass recursive scan mapping casefolded relative path -> (real relpath, size).
+_TAG_AUDIO_EXTS = ('.flac', '.m4a', '.mp3')
 
-    Pre-scan used to check "is this track already downloaded" for every track
-    in a job used to do that with individual exists()/stat() calls per track
-    per candidate extension — O(tracks * extensions) syscalls against the same
-    tree. A single os.walk() here + dict lookups afterward turns that into one
-    directory scan no matter how many tracks are in the job.
+
+def _fold(s: str) -> str:
+    """Casefold and strip punctuation so near-identical artist/title text
+    collapses to the same key. Same idea as SpotiFLAC's own playlist_sync.py
+    dedup_key/_lucene_escape-style folding (studied while porting the M3U
+    writer), reimplemented here rather than imported since it's an internal,
+    version-unpinned module."""
+    return re.sub(r"\W+", " ", str(s or "").casefold()).strip()
+
+
+def _read_artist_title(path: str) -> tuple[str, str] | None:
+    try:
+        from mutagen import File as _MutagenFile
+        f = _MutagenFile(path, easy=True)
+        if f is None:
+            return None
+        artist = (f.get("artist") or [""])[0].strip()
+        title  = (f.get("title") or [""])[0].strip()
+        if not artist or not title:
+            return None
+        return artist, title
+    except Exception:
+        return None
+
+
+def _index_existing_files(base: str) -> tuple[dict[str, tuple[str, int]], dict[str, str]]:
+    """One-pass recursive scan building two lookup indexes:
+
+      - exact relative-path index (casefolded relpath -> (real relpath, size)):
+        detects a re-run whose expected filename is unchanged. Also replaces
+        what used to be individual exists()/stat() calls per track per
+        candidate extension — O(tracks * extensions) syscalls against the
+        same tree — with one os.walk() + dict lookups.
+      - artist+title index (folded "artist|title" -> absolute path), read
+        from each audio file's embedded tags: catches the *same song*
+        downloaded again under a *different* album-derived path, which the
+        exact-path index can't — this happens because different providers
+        (or different playlist entries) often disagree on album metadata for
+        the same track (e.g. a single's "Album" vs. the parent LP), so the
+        {artist}/{album}/{track} path differs even though it's the same song.
+        Tag-based, not folder-based, since the folder naming depends on
+        filename_format and isn't reliable to parse back into artist/title.
     """
     index: dict[str, tuple[str, int]] = {}
+    by_artist_title: dict[str, str] = {}
     base = os.path.abspath(base)
     for dirpath, _dirnames, filenames in os.walk(base):
         for name in filenames:
@@ -602,7 +639,13 @@ def _index_existing_files(base: str) -> dict[str, tuple[str, int]]:
                 continue
             rel = os.path.relpath(full, base)
             index[rel.casefold()] = (rel, size)
-    return index
+
+            if os.path.splitext(name)[1].lower() in _TAG_AUDIO_EXTS:
+                tags = _read_artist_title(full)
+                if tags:
+                    artist, title = tags
+                    by_artist_title[f"{_fold(artist)}|{_fold(title)}"] = full
+    return index, by_artist_title
 
 
 def _find_existing_track(
@@ -615,6 +658,13 @@ def _find_existing_track(
     if entry and entry[1] > 0:
         return os.path.join(base_out, entry[0])
     return None
+
+
+def _find_by_artist_title(index: dict[str, str], artist: str, title: str) -> str | None:
+    """Fallback lookup in the artist+title index from _index_existing_files."""
+    if not artist or not title:
+        return None
+    return index.get(f"{_fold(artist)}|{_fold(title)}")
 
 
 class _TrackingWorker(DownloadWorker):
@@ -657,7 +707,7 @@ class _TrackingWorker(DownloadWorker):
         # single recursive directory index (see _index_existing_files) instead
         # of per-track/per-extension exists()+stat() calls.
         # We also cache each track's output directory so the loop doesn't recompute it.
-        existing_index = _index_existing_files(base_out)
+        existing_index, artist_title_index = _index_existing_files(base_out)
         track_dirs:   list[str]             = []
         pre_existing: list[_Path | None]    = []
         for i, track in enumerate(self._tracks):
@@ -678,6 +728,10 @@ class _TrackingWorker(DownloadWorker):
                 if match:
                     found = _Path(match)
                     break
+            if found is None:
+                at_match = _find_by_artist_title(artist_title_index, track.first_artist, track.title)
+                if at_match:
+                    found = _Path(at_match)
             pre_existing.append(found)
 
         skip_count = sum(1 for p in pre_existing if p)
@@ -794,7 +848,7 @@ class _TrackingWorker(DownloadWorker):
         # Single recursive directory index instead of per-track/per-extension
         # exists()+stat() calls — see _index_existing_files. Run off-thread so
         # a large existing library doesn't stall the shared event loop.
-        existing_index = await _asyncio.to_thread(_index_existing_files, base_out)
+        existing_index, artist_title_index = await _asyncio.to_thread(_index_existing_files, base_out)
         track_dirs:   list[str]          = []
         pre_existing: list[_Path | None] = []
         for i, track in enumerate(self._tracks):
@@ -815,6 +869,10 @@ class _TrackingWorker(DownloadWorker):
                 if match:
                     found = _Path(match)
                     break
+            if found is None:
+                at_match = _find_by_artist_title(artist_title_index, track.first_artist, track.title)
+                if at_match:
+                    found = _Path(at_match)
             pre_existing.append(found)
 
         skip_count = sum(1 for p in pre_existing if p)
