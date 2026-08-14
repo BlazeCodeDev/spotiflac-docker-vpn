@@ -199,14 +199,28 @@ def _load() -> None:
     try:
         with open(_STATE_FILE) as f:
             snapshot = json.load(f)
+        resumed = []
         for jid, j in snapshot.get("jobs", {}).items():
             if j.get("status") in ("running", "queued"):
-                j["status"]      = "error"
-                j["error"]       = "Interrupted by restart"
-                j["finished_at"] = _now()
+                # Auto-resume rather than dead-ending as "error" — the tracks
+                # already written to disk before the restart are detected by
+                # the pre-scan (_index_existing_files) and skipped, so this
+                # picks up where it left off instead of silently stalling
+                # until someone notices and clicks Retry. Also fixes queued
+                # jobs that were mid retry-countdown: that delay is just an
+                # in-process sleep in _run(), not persisted anywhere, so a
+                # restart during it would otherwise orphan the job forever
+                # (never re-pushed to the dispatch queue).
+                j["status"]        = "queued"
+                j["error"]         = None
+                j["next_retry_at"] = None
+                resumed.append(jid)
             _jobs[jid] = j
         _seq = snapshot.get("seq", 0)
-        log.info("Loaded %d job(s) from %s", len(_jobs), _STATE_FILE)
+        for jid in resumed:
+            _cancel[jid] = threading.Event()
+            _push_pq(jid, _jobs[jid].get("_seq", 0))
+        log.info("Loaded %d job(s) from %s (%d resumed)", len(_jobs), _STATE_FILE, len(resumed))
     except FileNotFoundError:
         pass
     except Exception as exc:
