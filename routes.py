@@ -115,6 +115,22 @@ def _safe_int(value, default: int) -> int:
         return default
 
 
+def _read_git_commit() -> str:
+    # GIT_COMMIT env overrides the baked-in file (handy for local/dev runs
+    # outside the Docker image, where /app/GIT_COMMIT won't exist).
+    env = os.environ.get("GIT_COMMIT", "").strip()
+    if env:
+        return env
+    try:
+        with open("/app/GIT_COMMIT") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+_GIT_COMMIT = _read_git_commit()
+
+
 
 @bp.get("/")
 def index():
@@ -123,6 +139,7 @@ def index():
         "index.html",
         services=cfg["services"],
         filename_fmt=cfg["filename_fmt"],
+        git_commit=_GIT_COMMIT,
     )
 
 

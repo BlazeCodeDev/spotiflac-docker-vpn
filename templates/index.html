@@ -124,6 +124,14 @@ header {
   color: var(--md-on-surface);
 }
 .logo span { color: var(--md-primary); font-weight: 700; }
+.logo-commit {
+  margin-left: 6px;
+  font-size: .65rem;
+  font-weight: 500;
+  font-family: 'Roboto Mono', monospace;
+  color: var(--md-on-surface-variant);
+  vertical-align: middle;
+}
 
 /* ─── M3 Icon Button ─────────────────────────────────────────────── */
 #theme-toggle, #btn-settings {
@@ -982,7 +990,7 @@ html.theme-transitioning *::after {
 <body>
 
 <header>
-  <div class="logo">Spoti<span>FLAC</span></div>
+  <div class="logo">Spoti<span>FLAC</span>{% if git_commit %}<span class="logo-commit" title="Build commit">{{ git_commit }}</span>{% endif %}</div>
   <button id="theme-toggle" title="Toggle theme"></button>
   <div class="tasks-wrap" id="tasks-wrap">
     <button id="btn-tasks" title="Background tasks">

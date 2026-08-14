@@ -1,3 +1,14 @@
+# ── Git commit capture ──────────────────────────────────────────────────────
+# Throwaway stage: needs the full .git directory (for packed-refs / detached
+# HEAD / etc, which `git` handles correctly and a hand-rolled ref parse
+# wouldn't) and a git binary, but neither should end up in the final image —
+# only the tiny GIT_COMMIT file is copied out below.
+FROM python:3.12-alpine AS gitinfo
+RUN apk add --no-cache git
+WORKDIR /src
+COPY .git /src/.git
+RUN git rev-parse --short HEAD > /GIT_COMMIT 2>/dev/null || echo unknown > /GIT_COMMIT
+
 FROM python:3.12-alpine
 
 # VPN + networking tools
@@ -56,6 +67,7 @@ COPY patch_spotiflac.py /app/patch_spotiflac.py
 COPY app.py config.py worker.py vpn.py routes.py settings.py lib_index.py listenbrainz.py /app/
 COPY templates/ /app/templates/
 COPY static/ /app/static/
+COPY --from=gitinfo /GIT_COMMIT /app/GIT_COMMIT
 RUN chmod +x /entrypoint.sh
 
 # Apply patches to the build-time SpotiFLAC install.  The entrypoint re-runs
