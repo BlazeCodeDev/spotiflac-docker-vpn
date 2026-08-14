@@ -606,10 +606,11 @@ def _find_existing_track(
 class _TrackingWorker(DownloadWorker):
     """DownloadWorker that fires callbacks after each track."""
 
-    def __init__(self, *args, on_track_done, on_track_result=None, **kwargs):
+    def __init__(self, *args, on_track_done, on_track_result=None, on_track_start=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._on_track_done   = on_track_done
         self._on_track_result = on_track_result
+        self._on_track_start  = on_track_start
 
     def _resolve_output_dir(self) -> str:
         # The filename_format already encodes the full directory structure
@@ -677,6 +678,14 @@ class _TrackingWorker(DownloadWorker):
         for i, track in enumerate(self._tracks):
             _run_coro(manager.start_download(track.id))
             existing = pre_existing[i]
+            track_start = time.perf_counter()
+            if self._on_track_start:
+                self._on_track_start({
+                    "track_id": track.id,
+                    "title": track.title, "artists": track.artists,
+                    "status": "downloading", "success": None, "error": None,
+                    "file_path": None, "duration_ms": track.duration_ms, "elapsed_s": None,
+                })
 
             if existing:
                 size_mb = existing.stat().st_size / (1024 * 1024)
@@ -687,6 +696,7 @@ class _TrackingWorker(DownloadWorker):
                         "title": track.title, "artists": track.artists,
                         "success": True, "error": None,
                         "file_path": str(existing), "duration_ms": track.duration_ms,
+                        "status": "found", "elapsed_s": round(time.perf_counter() - track_start, 1),
                     })
                 done += 1
                 self._on_track_done(done)
@@ -709,6 +719,7 @@ class _TrackingWorker(DownloadWorker):
                             "title": track.title, "artists": track.artists,
                             "success": False, "error": val_reason,
                             "file_path": None, "duration_ms": track.duration_ms,
+                            "status": "failed", "elapsed_s": round(time.perf_counter() - track_start, 1),
                         })
                 else:
                     try:
@@ -726,6 +737,7 @@ class _TrackingWorker(DownloadWorker):
                             "title": track.title, "artists": track.artists,
                             "success": True, "error": None,
                             "file_path": result.file_path, "duration_ms": track.duration_ms,
+                            "status": "done", "elapsed_s": round(time.perf_counter() - track_start, 1),
                         })
             else:
                 err = result.error or "unknown"
@@ -737,6 +749,7 @@ class _TrackingWorker(DownloadWorker):
                         "title": track.title, "artists": track.artists,
                         "success": False, "error": err,
                         "file_path": None, "duration_ms": track.duration_ms,
+                        "status": "failed", "elapsed_s": round(time.perf_counter() - track_start, 1),
                     })
 
             done += 1
@@ -804,6 +817,14 @@ class _TrackingWorker(DownloadWorker):
             if _asyncio.iscoroutine(coro):
                 await coro
             existing = pre_existing[i]
+            track_start = time.perf_counter()
+            if self._on_track_start:
+                self._on_track_start({
+                    "track_id": track.id,
+                    "title": track.title, "artists": track.artists,
+                    "status": "downloading", "success": None, "error": None,
+                    "file_path": None, "duration_ms": track.duration_ms, "elapsed_s": None,
+                })
 
             if existing:
                 size_mb = existing.stat().st_size / (1024 * 1024)
@@ -816,6 +837,7 @@ class _TrackingWorker(DownloadWorker):
                         "title": track.title, "artists": track.artists,
                         "success": True, "error": None,
                         "file_path": str(existing), "duration_ms": track.duration_ms,
+                        "status": "found", "elapsed_s": round(time.perf_counter() - track_start, 1),
                     })
                 done += 1
                 self._on_track_done(done)
@@ -844,6 +866,7 @@ class _TrackingWorker(DownloadWorker):
                             "title": track.title, "artists": track.artists,
                             "success": False, "error": val_reason,
                             "file_path": None, "duration_ms": track.duration_ms,
+                            "status": "failed", "elapsed_s": round(time.perf_counter() - track_start, 1),
                         })
                 else:
                     try:
@@ -863,6 +886,7 @@ class _TrackingWorker(DownloadWorker):
                             "title": track.title, "artists": track.artists,
                             "success": True, "error": None,
                             "file_path": result.file_path, "duration_ms": track.duration_ms,
+                            "status": "done", "elapsed_s": round(time.perf_counter() - track_start, 1),
                         })
             else:
                 err = result.error or "unknown"
@@ -876,6 +900,7 @@ class _TrackingWorker(DownloadWorker):
                         "title": track.title, "artists": track.artists,
                         "success": False, "error": err,
                         "file_path": None, "duration_ms": track.duration_ms,
+                        "status": "failed", "elapsed_s": round(time.perf_counter() - track_start, 1),
                     })
 
             done += 1
@@ -892,10 +917,11 @@ class _TrackingWorker(DownloadWorker):
 class _TrackingDownloader(SpotiflacDownloader):
     """SpotiflacDownloader that reports on_progress(done, total) and per-track results."""
 
-    def __init__(self, opts, on_progress, on_track_result=None):
+    def __init__(self, opts, on_progress, on_track_result=None, on_track_start=None):
         super().__init__(opts)
-        self._on_progress    = on_progress
+        self._on_progress     = on_progress
         self._on_track_result = on_track_result
+        self._on_track_start  = on_track_start
 
     def _run_once(self, spotify_url, target_tracks=None):
         from SpotiFLAC.core.errors import SpotiflacError
@@ -962,6 +988,7 @@ class _TrackingDownloader(SpotiflacDownloader):
             is_playlist     = is_playlist,
             on_track_done   = lambda done: self._on_progress(done, total),
             on_track_result = self._on_track_result,
+            on_track_start  = self._on_track_start,
         )
         worker.run()
         return []
@@ -1005,6 +1032,7 @@ class _TrackingDownloader(SpotiflacDownloader):
             is_playlist     = is_playlist,
             on_track_done   = lambda done: self._on_progress(done, total),
             on_track_result = self._on_track_result,
+            on_track_start  = self._on_track_start,
         )
         await worker.run_async()
         return []
@@ -1088,8 +1116,27 @@ def _run(job_id: str) -> None:
                 if eff_total > 1:
                     _update(job_id, progress=eff_done, total=eff_total)
 
-            def _on_track_result(r):
+            # Indexed by track_id so a track's "downloading" placeholder gets
+            # overwritten in place by its final result rather than duplicated —
+            # by the time the job finishes, track_results holds only final
+            # entries (unaffected downstream: M3U generation, success/fail
+            # counts below). Persisted on every start/result so the live log
+            # in the UI reflects in-progress tracks between /api/jobs polls,
+            # not just tracks that have already finished.
+            _track_index: dict[str, int] = {}
+
+            def _on_track_start(r):
+                _track_index[r["track_id"]] = len(track_results)
                 track_results.append(r)
+                _update(job_id, track_results=list(track_results))
+
+            def _on_track_result(r):
+                idx = _track_index.get(r["track_id"])
+                if idx is not None:
+                    track_results[idx] = r
+                else:
+                    track_results.append(r)
+                _update(job_id, track_results=list(track_results))
 
             if batch_urls:
                 from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient, parse_spotify_url
@@ -1113,9 +1160,12 @@ def _run(job_id: str) -> None:
                     is_album=False, is_playlist=True,
                     on_track_done=lambda done: _on_progress(done, len(tracks)),
                     on_track_result=_on_track_result,
+                    on_track_start=_on_track_start,
                 ).run()
             else:
-                downloader = _TrackingDownloader(opts, _on_progress, _on_track_result)
+                downloader = _TrackingDownloader(
+                    opts, _on_progress, _on_track_result, on_track_start=_on_track_start,
+                )
                 downloader.run(url)
 
                 if generate_m3u and getattr(downloader, "is_playlist", False) and track_results:

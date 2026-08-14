@@ -762,13 +762,18 @@ button { cursor: pointer; font-family: inherit; border: none; }
 .job-item.expanded .job-expand { display: block; }
 .job-expand-btn { background: none; border: none; padding: 0 2px; color: var(--md-on-surface-variant); cursor: pointer; display: flex; align-items: center; flex-shrink: 0; transition: transform .2s; }
 .job-item.expanded .job-expand-btn .material-icons { transform: rotate(180deg); }
-.track-list  { display: flex; flex-direction: column; gap: 3px; max-height: 240px; overflow-y: auto; }
+/* max-height caps visible rows at ~5 (row height incl. gap ≈ 21.7px); the
+   rest scrolls — see the log-style track list used for job expand panels. */
+.track-list  { display: flex; flex-direction: column; gap: 3px; max-height: 112px; overflow-y: auto; }
 .track-row   { display: flex; align-items: baseline; gap: 6px; font-size: .78rem; line-height: 1.5; }
 .track-ok    { color: var(--green); flex-shrink: 0; }
 .track-fail  { color: var(--red); flex-shrink: 0; }
+.track-dl    { color: var(--md-primary); flex-shrink: 0; font-size: 13px; animation: spin-icon .9s linear infinite; }
 .track-name  { color: var(--md-on-surface); }
 .track-err   { color: var(--md-on-surface-variant); font-family: 'Roboto Mono', monospace; font-size: .7rem; }
 .track-artist { color: var(--md-on-surface-variant); font-size: .7rem; }
+.track-status { color: var(--md-on-surface-variant); font-size: .7rem; }
+.track-time  { color: var(--md-on-surface-variant); font-family: 'Roboto Mono', monospace; font-size: .68rem; margin-left: auto; flex-shrink: 0; }
 .track-show-toggle { font-size: .72rem; color: var(--md-primary); font-weight: 500; margin-top: 5px; cursor: pointer; user-select: none; }
 .track-show-toggle:hover { opacity: .85; }
 
@@ -2541,24 +2546,29 @@ function renderJobs() {
 
     let expandPanel = '';
     if (hasTracks) {
-      if (j.track_results && j.track_results.length > 0) {
-        const failures = j.track_results.filter(r => !r.success);
+      const results = j.track_results || [];
+      if (!results.length) {
+        expandPanel = `<div class="job-expand"><div class="track-list"><div class="track-row" style="color:var(--md-on-surface-variant)">Resolving…</div></div></div>`;
+      } else {
+        const failures = results.filter(r => r.status === 'failed' || (r.status == null && r.success === false));
         const showAll  = _jobShowAll.has(j.id) || failures.length === 0;
-        const shown    = showAll ? j.track_results : failures;
-        const rows = shown.map(r => r.success
-          ? `<div class="track-row"><span class="track-ok">✓</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span></div>`
-          : `<div class="track-row"><span class="track-fail">✗</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span><span class="track-err">— ${fmtTrackError(r.error)}</span></div>`
-        ).join('');
-        const toggleLabel = showAll ? 'Show failures only' : `Show all ${j.track_results.length} tracks`;
-        const toggleBtn = failures.length > 0 && j.track_results.length > failures.length
+        const shown    = showAll ? results : failures;
+        const rows = shown.map(r => {
+          const timing = (r.elapsed_s != null) ? ` <span class="track-time">${r.elapsed_s}s</span>` : '';
+          if (r.status === 'downloading') {
+            return `<div class="track-row"><span class="track-dl material-icons">autorenew</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span><span class="track-status">downloading…</span></div>`;
+          }
+          if (r.status === 'failed' || (r.status == null && r.success === false)) {
+            return `<div class="track-row"><span class="track-fail">✗</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span><span class="track-err">— ${fmtTrackError(r.error)}</span>${timing}</div>`;
+          }
+          const statusLabel = r.status === 'found' ? 'found in files' : 'downloaded';
+          return `<div class="track-row"><span class="track-ok">✓</span><span class="track-name">${esc(r.title)}</span><span class="track-artist">${esc(r.artists||'')}</span><span class="track-status">${statusLabel}</span>${timing}</div>`;
+        }).join('');
+        const toggleLabel = showAll ? 'Show failures only' : `Show all ${results.length} tracks`;
+        const toggleBtn = failures.length > 0 && results.length > failures.length
           ? `<div class="track-show-toggle" data-action="tracks-toggle" data-id="${esc(j.id)}">${toggleLabel}</div>`
           : '';
         expandPanel = `<div class="job-expand"><div class="track-list">${rows}</div>${toggleBtn}</div>`;
-      } else {
-        const loadMsg = j.status === 'running'
-          ? `${j.total} tracks — downloading…`
-          : `${j.total} tracks`;
-        expandPanel = `<div class="job-expand"><div class="track-row" style="color:var(--md-on-surface-variant);font-size:.8125rem">${loadMsg}</div></div>`;
       }
     }
 
@@ -2589,6 +2599,12 @@ function renderJobs() {
   }).join('');
 
   const newH = el.offsetHeight;
+
+  // Keep each expanded job's track log scrolled to its most recent entry.
+  _jobExpanded.forEach(id => {
+    const list = el.querySelector(`.job-item[data-id="${CSS.escape(id)}"] .track-list`);
+    if (list) list.scrollTop = list.scrollHeight;
+  });
 
   // Animate newly added items
   el.querySelectorAll('.job-item[data-id]').forEach(item => {
