@@ -39,6 +39,7 @@ _enrich_state: dict = {
     "started_at":  None,  # time.monotonic() when thread began; used for live ETA
     "error_log":   [],   # list of {"path": str, "error": str}
     "moved_log":   [],   # list of {"from": str, "to": str}
+    "dupes_log":   [],   # list of {"removed": str, "kept": str}
 }
 
 _VALID_SERVICES   = {"tidal", "qobuz", "amazon", "deezer", "youtube"}
@@ -715,6 +716,10 @@ def api_tasks():
                 detail = f"{pct} · {eta_str} remaining"
             else:
                 detail = f"{pct} · estimating…"
+            # Dedup is a pre-pass that fully completes before this "running"
+            # state begins, so the count is already final — show it now
+            # rather than only in the post-completion summary below.
+            if es["dupes"]: detail += f" · {es['dupes']} dupes removed"
         else:
             secs   = es["elapsed"] or 0
             dur    = f"{secs:.1f}s" if secs < 60 else f"{math.floor(secs/60)}m {secs%60:.0f}s"
@@ -736,6 +741,7 @@ def api_tasks():
             "total_count":    es["total"],
             "errors_log":     es.get("error_log", []),
             "moved_log":      es.get("moved_log", []),
+            "dupes_log":      es.get("dupes_log", []),
         })
 
     import listenbrainz as _lb
@@ -1037,8 +1043,8 @@ def _metadata_score(abs_path: str, audio) -> int:
     return score
 
 
-def _find_duplicate_tracks(rel_paths: list[str], root: str) -> list[str]:
-    """Return the rel-paths of duplicate tracks to remove, keeping the best copy.
+def _find_duplicate_tracks(rel_paths: list[str], root: str) -> list[dict]:
+    """Return duplicate tracks to remove, each as {"removed": rel, "kept": rel}.
 
     Identity key: (normalised first artist, normalised title, duration bucket).
     Duration is bucketed to ±5 s to tolerate minor format differences.
@@ -1052,8 +1058,8 @@ def _find_duplicate_tracks(rel_paths: list[str], root: str) -> list[str]:
     """
     from mutagen import File as MFile
 
-    seen: dict[tuple, tuple[int, int, str]] = {}  # key → (meta_score, bitrate, rel)
-    to_remove: list[str] = []
+    # First pass: score every file, grouped by identity key.
+    by_key: dict[tuple, list[tuple[int, int, str]]] = {}  # key → [(meta_score, bitrate, rel), ...]
 
     for rel in rel_paths:
         abs_path = os.path.join(root, *rel.replace("\\", "/").split("/"))
@@ -1078,22 +1084,23 @@ def _find_duplicate_tracks(rel_paths: list[str], root: str) -> list[str]:
 
             meta_score = _metadata_score(abs_path, audio)
             bitrate    = getattr(audio.info, "bitrate", 0) or 0
-
-            if key in seen:
-                prev_score, prev_bitrate, prev_rel = seen[key]
-                if meta_score > prev_score or (meta_score == prev_score and bitrate > prev_bitrate):
-                    # Current copy is better — discard the previous one
-                    to_remove.append(prev_rel)
-                    seen[key] = (meta_score, bitrate, rel)
-                else:
-                    # Previous copy is better or equal — discard current
-                    to_remove.append(rel)
-            else:
-                seen[key] = (meta_score, bitrate, rel)
+            by_key.setdefault(key, []).append((meta_score, bitrate, rel))
         except Exception:
             continue
 
-    return to_remove
+    # Second pass: within each group of more than one copy, keep the single
+    # best and pair every other copy with it — so callers can show exactly
+    # what was removed *and* what survived in its place, not just a count.
+    result: list[dict] = []
+    for entries in by_key.values():
+        if len(entries) < 2:
+            continue
+        best = max(entries, key=lambda e: (e[0], e[1]))
+        for meta_score, bitrate, rel in entries:
+            if rel != best[2]:
+                result.append({"removed": rel, "kept": best[2]})
+
+    return result
 
 
 def _run_enrich_bg(rel_paths: list, root: str, providers: list,
@@ -1117,22 +1124,28 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
 
     # ── Deduplication pre-pass ────────────────────────────────────────────────
     dupes = 0
-    dup_rels = _find_duplicate_tracks(rel_paths, root)
-    if dup_rels:
-        dup_set = set(dup_rels)
-        for rel in dup_rels:
+    dupes_log: list[dict] = []
+    dup_entries = _find_duplicate_tracks(rel_paths, root)
+    if dup_entries:
+        dup_set = {e["removed"] for e in dup_entries}
+        for entry in dup_entries:
+            rel = entry["removed"]
             abs_path = os.path.join(root, *rel.replace("\\", "/").split("/"))
             try:
                 os.remove(abs_path)
                 _cleanup_empty_dirs_up(os.path.dirname(abs_path), root)
                 dupes += 1
-                log.info("Dedup: removed duplicate %s", rel)
+                if len(dupes_log) < 50:
+                    dupes_log.append({"removed": rel, "kept": entry["kept"]})
+                log.info("Dedup: removed duplicate %s (kept %s)", rel, entry["kept"])
             except OSError as exc:
                 log.warning("Dedup: could not remove %s: %s", rel, exc)
         rel_paths = [r for r in rel_paths if r not in dup_set]
 
     with _enrich_lock:
         _enrich_state["total"] = len(rel_paths)
+        _enrich_state["dupes"] = dupes
+        _enrich_state["dupes_log"] = list(dupes_log)
 
     try:
         from SpotiFLAC.core.metadata_enrichment import enrich_metadata as _enrich
@@ -1173,7 +1186,8 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
     t0       = time.monotonic()
 
     with _enrich_lock:
-        _enrich_state.update(total=total, done=0, enriched=0, moved=0, dupes=dupes,
+        _enrich_state.update(total=total, done=0, enriched=0, moved=0,
+                             dupes=dupes, dupes_log=list(dupes_log),
                              errors=0, error_log=[], moved_log=[], started_at=t0)
 
     for i, rel in enumerate(rel_paths):
@@ -1277,7 +1291,8 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
     elapsed = time.monotonic() - t0
     with _enrich_lock:
         _enrich_state.update(running=False, elapsed=elapsed,
-                             enriched=enriched, moved=moved, dupes=dupes,
+                             enriched=enriched, moved=moved,
+                             dupes=dupes, dupes_log=list(dupes_log),
                              errors=errors,
                              error_log=list(error_log), moved_log=list(moved_log))
     log.info("Enrich done — %d enriched, %d moved, %d dupes removed, %d errors in %.1fs",
