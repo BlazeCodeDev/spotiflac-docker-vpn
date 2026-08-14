@@ -568,6 +568,41 @@ def _write_m3u(output_dir: str, name: str, entries: list[dict]) -> str | None:
     return m3u_path
 
 
+def _index_existing_files(base: str) -> dict[str, tuple[str, int]]:
+    """One-pass recursive scan mapping casefolded relative path -> (real relpath, size).
+
+    Pre-scan used to check "is this track already downloaded" for every track
+    in a job used to do that with individual exists()/stat() calls per track
+    per candidate extension — O(tracks * extensions) syscalls against the same
+    tree. A single os.walk() here + dict lookups afterward turns that into one
+    directory scan no matter how many tracks are in the job.
+    """
+    index: dict[str, tuple[str, int]] = {}
+    base = os.path.abspath(base)
+    for dirpath, _dirnames, filenames in os.walk(base):
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            try:
+                size = os.path.getsize(full)
+            except OSError:
+                continue
+            rel = os.path.relpath(full, base)
+            index[rel.casefold()] = (rel, size)
+    return index
+
+
+def _find_existing_track(
+    index: dict[str, tuple[str, int]], out_dir: str, base_out: str, fname: str,
+):
+    """Looks up `fname` (relative to out_dir) in the index built by _index_existing_files."""
+    rel_dir = os.path.relpath(out_dir, base_out)
+    rel_candidate = fname if rel_dir in (".", "") else os.path.join(rel_dir, fname)
+    entry = index.get(rel_candidate.casefold())
+    if entry and entry[1] > 0:
+        return os.path.join(base_out, entry[0])
+    return None
+
+
 class _TrackingWorker(DownloadWorker):
     """DownloadWorker that fires callbacks after each track."""
 
@@ -603,8 +638,11 @@ class _TrackingWorker(DownloadWorker):
         done     = 0
 
         # Pre-scan: check the output folder for every track before starting any
-        # downloads so files that already exist are never re-downloaded.
+        # downloads so files that already exist are never re-downloaded. Uses a
+        # single recursive directory index (see _index_existing_files) instead
+        # of per-track/per-extension exists()+stat() calls.
         # We also cache each track's output directory so the loop doesn't recompute it.
+        existing_index = _index_existing_files(base_out)
         track_dirs:   list[str]             = []
         pre_existing: list[_Path | None]    = []
         for i, track in enumerate(self._tracks):
@@ -621,9 +659,9 @@ class _TrackingWorker(DownloadWorker):
                     first_artist_only    = self._opts.first_artist_only,
                     extension            = ext,
                 )
-                candidate = _Path(out_dir) / fname
-                if candidate.exists() and candidate.stat().st_size > 0:
-                    found = candidate
+                match = _find_existing_track(existing_index, out_dir, base_out, fname)
+                if match:
+                    found = _Path(match)
                     break
             pre_existing.append(found)
 
@@ -726,6 +764,10 @@ class _TrackingWorker(DownloadWorker):
         base_out = self._resolve_output_dir()
         done     = 0
 
+        # Single recursive directory index instead of per-track/per-extension
+        # exists()+stat() calls — see _index_existing_files. Run off-thread so
+        # a large existing library doesn't stall the shared event loop.
+        existing_index = await _asyncio.to_thread(_index_existing_files, base_out)
         track_dirs:   list[str]          = []
         pre_existing: list[_Path | None] = []
         for i, track in enumerate(self._tracks):
@@ -742,9 +784,9 @@ class _TrackingWorker(DownloadWorker):
                     first_artist_only      = self._opts.first_artist_only,
                     extension              = ext,
                 )
-                candidate = _Path(out_dir) / fname
-                if candidate.exists() and candidate.stat().st_size > 0:
-                    found = candidate
+                match = _find_existing_track(existing_index, out_dir, base_out, fname)
+                if match:
+                    found = _Path(match)
                     break
             pre_existing.append(found)
 
