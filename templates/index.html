@@ -1243,6 +1243,18 @@ html.theme-transitioning *::after {
           <div class="shint">Providers queried in parallel · first result per field wins · Deezer &amp; Apple are free</div>
         </div>
 
+        <div class="sdivider"></div>
+
+        <div class="sgroup">
+          <div class="sgroup-label">M3U playlists</div>
+          <div style="display:flex;gap:6px" id="cfg-m3u-mode">
+            <button type="button" class="sort-pill" data-m3u-mode="always">Always</button>
+            <button type="button" class="sort-pill" data-m3u-mode="ask">Ask</button>
+            <button type="button" class="sort-pill" data-m3u-mode="never">Never</button>
+          </div>
+          <div class="shint">Whether to write an M3U file (in a Playlists/ subfolder) for playlist downloads</div>
+        </div>
+
         <div style="height:16px"></div>
       </div>
 
@@ -1872,6 +1884,8 @@ async function openSettingsModal() {
     const lbDays = new Set((Array.isArray(d.listenbrainz_days) && d.listenbrainz_days.length ? d.listenbrainz_days : [0,1,2,3,4,5,6]).map(Number));
     document.querySelectorAll('.lb-day').forEach(b => b.classList.toggle('active', lbDays.has(+b.dataset.day)));
     document.getElementById('cfg-lb-time').value       = d.listenbrainz_time ?? '06:00';
+    const m3uMode = (d.m3u_mode === 'always' || d.m3u_mode === 'never') ? d.m3u_mode : 'ask';
+    document.querySelectorAll('#cfg-m3u-mode .sort-pill').forEach(b => b.classList.toggle('active', b.dataset.m3uMode === m3uMode));
     if (Array.isArray(d.services) && d.services.length) {
       _enabledSet = new Set(d.services);
       const disabledSvcs = svcOrder.filter(s => !_enabledSet.has(s.id));
@@ -2269,6 +2283,7 @@ document.getElementById('btn-cfg-save').addEventListener('click', async () => {
     listenbrainz_username:     document.getElementById('cfg-lb-username').value.trim(),
     listenbrainz_days:         [...document.querySelectorAll('.lb-day.active')].map(b => +b.dataset.day),
     listenbrainz_time:         document.getElementById('cfg-lb-time').value || '06:00',
+    m3u_mode:           document.querySelector('#cfg-m3u-mode .sort-pill.active')?.dataset.m3uMode || 'ask',
   };
   const numericFields = ['retry_interval_min', 'retry_max_count', 'track_delay_s', 'max_workers'];
   if (numericFields.some(k => isNaN(payload[k]))) { msg.textContent = 'Invalid values'; return; }
@@ -2302,6 +2317,11 @@ document.getElementById('btn-tidal-refresh').addEventListener('click', async () 
 });
 document.querySelectorAll('.lb-day').forEach(btn => {
   btn.addEventListener('click', () => btn.classList.toggle('active'));
+});
+document.querySelectorAll('#cfg-m3u-mode .sort-pill').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#cfg-m3u-mode .sort-pill').forEach(b => b.classList.toggle('active', b === btn));
+  });
 });
 document.getElementById('btn-settings-lb-sync').addEventListener('click', async () => {
   const btn = document.getElementById('btn-settings-lb-sync');
@@ -2776,6 +2796,12 @@ document.getElementById('btn-dl').addEventListener('click', async () => {
     return;
   }
   if (lines.some(_isSpotifyPlaylistUrl)) {
+    let mode = 'ask';
+    try {
+      mode = (await fetch('/api/settings').then(r => r.json())).m3u_mode || 'ask';
+    } catch {}
+    if (mode === 'always') { await _submitDownload(urls, true);  return; }
+    if (mode === 'never')  { await _submitDownload(urls, false); return; }
     _m3uPending = urls;
     document.getElementById('m3u-confirm-modal').classList.add('open');
     return;

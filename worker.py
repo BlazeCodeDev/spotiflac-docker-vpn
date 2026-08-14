@@ -130,11 +130,44 @@ def _dispatcher() -> None:
             threading.Thread(target=_run, daemon=True, args=(job_id,)).start()
 
 
+def refresh_tidal_api_list(force: bool = False) -> list:
+    """Refreshes SpotiFLAC's Tidal proxy-API URL list (gist fetch + cache).
+
+    SpotiFLAC ≤ 1.4.x exposed a sync `refresh_tidal_api_list`; 1.7.x dropped it
+    in favor of the async-only `refresh_tidal_api_list_async` (same pattern as
+    download_one/enrich_metadata/validate_downloaded_track — see worker.py's
+    other version-fallback imports). Nothing in SpotiFLAC itself calls either
+    one automatically, and the real download path (TidalProvider's plain
+    constructor) only ever *reads* the cache, never refreshes it — so without
+    this being called somewhere, an empty/stale cache is permanent until
+    someone hits this function.
+    """
+    try:
+        from SpotiFLAC.providers.tidal import refresh_tidal_api_list as _refresh
+        return _refresh(force=force)
+    except ImportError:
+        from SpotiFLAC.providers.tidal import refresh_tidal_api_list_async as _refresh_async
+        return _run_coro_sync(_refresh_async(force=force))
+
+
+def _prime_tidal_api_list() -> None:
+    """Best-effort background warm-up so a fresh container (or a cache wiped by
+    a restart — the cache lives outside the /downloads volume) doesn't start
+    every Tidal download failing with 'no Tidal APIs configured' until someone
+    notices and clicks Refresh in Settings."""
+    try:
+        urls = refresh_tidal_api_list(force=False)
+        log.info("Tidal API list primed: %d endpoint(s)", len(urls))
+    except Exception as exc:
+        log.warning("Tidal API list priming failed (will retry on first use/manual refresh): %s", exc)
+
+
 def init(max_workers: int) -> None:
     global _semaphore
     _semaphore = threading.BoundedSemaphore(max_workers)
     log.info("MAX_WORKERS = %d", max_workers)
     threading.Thread(target=_dispatcher, daemon=True, name="job-dispatcher").start()
+    threading.Thread(target=_prime_tidal_api_list, daemon=True, name="tidal-api-prime").start()
 
 _STATE_FILE       = os.environ.get("STATE_FILE", "/vpn/jobs.json")
 _VPN_RECONNECT    = "/tmp/vpn_reconnect"

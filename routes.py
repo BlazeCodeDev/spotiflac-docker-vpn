@@ -150,7 +150,16 @@ def api_download():
     pre_success_count = _safe_int(body.get("pre_success_count", 0), 0)
     full_total        = _safe_int(body.get("full_total", 0), 0)
     pre_title         = str(body.get("pre_title", ""))
-    generate_m3u      = bool(body.get("generate_m3u", False))
+
+    # "always"/"never" override whatever the client sent; "ask" trusts the
+    # client's answer to the per-download prompt.
+    m3u_mode = cfg.get("m3u_mode", "ask")
+    if m3u_mode == "always":
+        generate_m3u = True
+    elif m3u_mode == "never":
+        generate_m3u = False
+    else:
+        generate_m3u = bool(body.get("generate_m3u", False))
 
     os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
 
@@ -240,8 +249,7 @@ def api_vpn_reconnect():
 @bp.post("/api/tidal/refresh")
 def api_tidal_refresh():
     try:
-        from SpotiFLAC.providers.tidal import refresh_tidal_api_list
-        urls = refresh_tidal_api_list(force=True)
+        urls = worker.refresh_tidal_api_list(force=True)
         return jsonify(ok=True, count=len(urls))
     except Exception as exc:
         log.warning("Tidal API refresh failed: %s", exc)
@@ -1543,6 +1551,13 @@ def api_settings_patch():
                 errors["services"] = "no valid service names"
             else:
                 updates["services"] = cleaned
+
+    if "m3u_mode" in body:
+        raw = str(body["m3u_mode"])
+        if raw in ("always", "ask", "never"):
+            updates["m3u_mode"] = raw
+        else:
+            errors["m3u_mode"] = "must be 'always', 'ask', or 'never'"
 
     if errors:
         return jsonify(error="Invalid values", fields=errors), 400

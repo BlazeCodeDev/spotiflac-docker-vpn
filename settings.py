@@ -16,6 +16,9 @@ def _defaults() -> dict:
         "services":    [s.strip() for s in os.environ.get("SPOTIFLAC_SERVICES", "tidal,qobuz,amazon,youtube").split(",") if s.strip()],
         "filename_fmt": os.environ.get("FILENAME_FORMAT", "{artist}/{album}/{track} {title}"),
         "qobuz_token":  os.environ.get("QOBUZ_TOKEN",    ""),
+        # M3U playlist file generation for playlist downloads: "always", "ask" (prompt
+        # per download), or "never".
+        "m3u_mode": os.environ.get("M3U_MODE", "ask"),
         # Retry
         "retry_interval_min": int(os.environ.get("RETRY_MINUTES",       "5")),
         "retry_max_count":    int(os.environ.get("RETRY_MAX_COUNT",      "3")),
