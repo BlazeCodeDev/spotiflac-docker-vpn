@@ -150,6 +150,7 @@ def api_download():
     pre_success_count = _safe_int(body.get("pre_success_count", 0), 0)
     full_total        = _safe_int(body.get("full_total", 0), 0)
     pre_title         = str(body.get("pre_title", ""))
+    generate_m3u      = bool(body.get("generate_m3u", False))
 
     os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
 
@@ -159,6 +160,7 @@ def api_download():
         filename_fmt=cfg["filename_fmt"],
         qobuz_token=qobuz_token,
         quality=quality,
+        generate_m3u=generate_m3u,
     )
 
     # Partial batch retry: multiple track URLs with an offset → one job

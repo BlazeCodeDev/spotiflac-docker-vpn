@@ -2,6 +2,7 @@ import heapq
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -322,7 +323,8 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
             qobuz_token: str,
             quality: str = "lossless",
             pre_success_count: int = 0, full_total: int = 0,
-            batch_urls: list | None = None, pre_title: str = "") -> str:
+            batch_urls: list | None = None, pre_title: str = "",
+            generate_m3u: bool = False) -> str:
     global _seq
     jid = str(uuid.uuid4())[:8]
     with _lock:
@@ -335,7 +337,7 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
             track_results=None, success_count=None, fail_count=None,
             retry_count=0, retry_max=None, next_retry_at=None,
             pre_success_count=pre_success_count, full_total=full_total,
-            _batch_urls=batch_urls or [],
+            _batch_urls=batch_urls or [], generate_m3u=generate_m3u,
             output_dir=output_dir, services=services, filename_fmt=filename_fmt,
             quality=quality, _qobuz_token=qobuz_token,
             _seq=_seq,
@@ -484,6 +486,55 @@ async def _validate_track_async(filepath: str, expected_s: int) -> tuple[bool, s
     return _explain_validation(ok, msg, expected_s)
 
 
+_M3U_UNSAFE_RE = re.compile(r'[<>:"/\\|?*]')
+_M3U_SUBDIR    = "Playlists"
+
+
+def _write_m3u(output_dir: str, name: str, entries: list[dict]) -> str | None:
+    """Writes an extended M3U listing `entries` (in order) to output_dir/Playlists.
+
+    Kept in its own subfolder so playlist files don't clutter the flat track
+    directory. Paths inside the M3U stay relative to the M3U's own location
+    (one level up to reach the tracks), so the pair stays portable together.
+
+    Mirrors upstream SpotiFLAC's own playlist_sync.py rendering (paths relative
+    to the playlist file, #EXTINF duration + "artist - title"), but written
+    independently rather than importing that module — it's SpotiFLAC-internal
+    and not something patch_spotiflac.py's version-locked patches cover.
+    """
+    usable = [e for e in entries if e.get("file_path") and os.path.exists(e["file_path"])]
+    if not usable:
+        return None
+
+    m3u_dir = os.path.join(output_dir, _M3U_SUBDIR)
+    try:
+        os.makedirs(m3u_dir, exist_ok=True)
+    except OSError as exc:
+        log.warning("Failed to create M3U directory %s: %s", m3u_dir, exc)
+        return None
+
+    safe = _M3U_UNSAFE_RE.sub("_", (name or "Playlist").strip()) or "Playlist"
+    m3u_path = os.path.join(m3u_dir, f"{safe}.m3u8")
+
+    lines = ["#EXTM3U"]
+    for e in usable:
+        duration_s = round(e["duration_ms"] / 1000) if e.get("duration_ms") else -1
+        artists = e.get("artists") or ""
+        title = e.get("title") or ""
+        lines.append(f"#EXTINF:{duration_s},{artists} - {title}")
+        rel = os.path.relpath(e["file_path"], m3u_dir)
+        lines.append(rel.replace(os.sep, "/"))
+    content = "\n".join(lines) + "\n"
+
+    try:
+        with open(m3u_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
+    except OSError as exc:
+        log.warning("Failed to write M3U %s: %s", m3u_path, exc)
+        return None
+    return m3u_path
+
+
 class _TrackingWorker(DownloadWorker):
     """DownloadWorker that fires callbacks after each track."""
 
@@ -564,6 +615,7 @@ class _TrackingWorker(DownloadWorker):
                         "track_id": track.id,
                         "title": track.title, "artists": track.artists,
                         "success": True, "error": None,
+                        "file_path": str(existing), "duration_ms": track.duration_ms,
                     })
                 done += 1
                 self._on_track_done(done)
@@ -585,6 +637,7 @@ class _TrackingWorker(DownloadWorker):
                             "track_id": track.id,
                             "title": track.title, "artists": track.artists,
                             "success": False, "error": val_reason,
+                            "file_path": None, "duration_ms": track.duration_ms,
                         })
                 else:
                     try:
@@ -601,6 +654,7 @@ class _TrackingWorker(DownloadWorker):
                             "track_id": track.id,
                             "title": track.title, "artists": track.artists,
                             "success": True, "error": None,
+                            "file_path": result.file_path, "duration_ms": track.duration_ms,
                         })
             else:
                 err = result.error or "unknown"
@@ -611,6 +665,7 @@ class _TrackingWorker(DownloadWorker):
                         "track_id": track.id,
                         "title": track.title, "artists": track.artists,
                         "success": False, "error": err,
+                        "file_path": None, "duration_ms": track.duration_ms,
                     })
 
             done += 1
@@ -685,6 +740,7 @@ class _TrackingWorker(DownloadWorker):
                         "track_id": track.id,
                         "title": track.title, "artists": track.artists,
                         "success": True, "error": None,
+                        "file_path": str(existing), "duration_ms": track.duration_ms,
                     })
                 done += 1
                 self._on_track_done(done)
@@ -712,6 +768,7 @@ class _TrackingWorker(DownloadWorker):
                             "track_id": track.id,
                             "title": track.title, "artists": track.artists,
                             "success": False, "error": val_reason,
+                            "file_path": None, "duration_ms": track.duration_ms,
                         })
                 else:
                     try:
@@ -730,6 +787,7 @@ class _TrackingWorker(DownloadWorker):
                             "track_id": track.id,
                             "title": track.title, "artists": track.artists,
                             "success": True, "error": None,
+                            "file_path": result.file_path, "duration_ms": track.duration_ms,
                         })
             else:
                 err = result.error or "unknown"
@@ -742,6 +800,7 @@ class _TrackingWorker(DownloadWorker):
                         "track_id": track.id,
                         "title": track.title, "artists": track.artists,
                         "success": False, "error": err,
+                        "file_path": None, "duration_ms": track.duration_ms,
                     })
 
             done += 1
@@ -810,6 +869,9 @@ class _TrackingDownloader(SpotiflacDownloader):
             is_album    = info["type"] == "album"
             is_playlist = info["type"] == "playlist"
 
+        self.is_playlist     = is_playlist
+        self.collection_name = collection_name
+
         total = len(tracks)
         self._on_progress(0, total)
 
@@ -839,6 +901,8 @@ class _TrackingDownloader(SpotiflacDownloader):
     async def _run_worker_async(self, tracks, collection_name, info,
                                 is_album, is_playlist, opts=None):
         """Override for SpotiFLAC 1.2.9+: swap DownloadWorker for _TrackingWorker."""
+        self.is_playlist     = is_playlist
+        self.collection_name = collection_name
         effective = opts if opts is not None else self._opts
         manager   = DownloadManager()
         updated_tracks = []
@@ -896,6 +960,7 @@ def _run(job_id: str) -> None:
         pre_success_count = j.get("pre_success_count") or 0
         full_total        = j.get("full_total") or 0
         batch_urls        = j.get("_batch_urls") or []
+        generate_m3u      = bool(j.get("generate_m3u"))
 
         # Fetch metadata if title or cover are missing.
         # LB-sourced jobs have pre_title set so title is already known, but
@@ -975,7 +1040,17 @@ def _run(job_id: str) -> None:
                     on_track_result=_on_track_result,
                 ).run()
             else:
-                _TrackingDownloader(opts, _on_progress, _on_track_result).run(url)
+                downloader = _TrackingDownloader(opts, _on_progress, _on_track_result)
+                downloader.run(url)
+
+                if generate_m3u and getattr(downloader, "is_playlist", False) and track_results:
+                    try:
+                        m3u_name = getattr(downloader, "collection_name", "") or j.get("title") or "Playlist"
+                        m3u_path = _write_m3u(output_dir, m3u_name, track_results)
+                        if m3u_path:
+                            log.info("Wrote M3U playlist: %s", m3u_path)
+                    except Exception as exc:
+                        log.warning("M3U generation failed for job %s: %s", job_id, exc)
 
             new_success   = sum(1 for r in track_results if r["success"])
             new_fail      = len(track_results) - new_success

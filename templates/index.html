@@ -1444,6 +1444,22 @@ html.theme-transitioning *::after {
   </div>
 </div>
 
+<div id="m3u-confirm-modal" class="modal-overlay" role="dialog" aria-modal="true">
+  <div class="modal" style="max-width:400px">
+    <div class="modal-header">
+      <span class="modal-title" style="display:flex;align-items:center;gap:8px"><span class="material-icons" style="font-size:20px;color:#fbbf24">queue_music</span>Playlist Detected</span>
+      <button class="modal-close" id="m3u-confirm-close" title="Close"><span class="material-icons">close</span></button>
+    </div>
+    <div class="modal-body" style="padding-top:4px;display:flex;flex-direction:column;gap:12px">
+      <p style="margin:0;color:var(--md-on-surface);font-size:.9rem">Generate an M3U playlist file listing the downloaded tracks, in playlist order?</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" id="m3u-confirm-skip">Skip</button>
+      <button id="m3u-confirm-ok"><span class="material-icons" style="font-size:16px;vertical-align:-3px;margin-right:4px">queue_music</span>Generate M3U</button>
+    </div>
+  </div>
+</div>
+
 <script>
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
@@ -2725,11 +2741,33 @@ _urlsClear.addEventListener('click', () => {
 function _isSpotifyUrl(s) {
   return /open\.spotify\.com\/(track|album|playlist)\//.test(s);
 }
+function _isSpotifyPlaylistUrl(s) {
+  return /open\.spotify\.com\/playlist\//.test(s);
+}
+
+async function _submitDownload(urls, generateM3u) {
+  const msg = document.getElementById('msg');
+  msg.textContent = '…';
+  const res  = await fetch('/api/download', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      urls,
+      services:     getActiveServices(),
+      quality:      _quality,
+      qobuz_token:  document.getElementById('qobuz-token').value,
+      generate_m3u: generateM3u,
+    }),
+  });
+  const data = await res.json();
+  msg.textContent = res.ok ? `${data.queued} job(s) started` : (data.error||'Error');
+  if (res.ok) { _urlsEl.value=''; _urlsClear.style.display='none'; refreshJobs(); }
+}
+
+let _m3uPending = null;
 
 document.getElementById('btn-dl').addEventListener('click', async () => {
   const urls = document.getElementById('urls').value.trim();
   if (!urls) return;
-  const msg = document.getElementById('msg');
   const lines = urls.replace(/,/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
   if (!lines.every(_isSpotifyUrl)) {
     _populateSearchForm(urls);
@@ -2737,20 +2775,28 @@ document.getElementById('btn-dl').addEventListener('click', async () => {
     doSearch();
     return;
   }
-  msg.textContent = '…';
-  const res  = await fetch('/api/download', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({
-      urls,
-      services:    getActiveServices(),
-      quality:     _quality,
-      qobuz_token: document.getElementById('qobuz-token').value,
-    }),
-  });
-  const data = await res.json();
-  msg.textContent = res.ok ? `${data.queued} job(s) started` : (data.error||'Error');
-  if (res.ok) { _urlsEl.value=''; _urlsClear.style.display='none'; refreshJobs(); }
+  if (lines.some(_isSpotifyPlaylistUrl)) {
+    _m3uPending = urls;
+    document.getElementById('m3u-confirm-modal').classList.add('open');
+    return;
+  }
+  await _submitDownload(urls, false);
 });
+
+function _closeM3uConfirm() {
+  _m3uPending = null;
+  document.getElementById('m3u-confirm-modal').classList.remove('open');
+}
+async function _resolveM3uConfirm(generateM3u) {
+  const urls = _m3uPending;
+  _closeM3uConfirm();
+  if (urls) await _submitDownload(urls, generateM3u);
+}
+
+document.getElementById('m3u-confirm-close').addEventListener('click', _closeM3uConfirm);
+document.getElementById('m3u-confirm-skip') .addEventListener('click', () => _resolveM3uConfirm(false));
+document.getElementById('m3u-confirm-ok')   .addEventListener('click', () => _resolveM3uConfirm(true));
+document.getElementById('m3u-confirm-modal').addEventListener('click', e => { if (e.target === e.currentTarget) _closeM3uConfirm(); });
 
 document.getElementById('btn-clr').addEventListener('click', async () => {
   document.querySelectorAll('.job-item[data-id]').forEach(item => {
