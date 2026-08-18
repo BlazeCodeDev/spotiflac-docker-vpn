@@ -1562,7 +1562,7 @@ def api_settings_patch():
     updates = {}
     errors  = {}
 
-    for key in ("retry_interval_min", "retry_max_count", "max_workers", "reconnect_threshold"):
+    for key in ("retry_interval_min", "retry_max_count", "max_workers", "reconnect_threshold", "download_timeout_s"):
         if key not in body:
             continue
         try:

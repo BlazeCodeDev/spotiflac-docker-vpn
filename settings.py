@@ -30,6 +30,12 @@ def _defaults() -> dict:
         # Performance
         "track_delay_s": float(os.environ.get("TRACK_DELAY_SECONDS", "4.0")),
         "max_workers":   int(os.environ.get("MAX_WORKERS",           "3")),
+        # Per-extension-attempt timeout passed to SpotiFLAC's DownloadOptions.
+        # Extensions that solve a Cloudflare Turnstile challenge via a real
+        # browser (core/solver.py) can legitimately take 90-150s+ per attempt
+        # — SpotiFLAC's own JSExtensionProvider default (120s) is too short
+        # for that in practice. 0 = don't override (use SpotiFLAC's 120s).
+        "download_timeout_s": int(os.environ.get("DOWNLOAD_TIMEOUT_SECONDS", "300")),
         # VPN rotation: reconnect after this many consecutive all-provider failures
         # (0 = disabled)
         "reconnect_threshold": int(os.environ.get("VPN_RECONNECT_THRESHOLD", "3")),

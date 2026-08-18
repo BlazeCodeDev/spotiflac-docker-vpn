@@ -1255,8 +1255,15 @@ html.theme-transitioning *::after {
                 <span class="snum-unit">workers</span>
               </div>
             </div>
+            <div class="snum-item">
+              <span class="snum-label">Per-extension timeout</span>
+              <div class="snum-row">
+                <input type="number" id="cfg-download-timeout" min="0" max="1800" step="30">
+                <span class="snum-unit">sec</span>
+              </div>
+            </div>
           </div>
-          <div class="shint">Retry interval 0 = off · retries 0 = unlimited · increase delay if you hit rate limits</div>
+          <div class="shint">Retry interval 0 = off · retries 0 = unlimited · increase delay if you hit rate limits · per-extension timeout 0 = provider default (120s) — extensions that solve a Cloudflare challenge via a real browser can need much longer</div>
         </div>
 
         <div class="sgroup">
@@ -1937,6 +1944,7 @@ async function openSettingsModal() {
     document.getElementById('cfg-retry-max').value       = d.retry_max_count    ?? 3;
     document.getElementById('cfg-track-delay').value     = d.track_delay_s      ?? 4;
     document.getElementById('cfg-max-workers').value     = d.max_workers        ?? 3;
+    document.getElementById('cfg-download-timeout').value = d.download_timeout_s ?? 300;
     document.getElementById('cfg-filename-fmt').value    = d.filename_fmt ?? '{artist}/{album}/{track} {title}';
     document.getElementById('qobuz-token').value         = d.qobuz_token  ?? '';
     document.getElementById('cfg-registries').value      = (d.extension_registries ?? []).join('\n');
@@ -2338,6 +2346,7 @@ document.getElementById('btn-cfg-save').addEventListener('click', async () => {
     retry_max_count:    parseInt(document.getElementById('cfg-retry-max').value,      10),
     track_delay_s:      parseFloat(document.getElementById('cfg-track-delay').value),
     max_workers:        parseInt(document.getElementById('cfg-max-workers').value,    10),
+    download_timeout_s: parseInt(document.getElementById('cfg-download-timeout').value, 10),
     filename_fmt:       document.getElementById('cfg-filename-fmt').value,
     qobuz_token:        document.getElementById('qobuz-token').value,
     extension_registries: document.getElementById('cfg-registries').value.split('\n').map(s => s.trim()).filter(Boolean),
@@ -2351,7 +2360,7 @@ document.getElementById('btn-cfg-save').addEventListener('click', async () => {
     listenbrainz_time:         document.getElementById('cfg-lb-time').value || '06:00',
     m3u_mode:           document.querySelector('#cfg-m3u-mode .sort-pill.active')?.dataset.m3uMode || 'ask',
   };
-  const numericFields = ['retry_interval_min', 'retry_max_count', 'track_delay_s', 'max_workers'];
+  const numericFields = ['retry_interval_min', 'retry_max_count', 'track_delay_s', 'max_workers', 'download_timeout_s'];
   if (numericFields.some(k => isNaN(payload[k]))) { msg.textContent = 'Invalid values'; return; }
   try {
     const res  = await fetch('/api/settings', {

@@ -1247,6 +1247,9 @@ def _run(job_id: str) -> None:
             if "enrich_metadata" in _do_fields and cfg.get("enrich_metadata"):
                 _enrich_kwargs["enrich_metadata"]  = True
                 _enrich_kwargs["enrich_providers"] = cfg.get("enrich_providers", ["deezer", "apple"])
+            # 0 = leave SpotiFLAC's own default (120s) alone; see settings.py.
+            if "timeout_s" in _do_fields and cfg.get("download_timeout_s"):
+                _enrich_kwargs["timeout_s"] = cfg["download_timeout_s"]
             opts = DownloadOptions(
                 output_dir          = output_dir,
                 services            = services,
