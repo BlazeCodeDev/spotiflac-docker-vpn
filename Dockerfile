@@ -22,6 +22,18 @@ FROM python:3.12-alpine
 # Baked in at build time rather than relying on SpotiFLAC's own runtime
 # auto-install, which would otherwise hit the network for the first time from
 # inside the iptables kill-switch on first extension use.
+# xvfb + chromium: several extensions (qobuz-web, amazon, deezer, and Tidal's
+# own "LOSSLESS API" path all hit this) go through core/solver.py to solve a
+# Cloudflare Turnstile challenge via a real (though virtual) Chromium browser
+# — deliberately not `--headless`, since a fully headless browser is more
+# likely to be challenged in the first place. Without both binaries present,
+# every one of them fails identically with "[Errno 2] No such file or
+# directory: 'Xvfb'". solver.py starts/stops Xvfb itself (spawns `Xvfb :99`
+# and sets DISPLAY) and already passes --no-sandbox/--disable-dev-shm-usage,
+# so no extra entrypoint wiring or docker-compose shm_size bump is needed —
+# just the two binaries. Confirmed via Alpine's package index that `xvfb`
+# provides /usr/bin/Xvfb and `chromium` provides /usr/bin/chromium-browser,
+# which is exactly the path solver.py's _find_chrome() checks first.
 RUN apk add --no-cache \
     openvpn \
     wireguard-tools \
@@ -34,7 +46,14 @@ RUN apk add --no-cache \
     ffmpeg \
     flac \
     nodejs \
+    xvfb \
+    chromium \
     su-exec
+
+# Belt-and-suspenders: core/solver.py's _find_chrome() checks CHROME_PATH
+# before falling back to path probing/PATH search, so this pins the exact
+# binary instead of relying on that fallback order matching Alpine's layout.
+ENV CHROME_PATH=/usr/bin/chromium-browser
 
 # App runs as an unprivileged user (entrypoint drops root via su-exec) so a
 # compromised SpotiFLAC can't touch the NET_ADMIN kill-switch. The uid/gid are
