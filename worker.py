@@ -168,6 +168,28 @@ def refresh_tidal_api_list(force: bool = False) -> list:
     return mod.refresh_tidal_api_list(force=force)
 
 
+# Legacy service-name aliases this app relies on (see SpotiFLAC's
+# extensions/catalog.py SERVICE_ALIASES) — the download-capable ones mirror
+# _VALID_SERVICES in routes.py; apple-music backs the "apple" enrich_provider
+# only, not a download service.
+_DOWNLOAD_EXT_IDS = ("tidal-web", "qobuz-web", "amazon", "deezer", "ytmusic-spotiflac")
+_ALL_TARGET_EXT_IDS = _DOWNLOAD_EXT_IDS + ("apple-music",)
+
+
+def extensions_status() -> dict:
+    """Local-only (no network, no install attempts) check of which download
+    extensions are currently installed — cheap enough to call on every page
+    load, for the 'no extensions installed' banner."""
+    try:
+        from SpotiFLAC.extensions.manager import ExtensionManager
+    except ImportError:
+        return {"any_installed": False, "installed": [], "missing": list(_DOWNLOAD_EXT_IDS)}
+    mgr = ExtensionManager(auto_install_downloads=False)
+    installed = [eid for eid in _DOWNLOAD_EXT_IDS if mgr.get_installed(eid) is not None]
+    missing = [eid for eid in _DOWNLOAD_EXT_IDS if eid not in installed]
+    return {"any_installed": bool(installed), "installed": installed, "missing": missing}
+
+
 def refresh_extensions(force: bool = False) -> dict:
     """Installs/refreshes the extensions this app relies on for downloading
     (tidal-web, qobuz-web, amazon, deezer, ytmusic-spotiflac) and for metadata
@@ -188,9 +210,8 @@ def refresh_extensions(force: bool = False) -> dict:
         return {"_error": f"extensions module unavailable: {exc}"}
 
     mgr = ExtensionManager(auto_install_downloads=False)
-    target_ids = ("tidal-web", "qobuz-web", "amazon", "deezer", "ytmusic-spotiflac", "apple-music")
     results = {}
-    for ext_id in target_ids:
+    for ext_id in _ALL_TARGET_EXT_IDS:
         if not force and mgr.get_installed(ext_id) is not None:
             results[ext_id] = True
             continue

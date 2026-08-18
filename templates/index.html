@@ -255,6 +255,20 @@ header {
   color: var(--md-on-surface-variant);
 }
 
+/* ─── Warning banner (e.g. no extensions installed) ─────────────── */
+.warn-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; margin-bottom: 16px;
+  border-radius: 8px;
+  border: 1px solid var(--s-partial);
+  background: color-mix(in srgb, var(--s-partial) 10%, transparent);
+  color: var(--s-partial);
+  font-size: .85rem;
+}
+.warn-banner .material-icons { font-size: 18px; flex-shrink: 0; }
+.warn-banner span:nth-child(2) { flex: 1; color: var(--md-on-surface); }
+.warn-banner .btn-ghost { flex-shrink: 0; }
+
 /* ─── SpotiFLAC update chip ──────────────────────────────────────── */
 #update-chip {
   display: none; align-items: center; gap: 4px;
@@ -1044,6 +1058,11 @@ html.theme-transitioning *::after {
 </header>
 
 <main>
+  <div id="no-extensions-banner" class="warn-banner" style="display:none">
+    <span class="material-icons">warning</span>
+    <span>No download extensions installed — downloads won't work until you configure a registry and install one.</span>
+    <button class="btn-ghost" id="btn-banner-settings">Open Settings</button>
+  </div>
   <div class="card">
     <div class="card-header">
       <span class="section-title">Download or Search</span>
@@ -1169,14 +1188,15 @@ html.theme-transitioning *::after {
     </div>
 
     <div class="stab-bar">
-      <button class="stab active" data-stab="general">General</button>
-      <button class="stab" data-stab="system">System</button>
+      <button class="stab active" data-stab="appearance">Appearance</button>
+      <button class="stab" data-stab="library">Library &amp; Downloads</button>
+      <button class="stab" data-stab="providers">Providers &amp; Extensions</button>
     </div>
 
     <div class="modal-body">
 
-      <!-- ── General ─────────────────────────────────────────────── -->
-      <div class="stab-panel" data-spanel="general" style="padding-top:16px">
+      <!-- ── Appearance ──────────────────────────────────────────── -->
+      <div class="stab-panel" data-spanel="appearance" style="padding-top:16px">
 
         <div class="sgroup">
           <div class="sgroup-label">Accent color</div>
@@ -1188,19 +1208,11 @@ html.theme-transitioning *::after {
           <div class="color-presets" id="color-presets"></div>
         </div>
 
-        <div class="sdivider"></div>
+        <div style="height:16px"></div>
+      </div>
 
-        <div class="sgroup">
-          <div class="sgroup-label">Download sources</div>
-          <div id="services-list"></div>
-          <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
-            <label style="font-size:.82rem;color:var(--md-on-surface-variant);flex-shrink:0">Qobuz token</label>
-            <input type="password" id="qobuz-token" placeholder="optional" style="flex:1;min-width:0">
-          </div>
-          <div class="shint">Drag to reorder · enabled sources are tried top-to-bottom</div>
-        </div>
-
-        <div class="sdivider"></div>
+      <!-- ── Library & Downloads ─────────────────────────────────── -->
+      <div class="stab-panel" data-spanel="library" style="display:none;padding-top:16px">
 
         <div class="sgroup">
           <div class="sgroup-label">File output</div>
@@ -1248,6 +1260,18 @@ html.theme-transitioning *::after {
         <div class="sdivider"></div>
 
         <div class="sgroup">
+          <div class="sgroup-label">M3U playlists</div>
+          <div style="display:flex;gap:6px" id="cfg-m3u-mode">
+            <button type="button" class="sort-pill" data-m3u-mode="always">Always</button>
+            <button type="button" class="sort-pill" data-m3u-mode="ask">Ask</button>
+            <button type="button" class="sort-pill" data-m3u-mode="never">Never</button>
+          </div>
+          <div class="shint">Whether to write an M3U file (in a Playlists/ subfolder) for playlist downloads</div>
+        </div>
+
+        <div class="sdivider"></div>
+
+        <div class="sgroup">
           <div class="sgroup-label">Metadata enrichment</div>
           <div class="toggle-row">
             <span class="toggle-label">Fetch genre, label, BPM &amp; UPC after download</span>
@@ -1264,53 +1288,6 @@ html.theme-transitioning *::after {
             <label class="switch"><input type="checkbox" id="cfg-enrich-musicbrainz" checked><span class="slider"></span></label>
           </div>
           <div class="shint">Providers queried in parallel · first result per field wins · Deezer &amp; Apple are free</div>
-        </div>
-
-        <div class="sdivider"></div>
-
-        <div class="sgroup">
-          <div class="sgroup-label">M3U playlists</div>
-          <div style="display:flex;gap:6px" id="cfg-m3u-mode">
-            <button type="button" class="sort-pill" data-m3u-mode="always">Always</button>
-            <button type="button" class="sort-pill" data-m3u-mode="ask">Ask</button>
-            <button type="button" class="sort-pill" data-m3u-mode="never">Never</button>
-          </div>
-          <div class="shint">Whether to write an M3U file (in a Playlists/ subfolder) for playlist downloads</div>
-        </div>
-
-        <div style="height:16px"></div>
-      </div>
-
-      <!-- ── System ──────────────────────────────────────────────── -->
-      <div class="stab-panel" data-spanel="system" style="display:none;padding-top:16px">
-
-        <div class="sgroup">
-          <div class="sgroup-label">Extensions</div>
-          <textarea id="cfg-registries" rows="3" placeholder="https://example.com/my-registry.json&#10;one registry URL per line" style="width:100%;resize:vertical;font-family:monospace;font-size:.8rem"></textarea>
-          <div class="saction-row">
-            <button class="btn-ghost" id="btn-extensions-refresh">Install / Refresh Extensions</button>
-            <span id="extensions-refresh-msg" class="saction-msg"></span>
-          </div>
-          <div id="extensions-status-list" style="display:flex;flex-direction:column;gap:2px;font-size:.75rem"></div>
-          <div class="shint">SpotiFLAC ships no download providers of its own — Tidal/Qobuz/Amazon/Deezer/YouTube only work once you paste a registry URL you trust here, save, and click Install. Nothing is fetched or installed automatically.</div>
-        </div>
-
-        <div class="sdivider"></div>
-
-        <div class="sgroup">
-          <div class="sgroup-label">Provider health</div>
-          <div id="provider-health-list" style="display:flex;flex-direction:column;gap:2px;min-height:20px">
-            <span style="font-size:.8rem;color:var(--md-on-surface-variant)">Loading…</span>
-          </div>
-          <div class="saction-row">
-            <button class="btn-ghost" id="btn-tidal-refresh">Refresh Tidal APIs</button>
-            <span id="tidal-refresh-msg" class="saction-msg"></span>
-          </div>
-          <div class="saction-row">
-            <button class="btn-ghost" id="btn-provider-reset">Reset stats</button>
-            <span id="provider-reset-msg" class="saction-msg"></span>
-          </div>
-          <div class="shint">Tidal refresh fetches the latest proxy endpoints · failing APIs are auto-deprioritised during rotation</div>
         </div>
 
         <div class="sdivider"></div>
@@ -1354,6 +1331,53 @@ html.theme-transitioning *::after {
             <span id="settings-lb-sync-msg" class="saction-msg"></span>
           </div>
           <div class="shint">Monitors recommendation playlists on the selected days · tracks already in the library are skipped · Spotify IDs resolved via MusicBrainz</div>
+        </div>
+
+        <div style="height:16px"></div>
+      </div>
+
+      <!-- ── Providers & Extensions ──────────────────────────────── -->
+      <div class="stab-panel" data-spanel="providers" style="display:none;padding-top:16px">
+
+        <div class="sgroup">
+          <div class="sgroup-label">Download sources</div>
+          <div id="services-list"></div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
+            <label style="font-size:.82rem;color:var(--md-on-surface-variant);flex-shrink:0">Qobuz token</label>
+            <input type="password" id="qobuz-token" placeholder="optional" style="flex:1;min-width:0">
+          </div>
+          <div class="shint">Drag to reorder · enabled sources are tried top-to-bottom</div>
+        </div>
+
+        <div class="sdivider"></div>
+
+        <div class="sgroup">
+          <div class="sgroup-label">Extensions</div>
+          <textarea id="cfg-registries" rows="3" placeholder="https://example.com/my-registry.json&#10;one registry URL per line" style="width:100%;resize:vertical;font-family:monospace;font-size:.8rem"></textarea>
+          <div class="saction-row">
+            <button class="btn-ghost" id="btn-extensions-refresh">Install / Refresh Extensions</button>
+            <span id="extensions-refresh-msg" class="saction-msg"></span>
+          </div>
+          <div id="extensions-status-list" style="display:flex;flex-direction:column;gap:2px;font-size:.75rem"></div>
+          <div class="shint">SpotiFLAC ships no download providers of its own — Tidal/Qobuz/Amazon/Deezer/YouTube only work once you paste a registry URL you trust here, save, and click Install. Nothing is fetched or installed automatically.</div>
+        </div>
+
+        <div class="sdivider"></div>
+
+        <div class="sgroup">
+          <div class="sgroup-label">Provider health</div>
+          <div id="provider-health-list" style="display:flex;flex-direction:column;gap:2px;min-height:20px">
+            <span style="font-size:.8rem;color:var(--md-on-surface-variant)">Loading…</span>
+          </div>
+          <div class="saction-row">
+            <button class="btn-ghost" id="btn-tidal-refresh">Refresh Tidal APIs</button>
+            <span id="tidal-refresh-msg" class="saction-msg"></span>
+          </div>
+          <div class="saction-row">
+            <button class="btn-ghost" id="btn-provider-reset">Reset stats</button>
+            <span id="provider-reset-msg" class="saction-msg"></span>
+          </div>
+          <div class="shint">Tidal refresh fetches the latest proxy endpoints · failing APIs are auto-deprioritised during rotation</div>
         </div>
 
         <div style="height:16px"></div>
@@ -2308,7 +2332,7 @@ document.querySelectorAll('.stab').forEach(tab => {
     const target = tab.dataset.stab;
     document.querySelectorAll('.stab').forEach(t => t.classList.toggle('active', t === tab));
     document.querySelectorAll('.stab-panel').forEach(p => { p.style.display = p.dataset.spanel === target ? '' : 'none'; });
-    if (target === 'system') loadProviderStats();
+    if (target === 'providers') loadProviderStats();
   });
 });
 document.getElementById('btn-cfg-save').addEventListener('click', async () => {
@@ -2386,6 +2410,7 @@ document.getElementById('btn-extensions-refresh').addEventListener('click', asyn
         const detail = ok ? 'installed' : String(v);
         return `<span style="color:${color}">${ok ? '✓' : '✗'} ${id} — ${detail}</span>`;
       }).join('');
+      checkExtensionsStatus();
     } else {
       msg.textContent = `✗ ${data.error || 'Failed'}`;
       msg.style.color = 'var(--red)';
@@ -3609,6 +3634,20 @@ async function checkSpotiflacUpdate() {
 
 checkSpotiflacUpdate();
 setInterval(checkSpotiflacUpdate, 3_600_000);
+
+// ── No-extensions-installed banner ──────────────────────────────────────
+async function checkExtensionsStatus() {
+  try {
+    const d = await fetch('/api/extensions/status').then(r => r.json());
+    document.getElementById('no-extensions-banner').style.display = d.any_installed ? 'none' : 'flex';
+  } catch {}
+}
+document.getElementById('btn-banner-settings').addEventListener('click', async () => {
+  await openSettingsModal();
+  document.querySelector('.stab[data-stab="providers"]').click();
+});
+checkExtensionsStatus();
+setInterval(checkExtensionsStatus, 3_600_000);
 
 // ── Background tasks menu ─────────────────────────────────────────────────
 const _tasksWrap = document.getElementById('tasks-wrap');

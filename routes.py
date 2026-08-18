@@ -274,6 +274,15 @@ def api_tidal_refresh():
         return jsonify(ok=False, error=str(exc)), 502
 
 
+@bp.get("/api/extensions/status")
+def api_extensions_status():
+    try:
+        return jsonify(worker.extensions_status())
+    except Exception as exc:
+        log.warning("Extension status check failed: %s", exc)
+        return jsonify(any_installed=False, installed=[], missing=[], error=str(exc)), 500
+
+
 @bp.post("/api/extensions/refresh")
 def api_extensions_refresh():
     try:
