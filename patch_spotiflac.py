@@ -237,27 +237,78 @@ _apply(
 )
 
 # ---------------------------------------------------------------------------
-# Patch E: core/signed_session_mobile.py — cross-event-loop auth lock crash.
+# Patch E: core/signed_session_mobile.py — cross-event-loop/cross-thread auth
+# lock bug (crash, and worse, a silent deadlock+correctness bug once "fixed"
+# the naive way — see the long comment below before touching this again).
 # ---------------------------------------------------------------------------
 # _AUTH_LOCKS caches one asyncio.Lock per auth namespace (e.g. "zarz-v2", the
 # Tidal/Deezer/Qobuz-web signed-session flow) for the LIFETIME OF THE PROCESS,
 # on the documented assumption that "no download starts its own asyncio.run()"
 # — i.e. every caller shares one event loop. core/solver.py's Turnstile
 # solve()/solve_with_callback() break that assumption: each call wraps its
-# work in a fresh asyncio.run(), so it gets its own throwaway loop. The first
-# ever solve() call binds the cached lock to that (now-closed) loop; every
-# later call — including our own worker.py's persistent "spotiflac-loop" path
-# — then crashes trying to acquire it, with "<Lock ...> is bound to a
-# different event loop". Observed in practice: every provider that goes
-# through this shared signed-session layer (tidal-web, deezer, qobuz-web all
-# hit it in testing) fails identically after the very first Turnstile solve.
-# Fix: make _get_auth_lock loop-aware — reuse the cached lock only if it's
-# still bound to the currently-running loop, otherwise hand back a fresh one
-# scoped to this loop. No-op (same behavior as before) in the single-shared-
-# loop case this was originally written for.
+# work in a fresh asyncio.run(), so it gets its own throwaway loop, and
+# JSExtensionProvider's runtime pool can call into this from more than one
+# OS thread at once (parallel downloads). Observed symptom #1: "<Lock ...>
+# is bound to a different event loop" crashes on every provider using this
+# shared layer, after the very first Turnstile solve.
+#
+# FIRST FIX ATTEMPTED (do not repeat this): make _get_auth_lock "loop-aware"
+# by recreating the asyncio.Lock whenever `lock._loop is not
+# asyncio.get_running_loop()`. This stopped the crash but broke actual
+# mutual exclusion, silently: asyncio.Lock's fast, UNCONTENDED acquire path
+# never touches `_loop` at all — only a CONTENDED wait does. So two
+# concurrent callers on different loops/threads would each see `_loop`
+# unset, both treat the lock as "theirs", and both proceed at once. In
+# production this showed up as two coroutines driving the *same* pydoll
+# browser tab simultaneously (duplicate "Clicking element" log lines on the
+# same object_id, same devtools connection) — worse, if the loop mismatch
+# happened to occur on a genuinely CONTENDED cross-thread acquire, the
+# waiting side's Future got bound to its own loop, and the releasing
+# thread's `future.set_result()` call (not thread-safe across loops) could
+# silently never wake it, hanging forever.
+#
+# ACTUAL FIX: stop using asyncio.Lock for this. A plain threading.Lock has
+# none of these gaps (it doesn't care what loop or thread touches it), so
+# wrap one in a minimal async-compatible context manager that polls it
+# non-blockingly. This is deliberately the same shape as the
+# "_AsyncThreadLockCtx" wrapper this file's own comments say used to exist
+# for exactly this reason, before being optimized away under the
+# single-shared-loop assumption that doesn't hold in this deployment.
+_CROSS_LOOP_LOCK_CLASS = '''class _CrossLoopLock:
+    """threading.Lock-backed async context manager — unlike asyncio.Lock,
+    this genuinely serializes access across different event loops/threads.
+    See the long comment in patch_spotiflac.py (Patch E) for why asyncio.Lock
+    is unsafe here: its uncontended fast path never binds `_loop`, so a later
+    cross-thread contended acquire can silently adopt the wrong loop and
+    deadlock on release (Future.set_result isn't thread-safe cross-loop)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+
+    async def __aenter__(self) -> "_CrossLoopLock":
+        while not self._lock.acquire(blocking=False):
+            await asyncio.sleep(0.02)
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        self._lock.release()
+
+
+'''
+
+_apply(
+    "core/signed_session_mobile.py",
+    "import secrets\nimport time\n",
+    "import secrets\nimport threading\nimport time\n",
+    "added threading import",
+)
+
 _apply(
     "core/signed_session_mobile.py",
     (
+        "_AUTH_LOCKS: dict[str, asyncio.Lock] = {}\n"
+        "\n"
+        "\n"
         "def _get_auth_lock(namespace: str) -> asyncio.Lock:\n"
         "    \"\"\"Return the asyncio.Lock for the given namespace, creating it if absent.\"\"\"\n"
         "    lock = _AUTH_LOCKS.get(namespace)\n"
@@ -267,100 +318,58 @@ _apply(
         "    return lock\n"
     ),
     (
-        "def _get_auth_lock(namespace: str) -> asyncio.Lock:\n"
-        "    \"\"\"Return the asyncio.Lock for the given namespace, creating it if absent\n"
-        "    or if the cached one is bound to a different event loop than the one\n"
-        "    currently running (happens when a caller uses asyncio.run() per call —\n"
-        "    e.g. core/solver.py's Turnstile solve() — instead of one shared loop for\n"
-        "    the whole process, which is what this cache originally assumed).\"\"\"\n"
+        _CROSS_LOOP_LOCK_CLASS
+        + "_AUTH_LOCKS: dict[str, _CrossLoopLock] = {}\n"
+        "\n"
+        "\n"
+        "def _get_auth_lock(namespace: str) -> _CrossLoopLock:\n"
+        "    \"\"\"Return the cross-loop-safe lock for the given namespace, creating it if absent.\"\"\"\n"
         "    lock = _AUTH_LOCKS.get(namespace)\n"
-        "    if lock is not None:\n"
-        "        try:\n"
-        "            running_loop = asyncio.get_running_loop()\n"
-        "            bound_loop = getattr(lock, \"_loop\", None)\n"
-        "            if bound_loop is not None and bound_loop is not running_loop:\n"
-        "                lock = None\n"
-        "        except RuntimeError:\n"
-        "            pass\n"
         "    if lock is None:\n"
-        "        lock = asyncio.Lock()\n"
+        "        lock = _CrossLoopLock()\n"
         "        _AUTH_LOCKS[namespace] = lock\n"
         "    return lock\n"
     ),
-    "auth lock is now recreated per-event-loop instead of crashing on reuse across asyncio.run() calls",
-    already_marker="bound_loop = getattr(lock, \"_loop\", None)",
+    "auth lock is now a threading.Lock-backed cross-loop/cross-thread-safe lock instead of asyncio.Lock",
+    already_marker="class _CrossLoopLock:",
 )
 
 # ---------------------------------------------------------------------------
-# Patch F: core/signed_session_mono.py — same cross-event-loop bug, for the
-# Amazon "amz.geeked.wtf" bypass's module-level browser-session singleton.
+# Patch F: core/signed_session_mono.py — same underlying bug (and the same
+# rejected first fix — see Patch E's comment), for the Amazon
+# "amz.geeked.wtf" bypass's module-level browser-session singleton.
 # ---------------------------------------------------------------------------
-# _MonochromeBrowserSession is lazily created once and cached at module level
-# (_get_mono_browser_session), so its self._lock suffers the identical
-# problem as Patch E's _AUTH_LOCKS: bound to whichever loop first touched it,
-# then crashes if a later caller (e.g. another asyncio.run() from solver.py)
-# runs on a different loop. Adds a _get_lock() helper mirroring Patch E's
-# fix and repoints both call sites at it.
 _apply(
     "core/signed_session_mono.py",
-    (
-        "        self._lock = asyncio.Lock()\n"
-        "        self._record = load_monochrome_session()\n"
-        "        self._ever_solved = False\n"
-        "\n"
-        "    async def _ensure_browser(self) -> None:\n"
-    ),
-    (
-        "        self._lock = asyncio.Lock()\n"
-        "        self._record = load_monochrome_session()\n"
-        "        self._ever_solved = False\n"
-        "\n"
-        "    def _get_lock(self) -> asyncio.Lock:\n"
-        "        \"\"\"Return self._lock, recreating it if it's bound to a different\n"
-        "        event loop than the one currently running (this session object is a\n"
-        "        lazily-created module-level singleton reused across calls — see the\n"
-        "        matching fix for _AUTH_LOCKS in signed_session_mobile.py).\"\"\"\n"
-        "        try:\n"
-        "            running_loop = asyncio.get_running_loop()\n"
-        "            bound_loop = getattr(self._lock, \"_loop\", None)\n"
-        "            if bound_loop is not None and bound_loop is not running_loop:\n"
-        "                self._lock = asyncio.Lock()\n"
-        "        except RuntimeError:\n"
-        "            pass\n"
-        "        return self._lock\n"
-        "\n"
-        "    async def _ensure_browser(self) -> None:\n"
-    ),
-    "added loop-aware _get_lock() helper",
-    already_marker="def _get_lock(self) -> asyncio.Lock:",
+    "import os\nimport time\n",
+    "import os\nimport threading\nimport time\n",
+    "added threading import",
+)
+
+# NOTE: _CrossLoopLock must be inserted as its own top-level class BEFORE
+# class _MonochromeBrowserSession, not spliced into its body — an unindented
+# `class` statement dropped mid-body would (correctly) dedent Python out of
+# the enclosing class, silently reparenting the rest of it as methods of
+# _CrossLoopLock instead. Two separate, narrowly-anchored patches avoid that.
+_apply(
+    "core/signed_session_mono.py",
+    "class _MonochromeBrowserSession:\n",
+    _CROSS_LOOP_LOCK_CLASS + "class _MonochromeBrowserSession:\n",
+    "added _CrossLoopLock helper class",
+    already_marker="class _CrossLoopLock:",
 )
 
 _apply(
     "core/signed_session_mono.py",
     (
-        "    async def fetch_track(self, params: dict) -> dict:\n"
-        "        async with self._lock:\n"
-        "            return await self._fetch_track_with_restart(params, allow_restart=True)\n"
+        "        self._browser: Chrome | None = None\n"
+        "        self._tab = None\n"
+        "        self._lock = asyncio.Lock()\n"
     ),
     (
-        "    async def fetch_track(self, params: dict) -> dict:\n"
-        "        async with self._get_lock():\n"
-        "            return await self._fetch_track_with_restart(params, allow_restart=True)\n"
+        "        self._browser: Chrome | None = None\n"
+        "        self._tab = None\n"
+        "        self._lock = _CrossLoopLock()\n"
     ),
-    "fetch_track now uses the loop-aware lock",
-)
-
-_apply(
-    "core/signed_session_mono.py",
-    (
-        "    async def close(self) -> None:\n"
-        "        async with self._lock:\n"
-        "            if self._browser is not None:\n"
-    ),
-    (
-        "    async def close(self) -> None:\n"
-        "        async with self._get_lock():\n"
-        "            if self._browser is not None:\n"
-    ),
-    "close() now uses the loop-aware lock",
+    "browser-session lock is now a threading.Lock-backed cross-loop/cross-thread-safe lock instead of asyncio.Lock",
 )
