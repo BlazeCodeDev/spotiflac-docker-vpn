@@ -395,10 +395,15 @@ html[data-theme="light"] .svc-youtube { background: #fef2f2; color: #991b1b; bor
 .stab:hover { color: var(--md-on-surface); }
 .stab.active { color: var(--md-primary); border-bottom-color: var(--md-primary); }
 
-/* ─── Settings sections ─────────────────────────────────────────── */
-.sgroup { display: flex; flex-direction: column; }
+/* ─── Settings sections — M3 filled cards ───────────────────────── */
+.stab-panel { display: flex; flex-direction: column; gap: 12px; padding: 16px 0; }
+.sgroup {
+  display: flex; flex-direction: column;
+  background: var(--md-surface-container-low);
+  border-radius: 16px;
+  padding: 14px 16px 16px;
+}
 .sgroup-label { font-size: .6875rem; font-weight: 500; letter-spacing: .063em; color: var(--md-on-surface-variant); text-transform: uppercase; margin-bottom: 10px; }
-.sdivider { height: 1px; background: var(--md-outline-variant); margin: 14px 0; }
 .shint { font-size: .75rem; color: var(--md-on-surface-variant); margin-top: 5px; opacity: .8; }
 .saction-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 .saction-msg { font-size: .8rem; color: var(--md-on-surface-variant); }
@@ -1196,7 +1201,7 @@ html.theme-transitioning *::after {
     <div class="modal-body">
 
       <!-- ── Appearance ──────────────────────────────────────────── -->
-      <div class="stab-panel" data-spanel="appearance" style="padding-top:16px">
+      <div class="stab-panel" data-spanel="appearance">
 
         <div class="sgroup">
           <div class="sgroup-label">Accent color</div>
@@ -1208,19 +1213,16 @@ html.theme-transitioning *::after {
           <div class="color-presets" id="color-presets"></div>
         </div>
 
-        <div style="height:16px"></div>
       </div>
 
       <!-- ── Library & Downloads ─────────────────────────────────── -->
-      <div class="stab-panel" data-spanel="library" style="display:none;padding-top:16px">
+      <div class="stab-panel" data-spanel="library" style="display:none">
 
         <div class="sgroup">
           <div class="sgroup-label">File output</div>
           <input type="text" id="cfg-filename-fmt" value="{{ filename_fmt }}">
           <div class="shint">{artist} · {album} · {title} · {track} · {year} — use / for subfolders</div>
         </div>
-
-        <div class="sdivider"></div>
 
         <div class="sgroup">
           <div class="sgroup-label">Download behavior</div>
@@ -1257,8 +1259,6 @@ html.theme-transitioning *::after {
           <div class="shint">Retry interval 0 = off · retries 0 = unlimited · increase delay if you hit rate limits</div>
         </div>
 
-        <div class="sdivider"></div>
-
         <div class="sgroup">
           <div class="sgroup-label">M3U playlists</div>
           <div style="display:flex;gap:6px" id="cfg-m3u-mode">
@@ -1268,8 +1268,6 @@ html.theme-transitioning *::after {
           </div>
           <div class="shint">Whether to write an M3U file (in a Playlists/ subfolder) for playlist downloads</div>
         </div>
-
-        <div class="sdivider"></div>
 
         <div class="sgroup">
           <div class="sgroup-label">Metadata enrichment</div>
@@ -1290,8 +1288,6 @@ html.theme-transitioning *::after {
           <div class="shint">Providers queried in parallel · first result per field wins · Deezer &amp; Apple are free</div>
         </div>
 
-        <div class="sdivider"></div>
-
         <div class="sgroup">
           <div class="sgroup-label">Library index</div>
           <div class="saction-row">
@@ -1300,8 +1296,6 @@ html.theme-transitioning *::after {
           </div>
           <div class="shint">Rebuilds the in-memory track index used for "In library" detection in search results</div>
         </div>
-
-        <div class="sdivider"></div>
 
         <div class="sgroup">
           <div class="sgroup-label">ListenBrainz</div>
@@ -1333,11 +1327,10 @@ html.theme-transitioning *::after {
           <div class="shint">Monitors recommendation playlists on the selected days · tracks already in the library are skipped · Spotify IDs resolved via MusicBrainz</div>
         </div>
 
-        <div style="height:16px"></div>
       </div>
 
       <!-- ── Providers & Extensions ──────────────────────────────── -->
-      <div class="stab-panel" data-spanel="providers" style="display:none;padding-top:16px">
+      <div class="stab-panel" data-spanel="providers" style="display:none">
 
         <div class="sgroup">
           <div class="sgroup-label">Download sources</div>
@@ -1349,8 +1342,6 @@ html.theme-transitioning *::after {
           <div class="shint">Drag to reorder · enabled sources are tried top-to-bottom</div>
         </div>
 
-        <div class="sdivider"></div>
-
         <div class="sgroup">
           <div class="sgroup-label">Extensions</div>
           <textarea id="cfg-registries" rows="3" placeholder="https://example.com/my-registry.json&#10;one registry URL per line" style="width:100%;resize:vertical;font-family:monospace;font-size:.8rem"></textarea>
@@ -1361,8 +1352,6 @@ html.theme-transitioning *::after {
           <div id="extensions-status-list" style="display:flex;flex-direction:column;gap:2px;font-size:.75rem"></div>
           <div class="shint">SpotiFLAC ships no download providers of its own — Tidal/Qobuz/Amazon/Deezer/YouTube only work once you paste a registry URL you trust here, save, and click Install. Nothing is fetched or installed automatically.</div>
         </div>
-
-        <div class="sdivider"></div>
 
         <div class="sgroup">
           <div class="sgroup-label">Provider health</div>
@@ -1380,7 +1369,6 @@ html.theme-transitioning *::after {
           <div class="shint">Tidal refresh fetches the latest proxy endpoints · failing APIs are auto-deprioritised during rotation</div>
         </div>
 
-        <div style="height:16px"></div>
       </div>
 
     </div>
