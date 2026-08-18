@@ -14,6 +14,11 @@ def _defaults() -> dict:
     return {
         # Download behaviour
         "services":    [s.strip() for s in os.environ.get("SPOTIFLAC_SERVICES", "tidal,qobuz,amazon,youtube").split(",") if s.strip()],
+        # Extension registry URLs (SpotiFLAC >= 1.8.0 ships no download
+        # providers at all — these must be installed at runtime from a
+        # registry the operator supplies and trusts themselves; see
+        # worker.refresh_extensions and the "Extensions" settings group).
+        "extension_registries": [s.strip() for s in os.environ.get("SPOTIFLAC_REGISTRIES", "").split(",") if s.strip()],
         "filename_fmt": os.environ.get("FILENAME_FORMAT", "{artist}/{album}/{track} {title}"),
         "qobuz_token":  os.environ.get("QOBUZ_TOKEN",    ""),
         # M3U playlist file generation for playlist downloads: "always", "ask" (prompt

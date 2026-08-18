@@ -47,7 +47,7 @@ _VALID_QUALITIES  = {"high", "lossless", "hires"}
 
 # Module-level client so the OAuth token is cached and reused across requests.
 try:
-    from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient as _SpotifyClient
+    from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient as _SpotifyClient
     _spotify = _SpotifyClient(timeout_s=15)
 except Exception:
     _spotify = None
@@ -274,6 +274,18 @@ def api_tidal_refresh():
         return jsonify(ok=False, error=str(exc)), 502
 
 
+@bp.post("/api/extensions/refresh")
+def api_extensions_refresh():
+    try:
+        results = worker.refresh_extensions(force=True)
+        if not results:
+            return jsonify(ok=False, error="No extension registries configured"), 400
+        return jsonify(ok=True, results=results)
+    except Exception as exc:
+        log.warning("Extension refresh failed: %s", exc)
+        return jsonify(ok=False, error=str(exc)), 502
+
+
 @bp.get("/api/vpn")
 def api_vpn():
     status = vpn.tunnel_status()
@@ -299,7 +311,7 @@ def api_search():
     try:
         client = _spotify
         if client is None:
-            from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient
+            from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient
             client = _patch_spotify_client(SpotifyMetadataClient(timeout_s=15))
         data   = client._get("/search", params={
             "q": q, "type": "track,album,playlist,artist",
@@ -417,7 +429,7 @@ def api_search_expand():
     try:
         client = _spotify
         if client is None:
-            from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient
+            from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient
             client = _patch_spotify_client(SpotifyMetadataClient(timeout_s=15))
         name, tracks, *_ = client.get_url(url)
         return jsonify(
@@ -1610,6 +1622,14 @@ def api_settings_patch():
             updates["m3u_mode"] = raw
         else:
             errors["m3u_mode"] = "must be 'always', 'ask', or 'never'"
+
+    if "extension_registries" in body:
+        raw = body["extension_registries"]
+        if not isinstance(raw, list):
+            errors["extension_registries"] = "must be a list"
+        else:
+            cleaned = [u.strip() for u in raw if isinstance(u, str) and u.strip().startswith(("http://", "https://"))]
+            updates["extension_registries"] = cleaned
 
     if errors:
         return jsonify(error="Invalid values", fields=errors), 400

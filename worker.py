@@ -25,7 +25,7 @@ from SpotiFLAC.core.progress import DownloadManager
 # Cached Spotify client — reuses OAuth token across jobs instead of re-fetching
 # on every _fetch_metadata call. SpotifyMetadataClient handles token refresh.
 try:
-    from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient as _SpotifyClient
+    from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient as _SpotifyClient
     _spotify_client = _SpotifyClient(timeout_s=15)
 except Exception:
     _spotify_client = None
@@ -135,21 +135,77 @@ def _dispatcher() -> None:
 def refresh_tidal_api_list(force: bool = False) -> list:
     """Refreshes SpotiFLAC's Tidal proxy-API URL list (gist fetch + cache).
 
-    SpotiFLAC ≤ 1.4.x exposed a sync `refresh_tidal_api_list`; 1.7.x dropped it
-    in favor of the async-only `refresh_tidal_api_list_async` (same pattern as
-    download_one/enrich_metadata/validate_downloaded_track — see worker.py's
-    other version-fallback imports). Nothing in SpotiFLAC itself calls either
-    one automatically, and the real download path (TidalProvider's plain
-    constructor) only ever *reads* the cache, never refreshes it — so without
-    this being called somewhere, an empty/stale cache is permanent until
-    someone hits this function.
+    As of 1.8.0, SpotiFLAC.providers.tidal no longer exists — the whole
+    providers/ package was removed in favor of operator-installed extensions
+    (see refresh_extensions below). Upstream's own core/metadata_enrichment.py
+    hit this same break internally and worked around it by dynamically
+    looking up an *installed Python-style extension* named "tidal" and
+    calling get_tidal_api_list/refresh_tidal_api_list off that module if
+    present — mirror that pattern here. This only does anything if the
+    operator's configured registry happens to include a legacy Python "tidal"
+    extension (as opposed to the default JS "tidal-web" one, which manages
+    its own session state and has no equivalent API-list concept) — otherwise
+    it's a harmless no-op returning an empty list.
     """
     try:
-        from SpotiFLAC.providers.tidal import refresh_tidal_api_list as _refresh
-        return _refresh(force=force)
+        from SpotiFLAC.extensions.manager import ExtensionManager
     except ImportError:
-        from SpotiFLAC.providers.tidal import refresh_tidal_api_list_async as _refresh_async
-        return _run_coro_sync(_refresh_async(force=force))
+        return []
+    mgr = ExtensionManager(auto_install_downloads=False)
+    try:
+        mgr.preload_python_modules()
+    except Exception:
+        pass
+    ext_name = mgr.find_python_extension("tidal")
+    if not ext_name:
+        log.info("Tidal API refresh: no Python-style 'tidal' extension installed — skipping")
+        return []
+    import sys
+    mod = sys.modules.get(f"SpotiFLAC.extensions_plugins.{ext_name.replace('-', '_')}")
+    if mod is None or not hasattr(mod, "refresh_tidal_api_list"):
+        log.info("Tidal API refresh: extension '%s' has no refresh_tidal_api_list — skipping", ext_name)
+        return []
+    return mod.refresh_tidal_api_list(force=force)
+
+
+def refresh_extensions(force: bool = False) -> dict:
+    """Installs/refreshes the extensions this app relies on for downloading
+    (tidal-web, qobuz-web, amazon, deezer, ytmusic-spotiflac) and for metadata
+    enrichment (apple-music), from every registry URL configured in Settings.
+
+    SpotiFLAC >= 1.8.0 bundles no download providers at all — see
+    patch_spotiflac.py's module docstring. Returns {ext_id: True} on success,
+    {ext_id: "error message"} on failure, per extension, so the UI can show
+    exactly which ones worked. Returns {} if no registry is configured yet.
+    """
+    import settings as _settings
+    registries = _settings.load().get("extension_registries") or []
+    if not registries:
+        return {}
+    try:
+        from SpotiFLAC.extensions.manager import ExtensionManager
+    except ImportError as exc:
+        return {"_error": f"extensions module unavailable: {exc}"}
+
+    mgr = ExtensionManager(auto_install_downloads=False)
+    target_ids = ("tidal-web", "qobuz-web", "amazon", "deezer", "ytmusic-spotiflac", "apple-music")
+    results = {}
+    for ext_id in target_ids:
+        if not force and mgr.get_installed(ext_id) is not None:
+            results[ext_id] = True
+            continue
+        last_err = None
+        for registry_url in registries:
+            try:
+                mgr.install(ext_id, registry_url=registry_url)
+                results[ext_id] = True
+                last_err = None
+                break
+            except Exception as exc:
+                last_err = str(exc)
+        if last_err is not None:
+            results[ext_id] = last_err
+    return results
 
 
 def _prime_tidal_api_list() -> None:
@@ -159,9 +215,23 @@ def _prime_tidal_api_list() -> None:
     notices and clicks Refresh in Settings."""
     try:
         urls = refresh_tidal_api_list(force=False)
-        log.info("Tidal API list primed: %d endpoint(s)", len(urls))
+        if urls:
+            log.info("Tidal API list primed: %d endpoint(s)", len(urls))
     except Exception as exc:
         log.warning("Tidal API list priming failed (will retry on first use/manual refresh): %s", exc)
+
+
+def _prime_extensions() -> None:
+    """Best-effort background install of configured extensions at startup, so
+    a fresh/restarted container with a registry already configured doesn't
+    need a manual click in Settings before downloads work again."""
+    try:
+        results = refresh_extensions(force=False)
+        if results:
+            ok = sum(1 for v in results.values() if v is True)
+            log.info("Extensions primed: %d/%d ready", ok, len(results))
+    except Exception as exc:
+        log.warning("Extension priming failed (will retry on first use/manual refresh): %s", exc)
 
 
 def init(max_workers: int) -> None:
@@ -170,6 +240,7 @@ def init(max_workers: int) -> None:
     log.info("MAX_WORKERS = %d", max_workers)
     threading.Thread(target=_dispatcher, daemon=True, name="job-dispatcher").start()
     threading.Thread(target=_prime_tidal_api_list, daemon=True, name="tidal-api-prime").start()
+    threading.Thread(target=_prime_extensions, daemon=True, name="extensions-prime").start()
 
 _STATE_FILE       = os.environ.get("STATE_FILE", "/vpn/jobs.json")
 _VPN_RECONNECT    = "/tmp/vpn_reconnect"
@@ -427,7 +498,7 @@ def _update(job_id: str, **kwargs) -> None:
 
 def _fetch_metadata(url: str) -> tuple[str | None, str | None, str | None]:
     try:
-        from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient, parse_spotify_url
+        from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient, parse_spotify_url
         info   = parse_spotify_url(url)
         kind   = info["type"]
         sid    = info["id"]
@@ -999,7 +1070,7 @@ class _TrackingDownloader(SpotiflacDownloader):
             is_playlist = info.get("type") in ("playlist", "artist", "artist_discography")
         else:
             # SpotiFLAC 0.3.x fallback
-            from SpotiFLAC.providers.spotify_metadata import parse_spotify_url
+            from SpotiFLAC.core.spotify_metadata import parse_spotify_url
             if hasattr(self._client, 'get_url'):
                 collection_name, tracks = self._client.get_url(spotify_url)
             else:
@@ -1181,7 +1252,7 @@ def _run(job_id: str) -> None:
                 _update(job_id, track_results=list(track_results))
 
             if batch_urls:
-                from SpotiFLAC.providers.spotify_metadata import SpotifyMetadataClient, parse_spotify_url
+                from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient, parse_spotify_url
                 client = SpotifyMetadataClient()
                 tracks = []
                 for burl in batch_urls:

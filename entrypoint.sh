@@ -10,7 +10,14 @@ LOG_LEVEL="${LOG_LEVEL:-info}"
 # Dockerfile build install and with patch_spotiflac.py (whose string matches are
 # version-specific). Bump only after re-verifying the patches against the new
 # release. Set the SPOTIFLAC_VERSION env to override at runtime.
-SPOTIFLAC_PINNED="1.7.8"
+#
+# 1.8.0 (the release right after 1.7.8) deleted the whole providers/ package —
+# Tidal/Qobuz/Amazon/Deezer/etc. are no longer bundled at all, only installable
+# at runtime as operator-supplied "extensions" from a registry URL configured
+# in Settings → System (see worker.refresh_extensions). A rollback below 1.8.0
+# needs the old provider-file patches restored from git history, not just a
+# pin change — see patch_spotiflac.py's module docstring.
+SPOTIFLAC_PINNED="3.0.4"
 
 log()   { echo "[vpn] $(date '+%H:%M:%S') INFO  $*"; }
 err()   { echo "[vpn] $(date '+%H:%M:%S') ERROR $*" >&2; }

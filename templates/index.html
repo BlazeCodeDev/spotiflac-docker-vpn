@@ -1285,6 +1285,19 @@ html.theme-transitioning *::after {
       <div class="stab-panel" data-spanel="system" style="display:none;padding-top:16px">
 
         <div class="sgroup">
+          <div class="sgroup-label">Extensions</div>
+          <textarea id="cfg-registries" rows="3" placeholder="https://example.com/my-registry.json&#10;one registry URL per line" style="width:100%;resize:vertical;font-family:monospace;font-size:.8rem"></textarea>
+          <div class="saction-row">
+            <button class="btn-ghost" id="btn-extensions-refresh">Install / Refresh Extensions</button>
+            <span id="extensions-refresh-msg" class="saction-msg"></span>
+          </div>
+          <div id="extensions-status-list" style="display:flex;flex-direction:column;gap:2px;font-size:.75rem"></div>
+          <div class="shint">SpotiFLAC ships no download providers of its own — Tidal/Qobuz/Amazon/Deezer/YouTube only work once you paste a registry URL you trust here, save, and click Install. Nothing is fetched or installed automatically.</div>
+        </div>
+
+        <div class="sdivider"></div>
+
+        <div class="sgroup">
           <div class="sgroup-label">Provider health</div>
           <div id="provider-health-list" style="display:flex;flex-direction:column;gap:2px;min-height:20px">
             <span style="font-size:.8rem;color:var(--md-on-surface-variant)">Loading…</span>
@@ -1906,6 +1919,7 @@ async function openSettingsModal() {
     document.getElementById('cfg-max-workers').value     = d.max_workers        ?? 3;
     document.getElementById('cfg-filename-fmt').value    = d.filename_fmt ?? '{artist}/{album}/{track} {title}';
     document.getElementById('qobuz-token').value         = d.qobuz_token  ?? '';
+    document.getElementById('cfg-registries').value      = (d.extension_registries ?? []).join('\n');
     document.getElementById('cfg-enrich-metadata').checked    = !!(d.enrich_metadata);
     document.getElementById('cfg-enrich-musicbrainz').checked = d.enrich_musicbrainz !== false;
     const activeProv = new Set(d.enrich_providers ?? ['deezer', 'apple']);
@@ -2306,6 +2320,7 @@ document.getElementById('btn-cfg-save').addEventListener('click', async () => {
     max_workers:        parseInt(document.getElementById('cfg-max-workers').value,    10),
     filename_fmt:       document.getElementById('cfg-filename-fmt').value,
     qobuz_token:        document.getElementById('qobuz-token').value,
+    extension_registries: document.getElementById('cfg-registries').value.split('\n').map(s => s.trim()).filter(Boolean),
     services:           getActiveServices(),
     enrich_metadata:    document.getElementById('cfg-enrich-metadata').checked,
     enrich_musicbrainz: document.getElementById('cfg-enrich-musicbrainz').checked,
@@ -2345,6 +2360,41 @@ document.getElementById('btn-tidal-refresh').addEventListener('click', async () 
   }
   btn.disabled = false;
   setTimeout(() => { msg.textContent = ''; msg.style.color = ''; }, 5000);
+});
+
+document.getElementById('btn-extensions-refresh').addEventListener('click', async () => {
+  const btn      = document.getElementById('btn-extensions-refresh');
+  const msg      = document.getElementById('extensions-refresh-msg');
+  const statusEl = document.getElementById('extensions-status-list');
+  btn.disabled   = true;
+  msg.textContent = 'Installing…';
+  statusEl.innerHTML = '';
+  try {
+    // Save registries first so the refresh call sees the latest pasted URLs.
+    const registries = document.getElementById('cfg-registries').value.split('\n').map(s => s.trim()).filter(Boolean);
+    await fetch('/api/settings', {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({extension_registries: registries}),
+    });
+    const res  = await fetch('/api/extensions/refresh', {method: 'POST'});
+    const data = await res.json();
+    if (res.ok && data.results) {
+      msg.textContent = '';
+      statusEl.innerHTML = Object.entries(data.results).map(([id, v]) => {
+        const ok = v === true;
+        const color = ok ? 'var(--green)' : 'var(--red)';
+        const detail = ok ? 'installed' : String(v);
+        return `<span style="color:${color}">${ok ? '✓' : '✗'} ${id} — ${detail}</span>`;
+      }).join('');
+    } else {
+      msg.textContent = `✗ ${data.error || 'Failed'}`;
+      msg.style.color = 'var(--red)';
+    }
+  } catch {
+    msg.textContent = '✗ Network error';
+    msg.style.color = 'var(--red)';
+  }
+  btn.disabled = false;
 });
 document.querySelectorAll('.lb-day').forEach(btn => {
   btn.addEventListener('click', () => btn.classList.toggle('active'));

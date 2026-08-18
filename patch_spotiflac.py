@@ -13,21 +13,31 @@ tag set — actually lands on *every* downloaded track:
      fetch_mb_metadata_smart (sync) and fetch_mb_metadata_smart_async (async),
      and route AsyncMBFetch through it.
 
-  B. providers/*.py — providers only attempted a MB lookup when an ISRC was
-     present (`AsyncMBFetch(isrc) if isrc else None`, or `if metadata.isrc:`),
-     so ISRC-less tracks (common on YouTube, not rare elsewhere) never got a
-     lookup. Always look up, passing title/artist for the text fallback.
+  B. extensions/provider.py — SpotiFLAC 1.8.0 deleted the whole providers/
+     package (amazon.py, deezer.py, qobuz.py, tidal.py, etc. — the download
+     backends are no longer bundled at all; see the module-level note below).
+     Every JS-extension-backed download now flows through one shared hook,
+     JSExtensionProvider.download() in extensions/provider.py, which only
+     attempted an MB lookup when an ISRC was present (`if enrich_metadata and
+     metadata.isrc:`) and used the plain ISRC-only fetch — same bug as the old
+     per-provider patches, but now a single patch point fixes it for every
+     JS extension at once. Python-style extensions (.sflx packages) bypass
+     this hook entirely and are outside this script's reach — their MB
+     tagging, if any, is whatever that third-party extension implements.
 
-  C. providers/deezer.py — additionally, Deezer only embedded the MB tags for
-     album downloads (`extra_tags=mb_tags if is_album else {}`), so single-track
-     Deezer downloads never got an mbid even when the lookup succeeded.
-
-NOTE for version bumps: SpotiFLAC ships both a sync provider style
-(AsyncMBFetch) and an async one (await fetch_mb_metadata_async). Both are
-handled below. If a future release changes these call shapes, the affected
-patch will log "pattern not found — skipping" and the mbid feature must be
-re-ported (see git history for the 1.2.0 -> 1.3.1, 1.3.1 -> 1.4.5, and
-1.4.5 -> 1.7.8 ports).
+NOTE for version bumps: as of 1.8.0, SpotiFLAC ships NO bundled download
+providers — Tidal/Qobuz/Amazon/Deezer/etc. are all supplied by externally
+hosted "extensions" the operator installs from a registry URL they configure
+themselves (see worker.refresh_extensions / Settings → System → Extensions).
+The old providers/*.py patches (sync AsyncMBFetch-style and async
+await-fetch_mb_metadata_async-style, covering amazon/apple_music/pandora/
+youtube/gdstudio/deezer/qobuz/tidal, plus the amazon.py orphaned-FLAC cleanup)
+were removed from this file in the 1.7.8 -> 3.0.4 port because those files no
+longer exist. If a future release reshapes extensions/provider.py's MB block,
+the affected patch will log "pattern not found — skipping" and must be
+re-ported (see git history for the 1.2.0 -> 1.3.1, 1.3.1 -> 1.4.5, 1.4.5 ->
+1.7.8, and 1.7.8 -> 3.0.4 ports — the last one is the provider-architecture
+cutover, not just a call-shape change).
 """
 import importlib.util
 import pathlib
@@ -182,136 +192,46 @@ for _init_old in (
     )
 
 # ---------------------------------------------------------------------------
-# Patch B (sync-style providers): amazon, apple_music, pandora, youtube, gdstudio
-# `AsyncMBFetch(_isrc_for_mb) if _isrc_for_mb else None`
-#   -> always construct, passing title/artist for the text fallback.
+# Patch B: extensions/provider.py — JSExtensionProvider.download()'s shared
+# MusicBrainz hook. Covers every JS-extension-backed provider at once (the
+# per-provider providers/*.py files this used to target no longer exist as
+# of 1.8.0 — see module docstring).
 # ---------------------------------------------------------------------------
-_SYNC_OLD = "            mb_fetcher = AsyncMBFetch(_isrc_for_mb) if _isrc_for_mb else None\n"
-_SYNC_NEW = "            mb_fetcher = AsyncMBFetch(_isrc_for_mb, metadata.title, metadata.first_artist)\n"
-for _p in (
-    "providers/amazon.py",
-    "providers/apple_music.py",
-    "providers/pandora.py",
-    "providers/youtube.py",
-    "providers/gdstudio.py",
-):
-    _apply(_p, _SYNC_OLD, _SYNC_NEW, "MusicBrainz lookup no longer gated on ISRC presence")
-
-# ---------------------------------------------------------------------------
-# Patch B (async-style providers): deezer, qobuz, tidal
-# Add the smart-async import, then always look up via title/artist fallback.
-# ---------------------------------------------------------------------------
-# 1.7.8 switched providers from relative (`from ..core.musicbrainz import`) to
-# absolute (`from SpotiFLAC.core.musicbrainz import`) imports — try both.
-for _import_style in ("..core.musicbrainz", "SpotiFLAC.core.musicbrainz"):
-    _ASYNC_IMPORT_OLD = f"from {_import_style} import fetch_mb_metadata_async, mb_result_to_tags\n"
-    _ASYNC_IMPORT_NEW = f"from {_import_style} import fetch_mb_metadata_async, fetch_mb_metadata_smart_async, mb_result_to_tags\n"
-    for _p in ("providers/deezer.py", "providers/qobuz.py", "providers/tidal.py"):
-        _apply(_p, _ASYNC_IMPORT_OLD, _ASYNC_IMPORT_NEW,
-               "import fetch_mb_metadata_smart_async",
-               already_marker="fetch_mb_metadata_smart_async")
-
-# deezer: concurrent MB task — always create, with title/artist fallback.
 _apply(
-    "providers/deezer.py",
+    "extensions/provider.py",
     (
-        "            mb_task = (\n"
-        "                asyncio.create_task(fetch_mb_metadata_async(isrc_to_use))\n"
-        "                if isrc_to_use\n"
-        "                else None\n"
-        "            )\n"
-    ),
-    (
-        "            mb_task = asyncio.create_task(\n"
-        "                fetch_mb_metadata_smart_async(\n"
-        "                    isrc_to_use, metadata.title, metadata.first_artist\n"
+        "        mb_tags: dict[str, str] = {}\n"
+        "        if enrich_metadata and metadata.isrc:\n"
+        "            try:\n"
+        "                from SpotiFLAC.core.isrc_utils import normalize_isrc\n"
+        "                from SpotiFLAC.core.musicbrainz import (\n"
+        "                    fetch_mb_metadata_async,\n"
+        "                    mb_result_to_tags,\n"
         "                )\n"
-        "            )\n"
+        "\n"
+        "                isrc_clean = normalize_isrc(metadata.isrc)\n"
+        "                if isrc_clean:\n"
+        "                    mb_data = await fetch_mb_metadata_async(isrc_clean)\n"
+        "                    mb_tags = mb_result_to_tags(mb_data)\n"
+        "            except Exception as e:\n"
     ),
-    "MB lookup task always created (title/artist fallback)",
-    already_marker="fetch_mb_metadata_smart_async(",
-)
-
-# deezer: stop gating the MB tags behind is_album (single tracks got no mbid).
-_apply(
-    "providers/deezer.py",
-    "                extra_tags=mb_tags if is_album else {},\n",
-    "                extra_tags=mb_tags,\n",
-    "MB tags (mbid) now embedded for single-track downloads too",
-)
-
-# qobuz: always look up (was `if metadata.isrc:`), with title/artist fallback.
-# 1.7.8's Black formatting added a trailing comma after the call — try both.
-for _qobuz_call_close in (")\n", "),\n"):
-    _apply(
-        "providers/qobuz.py",
-        (
-            "            mb_tags: dict[str, str] = {}\n"
-            "            if metadata.isrc:\n"
-            "                mb_tags = mb_result_to_tags(\n"
-            f"                    await fetch_mb_metadata_async(metadata.isrc{_qobuz_call_close}"
-            "                )\n"
-        ),
-        (
-            "            mb_tags: dict[str, str] = {}\n"
-            "            mb_tags = mb_result_to_tags(\n"
-            "                await fetch_mb_metadata_smart_async(\n"
-            "                    metadata.isrc, metadata.title, metadata.first_artist\n"
-            "                )\n"
-            "            )\n"
-        ),
-        "MusicBrainz lookup no longer gated on ISRC presence",
-        already_marker="fetch_mb_metadata_smart_async(",
-    )
-
-# tidal: always look up (was `if metadata.isrc:`), with title/artist fallback.
-_apply(
-    "providers/tidal.py",
     (
-        "            mb_tags: dict[str, str] = {}\n"
-        "            if metadata.isrc:\n"
-        "                mb_data = await fetch_mb_metadata_async(metadata.isrc)\n"
+        "        mb_tags: dict[str, str] = {}\n"
+        "        if enrich_metadata:\n"
+        "            try:\n"
+        "                from SpotiFLAC.core.isrc_utils import normalize_isrc\n"
+        "                from SpotiFLAC.core.musicbrainz import (\n"
+        "                    fetch_mb_metadata_smart_async,\n"
+        "                    mb_result_to_tags,\n"
+        "                )\n"
+        "\n"
+        "                isrc_clean = normalize_isrc(metadata.isrc)\n"
+        "                mb_data = await fetch_mb_metadata_smart_async(\n"
+        "                    isrc_clean, metadata.title, metadata.first_artist\n"
+        "                )\n"
         "                mb_tags = mb_result_to_tags(mb_data)\n"
+        "            except Exception as e:\n"
     ),
-    (
-        "            mb_tags: dict[str, str] = {}\n"
-        "            mb_data = await fetch_mb_metadata_smart_async(\n"
-        "                metadata.isrc, metadata.title, metadata.first_artist\n"
-        "            )\n"
-        "            mb_tags = mb_result_to_tags(mb_data)\n"
-    ),
-    "MusicBrainz lookup no longer gated on ISRC presence",
-    already_marker="fetch_mb_metadata_smart_async(",
-)
-
-# ---------------------------------------------------------------------------
-# Patch D: providers/amazon.py — clean up the orphaned FLAC on Antra repair failure
-# ---------------------------------------------------------------------------
-# When the Antra direct-download path's post-download integrity check fails
-# (e.g. the `flac` binary is missing, or the file is genuinely corrupt), the
-# code logs a warning and falls through to try the next Amazon quality tier —
-# but never deletes the file it just wrote. It sits in output_dir's root,
-# named by ASIN (not the tagged filename), forever. Delete it before moving on.
-_apply(
-    "providers/amazon.py",
-    (
-        "                                    logger.warning(\n"
-        "                                        \"[amazon] Antra FLAC repair failed: %s\",\n"
-        "                                        repair_msg,\n"
-        "                                    )\n"
-        "                                else:\n"
-        "                                    logger.warning(\"[amazon] Antra FLAC remux failed.\")\n"
-    ),
-    (
-        "                                    logger.warning(\n"
-        "                                        \"[amazon] Antra FLAC repair failed: %s\",\n"
-        "                                        repair_msg,\n"
-        "                                    )\n"
-        "                                    if os.path.exists(out):\n"
-        "                                        os.remove(out)\n"
-        "                                else:\n"
-        "                                    logger.warning(\"[amazon] Antra FLAC remux failed.\")\n"
-    ),
-    "orphaned FLAC (from a failed integrity repair) now cleaned up before falling back",
-    already_marker="if os.path.exists(out):\n                                        os.remove(out)",
+    "MusicBrainz lookup no longer gated on ISRC presence, uses smart text-search fallback",
+    already_marker="fetch_mb_metadata_smart_async(\n                    isrc_clean, metadata.title, metadata.first_artist",
 )

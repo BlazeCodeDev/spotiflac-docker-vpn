@@ -13,11 +13,15 @@ FROM python:3.12-alpine
 
 # VPN + networking tools
 # flac: core/flac_validation.py shells out to the `flac` binary to verify FLAC
-# integrity. As of 1.7.8 upstream treats a missing binary as "valid, skip the
-# check" rather than a false-positive corruption (was not the case in 1.4.5,
-# where every download was treated as corrupted and, if ffmpeg repair also
-# failed, the raw file leaked into the output root untagged — see
-# patch_spotiflac.py Patch D, kept as a belt-and-suspenders cleanup).
+# integrity. Upstream treats a missing binary as "valid, skip the check"
+# rather than a false-positive corruption.
+# nodejs: as of 1.8.0 SpotiFLAC bundles no download providers at all — every
+# provider is an externally-installed "extension" (see worker.refresh_extensions),
+# and the default/legacy-aliased ones (tidal-web, qobuz-web, ytmusic-spotiflac,
+# ...) run as JavaScript extensions via a Node.js bridge (extensions/runtime.py).
+# Baked in at build time rather than relying on SpotiFLAC's own runtime
+# auto-install, which would otherwise hit the network for the first time from
+# inside the iptables kill-switch on first extension use.
 RUN apk add --no-cache \
     openvpn \
     wireguard-tools \
@@ -29,6 +33,7 @@ RUN apk add --no-cache \
     iputils \
     ffmpeg \
     flac \
+    nodejs \
     su-exec
 
 # App runs as an unprivileged user (entrypoint drops root via su-exec) so a
@@ -45,10 +50,12 @@ RUN pip install --no-cache-dir flask python-dotenv gunicorn
 # Pinned to a FIXED version (kept in lockstep with entrypoint.sh SPOTIFLAC_PINNED
 # and with patch_spotiflac.py, whose matches are version-specific). Not
 # auto-upgraded on boot. Bump only after re-verifying the patches apply.
-# requests is declared as a real dependency by SpotiFLAC itself as of 1.7.8
-# (wasn't in 1.4.5 — that was an upstream packaging gap); kept explicit here
-# so a future downgrade of the pin doesn't silently reopen that gap.
-RUN pip install --no-cache-dir --target /spotiflac "SpotiFLAC==1.7.8" requests
+# requests is declared as a real dependency by SpotiFLAC itself (kept explicit
+# here so a future downgrade of the pin doesn't silently reopen the packaging
+# gap that existed before 1.4.5 declared it). typing_extensions is pulled in
+# transitively via pydantic — confirmed with a bare `import SpotiFLAC` during
+# the 3.0.4 bump; not pinned explicitly unless that stops being true.
+RUN pip install --no-cache-dir --target /spotiflac "SpotiFLAC==3.0.4" requests
 ENV PYTHONPATH=/spotiflac
 
 RUN mkdir -p /vpn /downloads /app/templates && \
