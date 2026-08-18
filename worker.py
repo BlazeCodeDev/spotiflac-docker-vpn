@@ -169,25 +169,39 @@ def refresh_tidal_api_list(force: bool = False) -> list:
 
 
 # Legacy service-name aliases this app relies on (see SpotiFLAC's
-# extensions/catalog.py SERVICE_ALIASES) — the download-capable ones mirror
-# _VALID_SERVICES in routes.py; apple-music backs the "apple" enrich_provider
-# only, not a download service.
-_DOWNLOAD_EXT_IDS = ("tidal-web", "qobuz-web", "amazon", "deezer", "ytmusic-spotiflac")
+# extensions/catalog.py SERVICE_ALIASES) — keys mirror _VALID_SERVICES in
+# routes.py / ALL_SERVICES in the frontend; apple-music (added separately
+# below) backs the "apple" enrich_provider only, not a download service.
+_EXT_ID_TO_SERVICE = {
+    "tidal-web": "tidal",
+    "qobuz-web": "qobuz",
+    "amazon": "amazon",
+    "deezer": "deezer",
+    "ytmusic-spotiflac": "youtube",
+}
+_DOWNLOAD_EXT_IDS = tuple(_EXT_ID_TO_SERVICE)
 _ALL_TARGET_EXT_IDS = _DOWNLOAD_EXT_IDS + ("apple-music",)
 
 
 def extensions_status() -> dict:
     """Local-only (no network, no install attempts) check of which download
     extensions are currently installed — cheap enough to call on every page
-    load, for the 'no extensions installed' banner."""
+    load, for the 'no extensions installed' banner and to filter the
+    Settings "Download sources" list down to services that actually work."""
     try:
         from SpotiFLAC.extensions.manager import ExtensionManager
     except ImportError:
-        return {"any_installed": False, "installed": [], "missing": list(_DOWNLOAD_EXT_IDS)}
+        return {"any_installed": False, "installed": [], "missing": list(_DOWNLOAD_EXT_IDS), "installed_services": []}
     mgr = ExtensionManager(auto_install_downloads=False)
     installed = [eid for eid in _DOWNLOAD_EXT_IDS if mgr.get_installed(eid) is not None]
     missing = [eid for eid in _DOWNLOAD_EXT_IDS if eid not in installed]
-    return {"any_installed": bool(installed), "installed": installed, "missing": missing}
+    installed_services = [_EXT_ID_TO_SERVICE[eid] for eid in installed]
+    return {
+        "any_installed": bool(installed),
+        "installed": installed,
+        "missing": missing,
+        "installed_services": installed_services,
+    }
 
 
 def refresh_extensions(force: bool = False) -> dict:

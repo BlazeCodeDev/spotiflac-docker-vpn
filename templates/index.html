@@ -1547,11 +1547,19 @@ let svcOrder = ALL_SERVICES.slice().sort((a,b) => {
   return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
 });
 let dragSrc = null;
+// Populated from /api/extensions/status — a service only shows up in
+// "Download sources" once its backing extension is actually installed.
+let _installedServiceIds = new Set();
 
 function buildServicesList() {
   const list = document.getElementById('services-list');
   list.innerHTML = '';
-  svcOrder.forEach(svc => {
+  const visible = svcOrder.filter(svc => _installedServiceIds.has(svc.id));
+  if (visible.length === 0) {
+    list.innerHTML = '<span style="font-size:.8rem;color:var(--md-on-surface-variant)">No download extensions installed yet — install one below.</span>';
+    return;
+  }
+  visible.forEach(svc => {
     const el = document.createElement('div');
     el.className  = 'svc-item';
     el.draggable  = true;
@@ -3623,11 +3631,13 @@ async function checkSpotiflacUpdate() {
 checkSpotiflacUpdate();
 setInterval(checkSpotiflacUpdate, 3_600_000);
 
-// ── No-extensions-installed banner ──────────────────────────────────────
+// ── No-extensions-installed banner + Download sources filtering ─────────
 async function checkExtensionsStatus() {
   try {
     const d = await fetch('/api/extensions/status').then(r => r.json());
     document.getElementById('no-extensions-banner').style.display = d.any_installed ? 'none' : 'flex';
+    _installedServiceIds = new Set(d.installed_services || []);
+    buildServicesList();
   } catch {}
 }
 document.getElementById('btn-banner-settings').addEventListener('click', async () => {

@@ -1627,11 +1627,10 @@ def api_settings_patch():
         if not isinstance(raw, list):
             errors["services"] = "must be a list"
         else:
-            cleaned = [s for s in raw if s in _VALID_SERVICES]
-            if not cleaned:
-                errors["services"] = "no valid service names"
-            else:
-                updates["services"] = cleaned
+            # Empty is valid: Settings now only shows services whose extension
+            # is installed, so having none configured yet (no extensions
+            # installed) is a normal transient state, not an error.
+            updates["services"] = [s for s in raw if s in _VALID_SERVICES]
 
     if "m3u_mode" in body:
         raw = str(body["m3u_mode"])
