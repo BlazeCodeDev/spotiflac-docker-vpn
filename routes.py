@@ -1495,8 +1495,16 @@ def api_providers():
     try:
         from SpotiFLAC.core.provider_stats import ProviderScorer
         scorer = ProviderScorer()
-        with scorer._stats_lock:
-            stats_items = list(scorer._stats.items())
+
+        async def _read_stats():
+            async with scorer._stats_lock:
+                return list(scorer._stats.items())
+
+        # _stats_lock is an asyncio.Lock — needs `async with`, not a plain
+        # `with`, which raises "'Lock' object does not support the context
+        # manager protocol". Run it on the shared persistent loop like every
+        # other SpotiFLAC async call (see worker._run_coro_sync).
+        stats_items = worker._run_coro_sync(_read_stats())
     except Exception as exc:
         log.warning("Provider stats unavailable: %s", exc)
         return jsonify(providers=[])
