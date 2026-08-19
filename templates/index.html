@@ -16,14 +16,18 @@
 })();
 </script>
 <style>
-/* ─── Fixed semantic status colors — never change with theme/preset ─ */
+/* ─── Fixed semantic status colors — never change with theme/preset ─
+   One cohesive family: same saturation/lightness step throughout, hue is
+   the only thing that varies (except queued/cancelled, which are
+   deliberately desaturated neutrals) — so status badges read as one
+   considered system instead of six colors picked from different places. */
 :root {
-  --s-running:   #3B82F6;   /* blue   — active/in-progress */
-  --s-done:      #22C55E;   /* green  — success */
-  --s-error:     #EF4444;   /* red    — failure */
-  --s-cancelled: #F97316;   /* orange — stopped */
-  --s-partial:   #F59E0B;   /* amber  — mixed result / retrying */
-  --s-queued:    #64748B;   /* slate  — waiting */
+  --s-running:   #3E7CE0;   /* blue         — active/in-progress */
+  --s-done:      #3EE084;   /* green        — success */
+  --s-error:     #E53D2E;   /* red          — failure */
+  --s-cancelled: #A98260;   /* muted taupe  — stopped (neutral, not a warning) */
+  --s-partial:   #E1B347;   /* amber        — mixed result / retrying */
+  --s-queued:    #8B8FA7;   /* slate-blue   — waiting */
   /* Aliases kept for legacy JS template literals */
   --green: var(--s-done);
   --red:   var(--s-error);
@@ -31,14 +35,14 @@
 
 /* ─── M3 Color tokens — dark (default) ─────────────────────────── */
 :root {
-  --md-primary:                #D0BCFF;
-  --md-on-primary:             #381E72;
-  --md-primary-container:      #4F378B;
-  --md-on-primary-container:   #EADDFF;
+  --md-primary:                #80D5CC;
+  --md-on-primary:             #00363C;
+  --md-primary-container:      #004F57;
+  --md-on-primary-container:   #9CF1E8;
   --md-secondary:              #CCC2DC;
   --md-on-secondary:           #332D41;
-  --md-secondary-container:    #4A4458;
-  --md-on-secondary-container: #E8DEF8;
+  --md-secondary-container:    #3D6360;
+  --md-on-secondary-container: #BCF0E7;
   --md-tertiary:               #EFB8C8;
   --md-on-tertiary:            #492532;
   --md-tertiary-container:     #633B48;
@@ -64,14 +68,14 @@
   --md-surface-container-highest: #36343B;
 }
 html[data-theme="light"] {
-  --md-primary:                #6750A4;
+  --md-primary:                #006874;
   --md-on-primary:             #FFFFFF;
-  --md-primary-container:      #EADDFF;
-  --md-on-primary-container:   #21005D;
+  --md-primary-container:      #9EEFFD;
+  --md-on-primary-container:   #001F24;
   --md-secondary:              #625B71;
   --md-on-secondary:           #FFFFFF;
-  --md-secondary-container:    #E8DEF8;
-  --md-on-secondary-container: #1D192B;
+  --md-secondary-container:    #CDE7E0;
+  --md-on-secondary-container: #0D1F1C;
   --md-tertiary:               #7D5260;
   --md-on-tertiary:            #FFFFFF;
   --md-tertiary-container:     #FFD8E4;
@@ -378,16 +382,18 @@ textarea[readonly], input[readonly] { opacity: .38; cursor: default; }
 .svc-handle { color: var(--md-on-surface-variant); display: flex; line-height: 1; }
 .svc-name   { flex: 1; font-size: .875rem; color: var(--md-on-surface); }
 .svc-badge  { font-size: .6875rem; font-weight: 500; letter-spacing: .031em; padding: 2px 8px; border-radius: 4px; }
+/* Same hue/saturation "step" per service, only lightness varies by role —
+   one cohesive family instead of colors picked ad hoc per brand. */
 .svc-tidal   { background: color-mix(in srgb, var(--md-on-surface) 10%, transparent); color: var(--md-on-surface-variant); border: 1px solid var(--md-outline-variant); }
-.svc-qobuz   { background: color-mix(in srgb, #a78bfa 12%, transparent); color: #c4b5fd; border: 1px solid color-mix(in srgb, #a78bfa 35%, transparent); }
-.svc-amazon  { background: color-mix(in srgb, #fbbf24 12%, transparent); color: #fde68a; border: 1px solid color-mix(in srgb, #fbbf24 35%, transparent); }
-.svc-deezer  { background: color-mix(in srgb, #60a5fa 12%, transparent); color: #93c5fd; border: 1px solid color-mix(in srgb, #60a5fa 35%, transparent); }
-.svc-youtube { background: color-mix(in srgb, #f87171 12%, transparent); color: #fca5a5; border: 1px solid color-mix(in srgb, #f87171 35%, transparent); }
+.svc-qobuz   { background: color-mix(in srgb, #8258E4 12%, transparent); color: #BFACEC; border: 1px solid color-mix(in srgb, #8258E4 35%, transparent); }
+.svc-amazon  { background: color-mix(in srgb, #E7BB55 12%, transparent); color: #EDD9AB; border: 1px solid color-mix(in srgb, #E7BB55 35%, transparent); }
+.svc-deezer  { background: color-mix(in srgb, #5897E4 12%, transparent); color: #ACC9EC; border: 1px solid color-mix(in srgb, #5897E4 35%, transparent); }
+.svc-youtube { background: color-mix(in srgb, #E75F55 12%, transparent); color: #EDAFAB; border: 1px solid color-mix(in srgb, #E75F55 35%, transparent); }
 html[data-theme="light"] .svc-tidal   { background: #f1f5f9; color: #475569; border-color: #cbd5e1; }
-html[data-theme="light"] .svc-qobuz   { background: #ede9fe; color: #6d28d9; border-color: #c4b5fd; }
-html[data-theme="light"] .svc-amazon  { background: #fefce8; color: #92400e; border-color: #fde68a; }
-html[data-theme="light"] .svc-deezer  { background: #eff6ff; color: #1e40af; border-color: #bfdbfe; }
-html[data-theme="light"] .svc-youtube { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+html[data-theme="light"] .svc-qobuz   { background: #F1EEF6; color: #3C1B88; border-color: #C2B4E4; }
+html[data-theme="light"] .svc-amazon  { background: #F7F4EE; color: #8B6818; border-color: #E6D6B3; }
+html[data-theme="light"] .svc-deezer  { background: #EEF2F6; color: #1B4C88; border-color: #B4CAE4; }
+html[data-theme="light"] .svc-youtube { background: #F7EEEE; color: #8B2018; border-color: #E6B6B3; }
 
 /* ─── Settings tabs ─────────────────────────────────────────────── */
 .stab-bar { display: flex; padding: 0 20px; border-bottom: 1px solid var(--md-outline-variant); flex-shrink: 0; }
@@ -1602,9 +1608,9 @@ buildServicesList();
 
 // ── Color theme presets ───────────────────────────────────────────────
 const COLOR_PRESETS = [
-  { id: 'purple',  label: 'Purple',   dark: { p:'#D0BCFF', op:'#381E72', pc:'#4F378B', opc:'#EADDFF', sc:'#4A4458', osc:'#E8DEF8' }, light: { p:'#6750A4', op:'#FFFFFF', pc:'#EADDFF', opc:'#21005D', sc:'#E8DEF8', osc:'#1D192B' } },
-  { id: 'indigo',  label: 'Indigo',   dark: { p:'#BBC2FF', op:'#1E2678', pc:'#353D90', opc:'#DDE1FF', sc:'#44475A', osc:'#E2E1F9' }, light: { p:'#4355B9', op:'#FFFFFF', pc:'#DDE1FF', opc:'#00105C', sc:'#E2E1F9', osc:'#191A2C' } },
   { id: 'teal',    label: 'Teal',     dark: { p:'#80D5CC', op:'#00363C', pc:'#004F57', opc:'#9CF1E8', sc:'#3D6360', osc:'#BCF0E7' }, light: { p:'#006874', op:'#FFFFFF', pc:'#9EEFFD', opc:'#001F24', sc:'#CDE7E0', osc:'#0D1F1C' } },
+  { id: 'indigo',  label: 'Indigo',   dark: { p:'#BBC2FF', op:'#1E2678', pc:'#353D90', opc:'#DDE1FF', sc:'#44475A', osc:'#E2E1F9' }, light: { p:'#4355B9', op:'#FFFFFF', pc:'#DDE1FF', opc:'#00105C', sc:'#E2E1F9', osc:'#191A2C' } },
+  { id: 'purple',  label: 'Purple',   dark: { p:'#D0BCFF', op:'#381E72', pc:'#4F378B', opc:'#EADDFF', sc:'#4A4458', osc:'#E8DEF8' }, light: { p:'#6750A4', op:'#FFFFFF', pc:'#EADDFF', opc:'#21005D', sc:'#E8DEF8', osc:'#1D192B' } },
   { id: 'green',   label: 'Green',    dark: { p:'#78DC77', op:'#003909', pc:'#0A5211', opc:'#93F990', sc:'#3C6340', osc:'#B8F0B3' }, light: { p:'#1A6B26', op:'#FFFFFF', pc:'#A3F69C', opc:'#002106', sc:'#BEF1B8', osc:'#002108' } },
   { id: 'amber',   label: 'Amber',    dark: { p:'#FFD740', op:'#3A2F00', pc:'#564400', opc:'#FFE98A', sc:'#524533', osc:'#EFE0B1' }, light: { p:'#695F00', op:'#FFFFFF', pc:'#FAEEA2', opc:'#211B00', sc:'#EEE2B5', osc:'#221C00' } },
   { id: 'orange',  label: 'Orange',   dark: { p:'#FFB778', op:'#4A2800', pc:'#6B3A00', opc:'#FFDBAF', sc:'#5D4030', osc:'#FFDCBB', }, light: { p:'#8B5000', op:'#FFFFFF', pc:'#FFDCBB', opc:'#2C1600', sc:'#F2DCC5', osc:'#2D1600' } },
@@ -1714,7 +1720,7 @@ function applyColorPreset(id, animate = true) {
 function buildColorPresets() {
   const wrap = document.getElementById('color-presets');
   if (!wrap) return;
-  const saved = localStorage.getItem('colorPreset') || 'purple';
+  const saved = localStorage.getItem('colorPreset') || 'teal';
 
   // Detect device accent each time the settings panel opens
   _deviceHex    = _readDeviceAccentHex();
@@ -1753,7 +1759,7 @@ if (_savedPreset) {
       if (storedHex) { _deviceHex = storedHex; _deviceTokens = _seedToTokens(storedHex); }
     }
     applyColorPreset('device', false);
-  } else if (_savedPreset !== 'purple') {
+  } else if (_savedPreset !== 'teal') {
     applyColorPreset(_savedPreset, false);
   }
 }
