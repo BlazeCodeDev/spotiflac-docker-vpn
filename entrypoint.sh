@@ -17,7 +17,7 @@ LOG_LEVEL="${LOG_LEVEL:-info}"
 # in Settings → System (see worker.refresh_extensions). A rollback below 1.8.0
 # needs the old provider-file patches restored from git history, not just a
 # pin change — see patch_spotiflac.py's module docstring.
-SPOTIFLAC_PINNED="3.0.4"
+SPOTIFLAC_PINNED="3.0.5"
 
 log()   { echo "[vpn] $(date '+%H:%M:%S') INFO  $*"; }
 err()   { echo "[vpn] $(date '+%H:%M:%S') ERROR $*" >&2; }

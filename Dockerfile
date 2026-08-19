@@ -74,7 +74,7 @@ RUN pip install --no-cache-dir flask python-dotenv gunicorn
 # gap that existed before 1.4.5 declared it). typing_extensions is pulled in
 # transitively via pydantic — confirmed with a bare `import SpotiFLAC` during
 # the 3.0.4 bump; not pinned explicitly unless that stops being true.
-RUN pip install --no-cache-dir --target /spotiflac "SpotiFLAC==3.0.4" requests
+RUN pip install --no-cache-dir --target /spotiflac "SpotiFLAC==3.0.5" requests
 ENV PYTHONPATH=/spotiflac
 
 RUN mkdir -p /vpn /downloads /app/templates && \
