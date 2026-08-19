@@ -50,22 +50,22 @@
   --md-error:                  #F2B8B5;
   --md-error-container:        #8C1D18;
   --md-on-error-container:     #F9DEDC;
-  --md-background:             #141218;
-  --md-on-background:          #E6E1E5;
-  --md-surface:                #141218;
-  --md-on-surface:             #E6E1E5;
-  --md-surface-variant:        #49454F;
-  --md-on-surface-variant:     #CAC4D0;
-  --md-outline:                #938F99;
-  --md-outline-variant:        #49454F;
-  --md-inverse-surface:        #E6E1E5;
-  --md-inverse-on-surface:     #313033;
+  --md-background:             #121817;
+  --md-on-background:          #E1E6E5;
+  --md-surface:                #121817;
+  --md-on-surface:             #E1E6E5;
+  --md-surface-variant:        #454F4E;
+  --md-on-surface-variant:     #C4D0CF;
+  --md-outline:                #8F9998;
+  --md-outline-variant:        #454F4E;
+  --md-inverse-surface:        #E1E6E5;
+  --md-inverse-on-surface:     #303333;
   --md-scrim:                  rgba(0,0,0,.6);
-  --md-surface-container-lowest:  #0F0D13;
-  --md-surface-container-low:     #1D1B20;
-  --md-surface-container:         #211F26;
-  --md-surface-container-high:    #2B2930;
-  --md-surface-container-highest: #36343B;
+  --md-surface-container-lowest:  #0D1312;
+  --md-surface-container-low:     #1B2020;
+  --md-surface-container:         #1F2625;
+  --md-surface-container-high:    #29302F;
+  --md-surface-container-highest: #343B3A;
 }
 html[data-theme="light"] {
   --md-primary:                #006874;
@@ -83,22 +83,22 @@ html[data-theme="light"] {
   --md-error:                  #B3261E;
   --md-error-container:        #F9DEDC;
   --md-on-error-container:     #410E0B;
-  --md-background:             #FFFBFE;
-  --md-on-background:          #1C1B1F;
-  --md-surface:                #FFFBFE;
-  --md-on-surface:             #1C1B1F;
-  --md-surface-variant:        #E7E0EC;
-  --md-on-surface-variant:     #49454F;
-  --md-outline:                #79747E;
-  --md-outline-variant:        #CAC4D0;
-  --md-inverse-surface:        #313033;
-  --md-inverse-on-surface:     #F4EFF4;
+  --md-background:             #FBFFFF;
+  --md-on-background:          #1B1F1F;
+  --md-surface:                #FBFFFF;
+  --md-on-surface:             #1B1F1F;
+  --md-surface-variant:        #E0EBEC;
+  --md-on-surface-variant:     #454E4F;
+  --md-outline:                #747D7E;
+  --md-outline-variant:        #C4CFD0;
+  --md-inverse-surface:        #303333;
+  --md-inverse-on-surface:     #EFF3F4;
   --md-scrim:                  rgba(0,0,0,.32);
   --md-surface-container-lowest:  #FFFFFF;
-  --md-surface-container-low:     #F7F2FA;
-  --md-surface-container:         #F3EDF7;
-  --md-surface-container-high:    #ECE6F0;
-  --md-surface-container-highest: #E6E0E9;
+  --md-surface-container-low:     #F2F9FA;
+  --md-surface-container:         #EDF6F7;
+  --md-surface-container-high:    #E6EFF0;
+  --md-surface-container-highest: #E0E8E9;
 }
 
 /* ─── Reset ─────────────────────────────────────────────────────── */
@@ -1679,6 +1679,54 @@ function _seedToTokens(hex) {
   };
 }
 
+// Fixed (saturation, lightness) per neutral-surface token role — the same
+// shape M3's own Neutral/Neutral-Variant tonal palettes use. Only the HUE
+// varies per accent (passed in), so the background/cards/outlines pick up a
+// slight tint matching whichever preset is active, instead of staying a
+// fixed purple-tinted gray regardless of accent choice. Values extracted
+// directly from the shipped default tokens, so hue=173.6(dark)/186.2(light)
+// reproduces this file's own baked-in :root values exactly.
+const _SURFACE_RECIPE = {
+  dark: {
+    surface: [14.3, 8.2], background: [14.3, 8.2],
+    'surface-variant': [6.8, 29.0], 'outline-variant': [6.8, 29.0],
+    outline: [4.7, 58.0],
+    'surface-container-lowest': [18.8, 6.3],
+    'surface-container-low': [8.5, 11.6],
+    'surface-container': [10.1, 13.5],
+    'surface-container-high': [7.9, 17.5],
+    'surface-container-highest': [6.3, 21.8],
+    'on-surface': [9.1, 89.2], 'on-background': [9.1, 89.2],
+    'on-surface-variant': [11.3, 79.2],
+    'inverse-surface': [9.1, 89.2],
+    'inverse-on-surface': [3.0, 19.4],
+  },
+  light: {
+    surface: [100, 99.2], background: [100, 99.2],
+    'surface-variant': [24.0, 90.2],
+    outline: [4.1, 47.5],
+    'outline-variant': [11.3, 79.2],
+    'surface-container-lowest': [0, 100],
+    'surface-container-low': [44.4, 96.5],
+    'surface-container': [38.5, 94.9],
+    'surface-container-high': [25.0, 92.2],
+    'surface-container-highest': [17.0, 89.6],
+    'on-surface': [6.9, 11.4], 'on-background': [6.9, 11.4],
+    'on-surface-variant': [6.8, 29.0],
+    'inverse-surface': [3.0, 19.4],
+    'inverse-on-surface': [18.5, 94.7],
+  },
+};
+
+function _tintedSurfaceTokens(hue, isDark) {
+  const recipe = isDark ? _SURFACE_RECIPE.dark : _SURFACE_RECIPE.light;
+  const out = {};
+  for (const [role, [s, l]] of Object.entries(recipe)) {
+    out[role] = _hslToHex(hue, s, l);
+  }
+  return out;
+}
+
 let _deviceHex    = null;  // detected accent hex
 let _deviceTokens = null;  // generated token set
 
@@ -1705,6 +1753,15 @@ function applyColorPreset(id, animate = true) {
   html.style.setProperty('--md-on-primary-container',   tokens.opc);
   html.style.setProperty('--md-secondary-container',    tokens.sc);
   html.style.setProperty('--md-on-secondary-container', tokens.osc);
+
+  // Give the background/cards/outlines a slight tint matching this accent
+  // instead of a fixed neutral gray, regardless of which preset is active.
+  const [hue] = _hexToHSL(tokens.p);
+  const surfaceTokens = _tintedSurfaceTokens(hue, isDark);
+  for (const [role, hex] of Object.entries(surfaceTokens)) {
+    html.style.setProperty(`--md-${role}`, hex);
+  }
+
   localStorage.setItem('colorPreset', id);
   if (id === 'device') localStorage.setItem('colorPresetDeviceHex', _deviceHex || '');
 
