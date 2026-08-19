@@ -805,6 +805,12 @@ button { cursor: pointer; font-family: inherit; border: none; }
 .track-time  { color: var(--md-on-surface-variant); font-family: 'Roboto Mono', monospace; font-size: .68rem; margin-left: auto; flex-shrink: 0; }
 .track-show-toggle { font-size: .72rem; color: var(--md-primary); font-weight: 500; margin-top: 5px; cursor: pointer; user-select: none; }
 .track-show-toggle:hover { opacity: .85; }
+.jobs-show-toggle {
+  text-align: center; padding: 10px 0; margin-top: 4px;
+  font-size: .8rem; font-weight: 500; color: var(--md-primary);
+  cursor: pointer; user-select: none; border-top: 1px solid var(--md-outline-variant);
+}
+.jobs-show-toggle:hover { background: color-mix(in srgb, var(--md-primary) 6%, transparent); }
 
 /* ─── Color preset picker ─────────────────────────────────────────── */
 .color-presets { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -2566,6 +2572,8 @@ let _jobDragSrc     = null;
 let _jobsLoaded     = false;
 let _jobExpanded    = new Set();
 let _jobShowAll     = new Set();
+const JOBS_PAGE_SIZE = 10;
+let _jobsExpandedList = false;   // false = capped at JOBS_PAGE_SIZE, true = showing all
 
 function renderSkeleton() {
   document.getElementById('jobs-list').innerHTML = [0,1,2].map(() => `
@@ -2612,7 +2620,9 @@ function renderJobs() {
   if (!_allJobs.length) { if (_jobsLoaded) el.innerHTML = '<div class="jobs-empty">No downloads yet</div>'; updateJobCounts(); updateBulkBar(); return; }
   if (!jobs.length)     { el.innerHTML = '<div class="jobs-empty">No matches</div>'; updateJobCounts(); updateBulkBar(); return; }
 
-  const _seenIds = new Set(jobs.map(j => j.id));
+  const visibleJobs = _jobsExpandedList ? jobs : jobs.slice(0, JOBS_PAGE_SIZE);
+
+  const _seenIds = new Set(visibleJobs.map(j => j.id));
 
   // Capture badge states before rebuild so we can animate changes
   const _prevBadges = new Map();
@@ -2625,7 +2635,7 @@ function renderJobs() {
   // reads the true content height, not a locked value.
   el.style.height = el.style.transition = el.style.overflow = '';
   const prevH = el.offsetHeight;
-  el.innerHTML = jobs.map(j => {
+  el.innerHTML = visibleJobs.map(j => {
     const label = j.title || j.url;
     const cover = j.cover_url
       ? `<img class="job-cover" src="${esc(j.cover_url)}" alt="" loading="lazy">`
@@ -2694,7 +2704,9 @@ function renderJobs() {
       ${j.next_retry_at && j.status !== 'cancelled' ? `<div class="job-retry-bar"><span class="material-icons">schedule</span>Retry ${j.retry_count || 1}${j.retry_max ? ' of ' + j.retry_max : ''} in <span class="retry-countdown" data-until="${esc(j.next_retry_at)}">${fmtCountdown(j.next_retry_at)}</span></div>` : ''}
       ${expandPanel}
     </div>`;
-  }).join('');
+  }).join('') + (jobs.length > JOBS_PAGE_SIZE
+    ? `<div class="jobs-show-toggle" data-action="jobs-show-toggle">${_jobsExpandedList ? 'Show fewer' : `Show ${jobs.length - JOBS_PAGE_SIZE} more`}</div>`
+    : '');
 
   const newH = el.offsetHeight;
 
@@ -2795,6 +2807,9 @@ function renderJobs() {
           await fetch(`/api/jobs/${id}/retry`, {method: 'POST'});
         }
         refreshJobs();
+      } else if (action === 'jobs-show-toggle') {
+        _jobsExpandedList = !_jobsExpandedList;
+        renderJobs();
       }
     });
   });
