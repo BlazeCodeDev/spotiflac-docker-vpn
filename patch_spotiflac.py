@@ -404,3 +404,30 @@ _apply(
     ),
     "browser-session lock is now a threading.Lock-backed cross-loop/cross-thread-safe lock instead of asyncio.Lock",
 )
+
+# ---------------------------------------------------------------------------
+# Patch G: extensions/_bridge.js — the synchronous JS<->Python bridge call
+# (Atomics.wait loop) has a hardcoded 60s ceiling, but session.signedFetch —
+# the call a JS extension makes to trigger Python's signed-session/Turnstile
+# flow — can legitimately take far longer. core/solver.py's own "hard
+# watchdog" (the timeout that force-kills a wedged browser) is deliberately
+# sized to (_RELOAD_CHECK_SECONDS + _MAX_NAV_POLL_SECONDS +
+# _MAX_IFRAME_RECT_POLL_SECONDS) * _MAX_RELOAD_ATTEMPTS + 10*(attempts-1) +
+# 60s cleanup buffer = (10+10+10)*3 + 20 + 60 = 170s as of 3.8.0 — i.e.
+# upstream's own Python side expects a legitimate solve to take up to 170s,
+# but the JS side of the same round trip gives up at 60s and throws "Bridge
+# timeout for session.signedFetch" — a mismatch between the two sides of one
+# feature, not a deliberately strict limit. Observed in production: every
+# Turnstile-gated provider (deezer here, but the same bridge code path
+# covers qobuz-web/amazon/tidal's LOSSLESS-API extensions too) failing with
+# exactly this message. Bumped to 200s — comfortably above the 170s Python
+# budget with margin, still well under our own DownloadOptions.timeout_s
+# (download_timeout_s setting, default 300s) that bounds the whole extension
+# call this sits inside.
+# ---------------------------------------------------------------------------
+_apply(
+    "extensions/_bridge.js",
+    "      if (waited > 60_000) throw new Error(`Bridge timeout for ${method}`);\n",
+    "      if (waited > 200_000) throw new Error(`Bridge timeout for ${method}`);\n",
+    "raised the synchronous bridge-call ceiling from 60s to 200s to cover a legitimate Turnstile solve (Python's own watchdog budgets up to 170s)",
+)
