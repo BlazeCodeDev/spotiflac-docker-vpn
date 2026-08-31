@@ -21,6 +21,9 @@ def _defaults() -> dict:
         "extension_registries": [s.strip() for s in os.environ.get("SPOTIFLAC_REGISTRIES", "").split(",") if s.strip()],
         "filename_fmt": os.environ.get("FILENAME_FORMAT", "{artist}/{album}/{track} {title}"),
         "qobuz_token":  os.environ.get("QOBUZ_TOKEN",    ""),
+        # Last-selected quality tier in the download-bar picker ("high",
+        # "lossless", "hires") — persisted so it survives a page reload.
+        "quality": os.environ.get("DEFAULT_QUALITY", "lossless"),
         # M3U playlist file generation for playlist downloads: "always", "ask" (prompt
         # per download), or "never".
         "m3u_mode": os.environ.get("M3U_MODE", "ask"),

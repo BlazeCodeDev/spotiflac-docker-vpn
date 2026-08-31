@@ -519,6 +519,12 @@ button { cursor: pointer; font-family: inherit; border: none; }
 .quality-opt .q-sub  { font-size: .58rem; opacity: .75; white-space: nowrap; line-height: 1; }
 .quality-opt:not(.active):hover { color: var(--md-on-surface); background: color-mix(in srgb, var(--md-on-surface) 8%, transparent); }
 .quality-opt.active { color: var(--md-on-secondary-container); }
+.quality-info {
+  font-size: 16px; flex-shrink: 0;
+  color: var(--md-on-surface-variant); opacity: .65;
+  cursor: help; transition: opacity .15s;
+}
+.quality-info:hover { opacity: 1; }
 
 /* ─── Badges (status chips) ──────────────────────────────────────── */
 .badge {
@@ -1096,19 +1102,20 @@ html.theme-transitioning *::after {
       <div style="flex:1"></div>
       <div class="quality-sel" id="quality-selector">
         <div class="quality-indicator" id="quality-indicator"></div>
-        <button class="quality-opt" data-quality="high">
+        <button class="quality-opt{{ ' active' if quality == 'high' else '' }}" data-quality="high">
           <span class="q-name">High</span>
           <span class="q-sub">320 kbps</span>
         </button>
-        <button class="quality-opt active" data-quality="lossless">
+        <button class="quality-opt{{ ' active' if quality != 'high' and quality != 'hires' else '' }}" data-quality="lossless">
           <span class="q-name">Lossless</span>
           <span class="q-sub">16-bit FLAC</span>
         </button>
-        <button class="quality-opt" data-quality="hires">
+        <button class="quality-opt{{ ' active' if quality == 'hires' else '' }}" data-quality="hires">
           <span class="q-name">Hi-Res</span>
           <span class="q-sub">24-bit FLAC</span>
         </button>
       </div>
+      <span class="material-icons quality-info" title="Actual quality depends on which provider serves the track. Tidal fully honors this setting; Qobuz treats High the same as Lossless; Amazon, Apple and Deezer always serve their best available format regardless of what's selected here.">info</span>
     </div>
   </div>
 
@@ -1825,7 +1832,7 @@ function getActiveServices() {
   return [...document.querySelectorAll('.svc-toggle')].filter(c=>c.checked).map(c=>c.dataset.id);
 }
 
-let _quality = 'lossless';
+let _quality = {{ quality | tojson }};
 
 function _moveQualityIndicator(btn) {
   const ind = document.getElementById('quality-indicator');
@@ -1839,6 +1846,10 @@ document.querySelectorAll('.quality-opt').forEach(btn => {
     _quality = btn.dataset.quality;
     document.querySelectorAll('.quality-opt').forEach(b => b.classList.toggle('active', b === btn));
     _moveQualityIndicator(btn);
+    fetch('/api/settings', {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({quality: _quality}),
+    }).catch(() => {});
   });
 });
 

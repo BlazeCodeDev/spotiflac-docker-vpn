@@ -141,6 +141,7 @@ def index():
         services=cfg["services"],
         filename_fmt=cfg["filename_fmt"],
         git_commit=_GIT_COMMIT,
+        quality=cfg.get("quality", "lossless"),
     )
 
 
@@ -1638,6 +1639,13 @@ def api_settings_patch():
             updates["m3u_mode"] = raw
         else:
             errors["m3u_mode"] = "must be 'always', 'ask', or 'never'"
+
+    if "quality" in body:
+        raw = str(body["quality"])
+        if raw in _VALID_QUALITIES:
+            updates["quality"] = raw
+        else:
+            errors["quality"] = "must be 'high', 'lossless', or 'hires'"
 
     if "extension_registries" in body:
         raw = body["extension_registries"]
