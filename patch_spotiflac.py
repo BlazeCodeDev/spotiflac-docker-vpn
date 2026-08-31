@@ -36,8 +36,9 @@ were removed from this file in the 1.7.8 -> 3.0.4 port because those files no
 longer exist. If a future release reshapes extensions/provider.py's MB block,
 the affected patch will log "pattern not found — skipping" and must be
 re-ported (see git history for the 1.2.0 -> 1.3.1, 1.3.1 -> 1.4.5, 1.4.5 ->
-1.7.8, and 1.7.8 -> 3.0.4 ports — the last one is the provider-architecture
-cutover, not just a call-shape change).
+1.7.8, 1.7.8 -> 3.0.4, and 3.0.5 -> 3.8.0 ports — the 1.7.8 -> 3.0.4 one is
+the provider-architecture cutover, not just a call-shape change; 3.0.5 -> 3.8.0
+was two independent indentation/import-shape drifts, not architectural).
 """
 import importlib.util
 import pathlib
@@ -197,44 +198,66 @@ for _init_old in (
 # per-provider providers/*.py files this used to target no longer exist as
 # of 1.8.0 — see module docstring).
 # ---------------------------------------------------------------------------
-_apply(
-    "extensions/provider.py",
-    (
-        "        mb_tags: dict[str, str] = {}\n"
-        "        if enrich_metadata and metadata.isrc:\n"
-        "            try:\n"
-        "                from SpotiFLAC.core.isrc_utils import normalize_isrc\n"
-        "                from SpotiFLAC.core.musicbrainz import (\n"
-        "                    fetch_mb_metadata_async,\n"
-        "                    mb_result_to_tags,\n"
-        "                )\n"
-        "\n"
-        "                isrc_clean = normalize_isrc(metadata.isrc)\n"
-        "                if isrc_clean:\n"
-        "                    mb_data = await fetch_mb_metadata_async(isrc_clean)\n"
-        "                    mb_tags = mb_result_to_tags(mb_data)\n"
-        "            except Exception as e:\n"
-    ),
-    (
-        "        mb_tags: dict[str, str] = {}\n"
-        "        if enrich_metadata:\n"
-        "            try:\n"
-        "                from SpotiFLAC.core.isrc_utils import normalize_isrc\n"
-        "                from SpotiFLAC.core.musicbrainz import (\n"
-        "                    fetch_mb_metadata_smart_async,\n"
-        "                    mb_result_to_tags,\n"
-        "                )\n"
-        "\n"
-        "                isrc_clean = normalize_isrc(metadata.isrc)\n"
-        "                mb_data = await fetch_mb_metadata_smart_async(\n"
-        "                    isrc_clean, metadata.title, metadata.first_artist\n"
-        "                )\n"
-        "                mb_tags = mb_result_to_tags(mb_data)\n"
-        "            except Exception as e:\n"
-    ),
-    "MusicBrainz lookup no longer gated on ISRC presence, uses smart text-search fallback",
-    already_marker="fetch_mb_metadata_smart_async(\n                    isrc_clean, metadata.title, metadata.first_artist",
+_PROVIDER_MB_OLD_BASE = (
+    "        mb_tags: dict[str, str] = {}\n"
+    "        if enrich_metadata and metadata.isrc:\n"
+    "            try:\n"
+    "                from SpotiFLAC.core.isrc_utils import normalize_isrc\n"
+    "                from SpotiFLAC.core.musicbrainz import (\n"
+    "                    fetch_mb_metadata_async,\n"
+    "                    mb_result_to_tags,\n"
+    "                )\n"
+    "\n"
+    "                isrc_clean = normalize_isrc(metadata.isrc)\n"
+    "                if isrc_clean:\n"
+    "                    mb_data = await fetch_mb_metadata_async(isrc_clean)\n"
+    "                    mb_tags = mb_result_to_tags(mb_data)\n"
+    "            except Exception as e:\n"
 )
+_PROVIDER_MB_NEW_BASE = (
+    "        mb_tags: dict[str, str] = {}\n"
+    "        if enrich_metadata:\n"
+    "            try:\n"
+    "                from SpotiFLAC.core.isrc_utils import normalize_isrc\n"
+    "                from SpotiFLAC.core.musicbrainz import (\n"
+    "                    fetch_mb_metadata_smart_async,\n"
+    "                    mb_result_to_tags,\n"
+    "                )\n"
+    "\n"
+    "                isrc_clean = normalize_isrc(metadata.isrc)\n"
+    "                mb_data = await fetch_mb_metadata_smart_async(\n"
+    "                    isrc_clean, metadata.title, metadata.first_artist\n"
+    "                )\n"
+    "                mb_tags = mb_result_to_tags(mb_data)\n"
+    "            except Exception as e:\n"
+)
+
+
+def _reindent(text: str, extra_spaces: int) -> str:
+    """Shifts every non-blank line right by extra_spaces."""
+    if extra_spaces == 0:
+        return text
+    pad = " " * extra_spaces
+    return "\n".join((pad + line if line else line) for line in text.split("\n"))
+
+
+# extensions/provider.py's download() nested this whole block one indent
+# level deeper as of 3.8.0 (3.0.4-3.7.x had it at 8-space base; 3.8.0+ at
+# 12-space — indentation-only drift, the code itself is unchanged). Try both
+# depths so a downgrade of the pin still patches cleanly too.
+for _extra in (0, 4):
+    _marker = (
+        "fetch_mb_metadata_smart_async(\n"
+        + " " * (20 + _extra)
+        + "isrc_clean, metadata.title, metadata.first_artist"
+    )
+    _apply(
+        "extensions/provider.py",
+        _reindent(_PROVIDER_MB_OLD_BASE, _extra),
+        _reindent(_PROVIDER_MB_NEW_BASE, _extra),
+        "MusicBrainz lookup no longer gated on ISRC presence, uses smart text-search fallback",
+        already_marker=_marker,
+    )
 
 # ---------------------------------------------------------------------------
 # Patch E: core/signed_session_mobile.py — cross-event-loop/cross-thread auth
@@ -296,12 +319,20 @@ _CROSS_LOOP_LOCK_CLASS = '''class _CrossLoopLock:
 
 '''
 
-_apply(
-    "core/signed_session_mobile.py",
-    "import secrets\nimport time\n",
-    "import secrets\nimport threading\nimport time\n",
-    "added threading import",
-)
+# 3.8.0 inserted `import tempfile` between secrets/time, breaking the plain
+# adjacency anchor — and critically, the lock-swap patch below (which embeds
+# a bare `threading.Lock()` call) has no way to detect that *this* patch
+# silently failed, so it applied on top of a file with no `import threading`
+# at all. Caught only by actually calling _get_auth_lock() under contention,
+# not by "applies clean + imports" (see the long Patch E comment above).
+for _secrets_anchor in ("import secrets\nimport time\n", "import secrets\nimport tempfile\nimport time\n"):
+    _apply(
+        "core/signed_session_mobile.py",
+        _secrets_anchor,
+        _secrets_anchor.replace("import secrets\n", "import secrets\nimport threading\n", 1),
+        "added threading import",
+        already_marker="import threading\n",
+    )
 
 _apply(
     "core/signed_session_mobile.py",
