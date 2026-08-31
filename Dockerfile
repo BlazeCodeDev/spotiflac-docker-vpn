@@ -34,6 +34,21 @@ FROM python:3.12-alpine
 # just the two binaries. Confirmed via Alpine's package index that `xvfb`
 # provides /usr/bin/Xvfb and `chromium` provides /usr/bin/chromium-browser,
 # which is exactly the path solver.py's _find_chrome() checks first.
+#
+# This is also by far the biggest thing in this image: chromium alone is
+# ~236MiB installed (Alpine package index, v3.20/community), plus another
+# ~50MiB in its own direct deps (mesa-dri-gallium, gtk+3.0, nss, cairo,
+# pango, fontconfig, freetype, at-spi2, dbus-libs) — call it ~290MiB, close
+# to a third of the whole image. INSTALL_BROWSER_SOLVER lets that be skipped
+# for a build that only ever uses extensions with no Cloudflare challenge in
+# their path (e.g. ytmusic-spotiflac) — defaults to "true" so a plain
+# `docker build .` is unchanged; opt out with
+# `--build-arg INSTALL_BROWSER_SOLVER=false`. Opting out means every
+# Cloudflare-gated extension attempt fails with the same
+# "No such file or directory: 'Xvfb'" this comment describes above — that's
+# expected, not a bug, if you've deliberately made this trade.
+ARG INSTALL_BROWSER_SOLVER=true
+
 RUN apk add --no-cache \
     openvpn \
     wireguard-tools \
@@ -46,13 +61,14 @@ RUN apk add --no-cache \
     ffmpeg \
     flac \
     nodejs \
-    xvfb \
-    chromium \
-    su-exec
+    su-exec && \
+    if [ "$INSTALL_BROWSER_SOLVER" = "true" ]; then apk add --no-cache xvfb chromium; fi
 
 # Belt-and-suspenders: core/solver.py's _find_chrome() checks CHROME_PATH
 # before falling back to path probing/PATH search, so this pins the exact
 # binary instead of relying on that fallback order matching Alpine's layout.
+# Harmless to set even when INSTALL_BROWSER_SOLVER=false skipped the binary —
+# solver.py only reads this when an extension actually needs it.
 ENV CHROME_PATH=/usr/bin/chromium-browser
 
 # App runs as an unprivileged user (entrypoint drops root via su-exec) so a
