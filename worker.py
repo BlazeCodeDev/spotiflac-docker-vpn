@@ -1149,8 +1149,20 @@ class _TrackingDownloader(SpotiflacDownloader):
             super().run(url)
 
     async def _run_worker_async(self, tracks, collection_name, info,
-                                is_album, is_playlist, opts=None):
-        """Override for SpotiFLAC 1.2.9+: swap DownloadWorker for _TrackingWorker."""
+                                is_album, is_playlist, opts=None, existing_paths=None):
+        """Override for SpotiFLAC 1.2.9+: swap DownloadWorker for _TrackingWorker.
+
+        existing_paths (SpotiFLAC 3.8.0+): the base class now does its own
+        native "already downloaded" pre-scan and passes the result down as a
+        keyword arg — accepted here only so the call doesn't TypeError
+        (broke every job outright the moment this landed, since the base
+        class always passes it now). Deliberately not consumed: this
+        override already does its own, more thorough pre-scan in
+        _TrackingWorker.run[_async]() — exact-path match, plus a
+        library-wide artist+title fallback via lib_index for the same song
+        landing under a different album-derived path (see _index_existing_files
+        / lib_index.find_by_artist_title) — which existing_paths doesn't cover.
+        """
         self.is_playlist     = is_playlist
         self.collection_name = collection_name
         effective = opts if opts is not None else self._opts
