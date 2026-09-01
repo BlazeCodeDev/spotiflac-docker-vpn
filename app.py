@@ -24,6 +24,14 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logging.getLogger("urllib3").setLevel(logging.WARNING)
+# pydoll (Chromium automation for Cloudflare Turnstile solving, core/solver.py)
+# logs every low-level browser interaction at INFO — "EventsManager
+# initialized", "Clicking element via JS", "Scrolling element into view", etc.
+# (100+ logger.info() call sites across the package, not a handful) — floods
+# the log during every Turnstile solve. Setting the parent "pydoll" logger's
+# level suppresses all of its child-module loggers (logging.getLogger(__name__)
+# in each file), same pattern as urllib3 above.
+logging.getLogger("pydoll").setLevel(logging.WARNING)
 
 os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
 _cfg = _settings.load()
