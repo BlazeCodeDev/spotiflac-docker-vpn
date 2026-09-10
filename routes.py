@@ -1300,18 +1300,29 @@ def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
             cur_rel = os.path.relpath(abs_path, root).replace(os.sep, "/")
             if new_rel != cur_rel:
                 dst_abs = os.path.join(root, *new_rel.replace("\\", "/").split("/"))
-                os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
-                if os.path.exists(dst_abs):
-                    os.remove(abs_path)
+                # new_rel and cur_rel can be different *strings* yet point at
+                # the very file we just enriched — a case-insensitive volume,
+                # Unicode NFC/NFD, or a trailing dot/space that _org_san
+                # strips. Deleting abs_path here would destroy the only copy.
+                if os.path.exists(dst_abs) and os.path.samefile(dst_abs, abs_path):
                     yield {"type": "step", "id": "organize",
-                           "text": f"A correctly-named copy already exists — removed this one ({new_rel})",
+                           "text": "Filename already matches the format", "pending": False}
+                elif os.path.exists(dst_abs):
+                    # A *different* file already holds the target name. That is
+                    # not proof of a duplicate — it can be a real name
+                    # collision between two distinct recordings — so never
+                    # delete either file. Leave this one where it is; the user
+                    # can merge/dedupe it deliberately from the library.
+                    yield {"type": "step", "id": "organize",
+                           "text": f"Target name already taken by a different file — left this one in place ({new_rel})",
                            "pending": False}
                 else:
+                    os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
                     shutil.move(abs_path, dst_abs)
+                    _cleanup_empty_dirs_up(os.path.dirname(abs_path), root)
                     yield {"type": "step", "id": "organize",
                            "text": f"Moved → {new_rel}", "pending": False}
-                _cleanup_empty_dirs_up(os.path.dirname(abs_path), root)
-                moved = new_rel
+                    moved = new_rel
             else:
                 yield {"type": "step", "id": "organize",
                        "text": "Filename already matches the format", "pending": False}
