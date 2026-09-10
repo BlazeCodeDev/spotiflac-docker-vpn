@@ -90,7 +90,16 @@ RUN pip install --no-cache-dir flask python-dotenv gunicorn
 # gap that existed before 1.4.5 declared it). typing_extensions is pulled in
 # transitively via pydantic — confirmed with a bare `import SpotiFLAC` during
 # the 3.0.4 bump; not pinned explicitly unless that stops being true.
-RUN pip install --no-cache-dir --target /spotiflac "SpotiFLAC==3.8.0" requests
+#
+# 4.0 made textual (~7 MB), numpy (~70 MB), fastapi/uvicorn/starlette (~4 MB)
+# and pyacoustid mandatory dependencies — ~90 MB the app itself never touches
+# (--tui, --web, verify_hires, SpotiFLAC's own dedup; we run gunicorn + our
+# own Flask, and our own dedup). A `--no-deps` slim install was tried and
+# works (135 MB vs 256 MB site-packages) but needs the full transitive dep
+# list hand-maintained in lockstep here AND in entrypoint.sh's update_spotiflac
+# — a silent-breakage risk this project has been bitten by before — so the
+# full resolve is kept. Revisit if image size becomes the pressing problem.
+RUN pip install --no-cache-dir --target /spotiflac "SpotiFLAC==4.1.0" requests
 ENV PYTHONPATH=/spotiflac
 
 RUN mkdir -p /vpn /downloads /app/templates && \

@@ -14,10 +14,13 @@ LOG_LEVEL="${LOG_LEVEL:-info}"
 # 1.8.0 (the release right after 1.7.8) deleted the whole providers/ package —
 # Tidal/Qobuz/Amazon/Deezer/etc. are no longer bundled at all, only installable
 # at runtime as operator-supplied "extensions" from a registry URL configured
-# in Settings → System (see worker.refresh_extensions). A rollback below 1.8.0
-# needs the old provider-file patches restored from git history, not just a
-# pin change — see patch_spotiflac.py's module docstring.
-SPOTIFLAC_PINNED="3.8.0"
+# in Settings → System (see worker.refresh_extensions). 4.0 made textual /
+# numpy / fastapi / uvicorn / pyacoustid mandatory deps and moved MusicBrainz
+# title/artist fallback + the mobile cross-loop lock in-tree (so
+# patch_spotiflac.py Patches A/B/E were retired). Rolling back below 4.0 needs
+# the pre-4.x patch_spotiflac.py restored from git, not just a pin change —
+# see its module docstring.
+SPOTIFLAC_PINNED="4.1.0"
 
 log()   { echo "[vpn] $(date '+%H:%M:%S') INFO  $*"; }
 err()   { echo "[vpn] $(date '+%H:%M:%S') ERROR $*" >&2; }
@@ -500,11 +503,52 @@ update_spotiflac() {
     #     silently skip the patches.
     # Override with SPOTIFLAC_VERSION only after re-verifying the patches apply.
     SPOTIFLAC_VERSION="${SPOTIFLAC_VERSION:-$SPOTIFLAC_PINNED}"
-    log "Installing SpotiFLAC (pinned) $SPOTIFLAC_VERSION..."
+
+    # What's actually on disk right now? /spotiflac is a named volume seeded
+    # once from the image, so after a pin bump it still holds the OLD version's
+    # source until we replace it here. Read the highest version across any
+    # *.dist-info dirs (a prior interrupted upgrade can leave more than one).
+    _have=$(python3 - <<'PY' 2>/dev/null || true
+import glob, os
+vs = []
+for di in glob.glob("/spotiflac/SpotiFLAC-*.dist-info") + glob.glob("/spotiflac/spotiflac-*.dist-info"):
+    try:
+        for line in open(os.path.join(di, "METADATA")):
+            if line.lower().startswith("version:"):
+                vs.append(line.split(":", 1)[1].strip())
+                break
+    except OSError:
+        pass
+def key(v):
+    p = [int(x) for x in v.split(".")[:3] if x.isdigit()]
+    return tuple(p + [0] * (3 - len(p)))
+print(max(vs, key=key) if vs else "")
+PY
+)
+
+    if [ -n "$_have" ] && [ "$_have" = "$SPOTIFLAC_VERSION" ]; then
+        log "SpotiFLAC already at pinned version $SPOTIFLAC_VERSION — re-patching only"
+        python3 /app/patch_spotiflac.py 2>&1 | sed 's/^/[vpn] /' || true
+        chmod -R a+rX /spotiflac 2>/dev/null || true
+        return
+    fi
+
+    # Version mismatch (or nothing installed). `pip install --target` will NOT
+    # replace an existing package tree — it skips it with only a WARNING and
+    # still prints "Successfully installed <pkg>", leaving the old source in
+    # place. `--upgrade` fixes that but leaves stale dist-info dirs behind and
+    # reinstalls every dependency on every boot. So instead: wipe the dir and
+    # do one clean install of the pinned version.
+    if [ -n "$_have" ]; then
+        log "SpotiFLAC $_have installed, pinned is $SPOTIFLAC_VERSION — purging and reinstalling"
+    else
+        log "Installing SpotiFLAC (pinned) $SPOTIFLAC_VERSION..."
+    fi
+    find /spotiflac -mindepth 1 -delete 2>/dev/null || true
 
     # requests: see Dockerfile — declared as a real SpotiFLAC dependency as of
     # 1.7.8, kept explicit here in case the pin is ever rolled back to 1.4.5.
-    if _out=$(pip install --target /spotiflac "SpotiFLAC==$SPOTIFLAC_VERSION" requests 2>&1); then
+    if _out=$(pip install --no-cache-dir --target /spotiflac "SpotiFLAC==$SPOTIFLAC_VERSION" requests 2>&1); then
         _rc=0
     else
         _rc=$?
@@ -513,13 +557,20 @@ update_spotiflac() {
         err "SpotiFLAC install failed: $(echo "$_out" | tail -1)"
         return
     fi
-    if echo "$_out" | grep -qi "successfully installed"; then
-        _ver=$(echo "$_out" | grep -o "SpotiFLAC-[0-9][^ ]*" | head -1)
-        log "SpotiFLAC installed ${_ver:-$SPOTIFLAC_VERSION} — re-patching"
-        python3 /app/patch_spotiflac.py 2>&1 | sed 's/^/[vpn] /' || true
-    else
-        log "SpotiFLAC already at pinned version $SPOTIFLAC_VERSION"
-    fi
+    _ver=$(python3 - <<'PY' 2>/dev/null || true
+import glob, os
+for di in glob.glob("/spotiflac/SpotiFLAC-*.dist-info") + glob.glob("/spotiflac/spotiflac-*.dist-info"):
+    try:
+        for line in open(os.path.join(di, "METADATA")):
+            if line.lower().startswith("version:"):
+                print(line.split(":", 1)[1].strip()); raise SystemExit
+    except OSError:
+        pass
+PY
+)
+    log "SpotiFLAC installed ${_ver:-$SPOTIFLAC_VERSION} — re-patching"
+    python3 /app/patch_spotiflac.py 2>&1 | sed 's/^/[vpn] /' || true
+
     # /spotiflac is written as root; make sure the app user can import it.
     chmod -R a+rX /spotiflac 2>/dev/null || true
 }

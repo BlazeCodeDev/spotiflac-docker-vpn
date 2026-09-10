@@ -1156,20 +1156,30 @@ def _enrich_setup(use_mb: bool):
     mb_lookup = mb_to_tags = None
     if use_mb:
         try:
+            import inspect as _inspect
             from SpotiFLAC.core.musicbrainz import (
-                fetch_mb_metadata_smart, mb_result_to_tags as mb_to_tags,
+                fetch_mb_metadata, mb_result_to_tags as mb_to_tags,
             )
-            mb_lookup = lambda isrc, title, artist: fetch_mb_metadata_smart(isrc, title, artist)
-        except ImportError:
-            try:
-                # Older SpotiFLAC without the text-search fallback (see
-                # patch_spotiflac.py) — ISRC-only lookup still works.
-                from SpotiFLAC.core.musicbrainz import (
-                    fetch_mb_metadata, mb_result_to_tags as mb_to_tags,
+            if "title" in _inspect.signature(fetch_mb_metadata).parameters:
+                # SpotiFLAC >= 4.0: fetch_mb_metadata itself does the
+                # ISRC-unlinked -> title/artist text-search fallback when
+                # given keyword-only title=/artist=.
+                mb_lookup = lambda isrc, title, artist: fetch_mb_metadata(
+                    isrc, title=title, artist=artist
                 )
-                mb_lookup = lambda isrc, title, artist: fetch_mb_metadata(isrc)
-            except ImportError:
-                pass
+            else:
+                # Pre-4.0: the title/artist fallback lived in
+                # patch_spotiflac.py's fetch_mb_metadata_smart (retired at the
+                # 3.8.0 -> 4.1.0 bump). Use it if present, else ISRC-only.
+                try:
+                    from SpotiFLAC.core.musicbrainz import fetch_mb_metadata_smart
+                    mb_lookup = lambda isrc, title, artist: fetch_mb_metadata_smart(
+                        isrc, title, artist
+                    )
+                except ImportError:
+                    mb_lookup = lambda isrc, title, artist: fetch_mb_metadata(isrc)
+        except ImportError:
+            pass
     return enrich_fn, mb_lookup, mb_to_tags
 
 
