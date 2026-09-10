@@ -1125,11 +1125,199 @@ def _find_duplicate_tracks(rel_paths: list[str], root: str) -> list[dict]:
     return result
 
 
+# Per-path guard so the same file can't be single-song-enriched twice at once
+# (double-click, or re-click while the first run is still streaming). Different
+# files may enrich concurrently — no shared mutable state between them.
+_single_enrich_active: set = set()
+_single_enrich_active_lock = threading.Lock()
+
+
+def _enrich_setup(use_mb: bool):
+    """Resolve (enrich_fn, mb_lookup, mb_to_tags) against the installed SpotiFLAC.
+
+    enrich_fn is None when metadata enrichment isn't available at all. Shared by
+    the batch enricher and the single-song SSE endpoint so both agree on exactly
+    which SpotiFLAC APIs they're calling.
+    """
+    try:
+        from SpotiFLAC.core.metadata_enrichment import enrich_metadata as enrich_fn
+    except ImportError:
+        try:
+            # SpotiFLAC 1.3+ exposes only the async enricher — wrap it on the
+            # worker's persistent event loop so a threaded/streamed caller is
+            # otherwise unchanged.
+            from SpotiFLAC.core.metadata_enrichment import enrich_metadata_async as _ea
+            from worker import _run_coro_sync
+            def enrich_fn(*a, **k):
+                return _run_coro_sync(_ea(*a, **k))
+        except ImportError:
+            return None, None, None
+
+    mb_lookup = mb_to_tags = None
+    if use_mb:
+        try:
+            from SpotiFLAC.core.musicbrainz import (
+                fetch_mb_metadata_smart, mb_result_to_tags as mb_to_tags,
+            )
+            mb_lookup = lambda isrc, title, artist: fetch_mb_metadata_smart(isrc, title, artist)
+        except ImportError:
+            try:
+                # Older SpotiFLAC without the text-search fallback (see
+                # patch_spotiflac.py) — ISRC-only lookup still works.
+                from SpotiFLAC.core.musicbrainz import (
+                    fetch_mb_metadata, mb_result_to_tags as mb_to_tags,
+                )
+                mb_lookup = lambda isrc, title, artist: fetch_mb_metadata(isrc)
+            except ImportError:
+                pass
+    return enrich_fn, mb_lookup, mb_to_tags
+
+
+def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
+                     enrich_fn, mb_lookup, mb_to_tags):
+    """Enrich one audio file, reporting every step.
+
+    Generator: yields {"type":"step", "id":str, "text":str, "pending":bool}
+    progress events, then exactly one terminal
+    {"type":"result", "enriched":bool, "moved":str|None, "error":str|None,
+     "elapsed":float}.
+
+    Shared by the batch enricher (drains the events, acts on the result) and the
+    /api/library/enrich-one SSE endpoint (streams every event to the browser).
+    Mirrors the per-file logic the batch path used inline before.
+    """
+    from mutagen import File as MFile
+    _t0 = time.monotonic()
+    enriched = False
+    moved = None
+    try:
+        yield {"type": "step", "id": "read", "text": "Reading current tags…", "pending": True}
+        audio = MFile(abs_path, easy=True)
+        if audio is None:
+            raise ValueError("Unrecognised audio format")
+
+        title  = str((audio.get("title") or [""])[0]).strip()
+        artist = str((audio.get("artist") or audio.get("albumartist") or [""])[0]).strip()
+        isrc   = str((audio.get("isrc") or [""])[0]).strip()
+        has_genre = bool(str((audio.get("genre") or [""])[0]).strip())
+        has_bpm   = bool(str((audio.get("bpm") or [""])[0]).strip())
+        has_mbid  = _has_mbid(abs_path)
+        has_cover = _has_cover(abs_path)
+
+        _who = (f"“{title}”" if title else "(untitled)") + (f" by {artist}" if artist else "")
+        yield {"type": "step", "id": "read",
+               "text": f"Read tags — {_who}" + (f" · ISRC {isrc}" if isrc else ""),
+               "pending": False}
+
+        _fields = (("genre", has_genre), ("BPM", has_bpm),
+                   ("MusicBrainz ID", has_mbid), ("cover art", has_cover))
+        _present = [n for n, v in _fields if v]
+        _missing = [n for n, v in _fields if not v]
+        yield {"type": "step", "id": "inspect",
+               "text": ("Present: " + ", ".join(_present) if _present else "Nothing present yet")
+                       + (" · missing: " + ", ".join(_missing) if _missing else " · all present"),
+               "pending": False}
+
+        if not (has_genre and has_bpm and has_mbid):
+            yield {"type": "step", "id": "providers",
+                   "text": "Querying providers: " + ", ".join(providers) + "…", "pending": True}
+            result = enrich_fn(title, artist, isrc=isrc, providers=providers, timeout_s=12)
+            tags = result.as_tags()
+            _found = []
+            if getattr(result, "genre", ""): _found.append(f"genre={result.genre}")
+            if getattr(result, "label", ""): _found.append(f"label={result.label}")
+            if getattr(result, "bpm", 0):    _found.append(f"BPM={result.bpm}")
+            yield {"type": "step", "id": "providers",
+                   "text": "Providers: " + (", ".join(_found) if _found else "no new data"),
+                   "pending": False}
+
+            if not has_mbid and (isrc or (title and artist)) and mb_lookup and mb_to_tags:
+                yield {"type": "step", "id": "mb", "text": "MusicBrainz lookup…", "pending": True}
+                _mbid = None
+                try:
+                    mb_tags = mb_to_tags(mb_lookup(isrc, title, artist))
+                    for k, v in mb_tags.items():
+                        tags.setdefault(k, v)
+                    _mbid = mb_tags.get("MUSICBRAINZ_TRACKID") or mb_tags.get("musicbrainz_trackid")
+                except Exception as exc:
+                    log.debug("MusicBrainz lookup failed for %s: %s", rel, exc)
+                yield {"type": "step", "id": "mb",
+                       "text": (f"MusicBrainz: matched {str(_mbid)[:8]}…" if _mbid
+                                else "MusicBrainz: no match"),
+                       "pending": False}
+
+            did_save = _write_enriched_tags(abs_path, tags)
+            yield {"type": "step", "id": "write",
+                   "text": (f"Wrote {len(tags)} tag(s): " + ", ".join(tags)
+                            if (did_save and tags) else "No new tags to write"),
+                   "pending": False}
+
+            cover_url = getattr(result, "cover_url_hd", "")
+            if cover_url and not has_cover:
+                yield {"type": "step", "id": "cover", "text": "Fetching cover art…", "pending": True}
+                cover_data = _fetch_cover(cover_url)
+                if cover_data and _embed_cover(abs_path, *cover_data):
+                    did_save = True
+                    yield {"type": "step", "id": "cover", "text": "Cover art embedded", "pending": False}
+                else:
+                    yield {"type": "step", "id": "cover", "text": "Cover art unavailable", "pending": False}
+
+            enriched = bool(did_save)
+            audio2 = MFile(abs_path, easy=True)
+        else:
+            if not has_cover:
+                yield {"type": "step", "id": "cover", "text": "Fetching cover art…", "pending": True}
+                result = enrich_fn(title, artist, isrc=isrc, providers=providers, timeout_s=12)
+                cover_url = getattr(result, "cover_url_hd", "")
+                if cover_url:
+                    cover_data = _fetch_cover(cover_url)
+                    if cover_data and _embed_cover(abs_path, *cover_data):
+                        enriched = True
+                        yield {"type": "step", "id": "cover", "text": "Cover art embedded", "pending": False}
+                    else:
+                        yield {"type": "step", "id": "cover", "text": "Cover art unavailable", "pending": False}
+                else:
+                    yield {"type": "step", "id": "cover", "text": "No cover art found", "pending": False}
+            else:
+                yield {"type": "step", "id": "skip",
+                       "text": "Genre, BPM, MusicBrainz ID and cover art all already present",
+                       "pending": False}
+            audio2 = audio
+
+        if audio2:
+            ext = os.path.splitext(abs_path)[1]
+            new_rel = _org_target(audio2, fmt, ext)
+            cur_rel = os.path.relpath(abs_path, root).replace(os.sep, "/")
+            if new_rel != cur_rel:
+                dst_abs = os.path.join(root, *new_rel.replace("\\", "/").split("/"))
+                os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
+                if os.path.exists(dst_abs):
+                    os.remove(abs_path)
+                    yield {"type": "step", "id": "organize",
+                           "text": f"A correctly-named copy already exists — removed this one ({new_rel})",
+                           "pending": False}
+                else:
+                    shutil.move(abs_path, dst_abs)
+                    yield {"type": "step", "id": "organize",
+                           "text": f"Moved → {new_rel}", "pending": False}
+                _cleanup_empty_dirs_up(os.path.dirname(abs_path), root)
+                moved = new_rel
+            else:
+                yield {"type": "step", "id": "organize",
+                       "text": "Filename already matches the format", "pending": False}
+
+        yield {"type": "result", "enriched": enriched, "moved": moved,
+               "error": None, "elapsed": round(time.monotonic() - _t0, 1)}
+    except Exception as exc:
+        log.warning("Enrich failed for %s: %s", rel, exc)
+        yield {"type": "result", "enriched": enriched, "moved": moved,
+               "error": str(exc)[:200], "elapsed": round(time.monotonic() - _t0, 1)}
+
+
 def _run_enrich_bg(rel_paths: list, root: str, providers: list,
                    use_mb: bool, fmt: str, enrich_all: bool = False) -> None:
     """Background thread: enriches files and updates _enrich_state."""
     global _enrich_state
-    from mutagen import File as MFile
 
     if enrich_all:
         rel_paths = []
@@ -1169,37 +1357,13 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
         _enrich_state["dupes"] = dupes
         _enrich_state["dupes_log"] = list(dupes_log)
 
-    try:
-        from SpotiFLAC.core.metadata_enrichment import enrich_metadata as _enrich
-    except ImportError:
-        try:
-            # SpotiFLAC 1.3+ exposes only the async enricher — wrap it on the
-            # worker's persistent event loop so this threaded, sync function is
-            # otherwise unchanged.
-            from SpotiFLAC.core.metadata_enrichment import enrich_metadata_async as _enrich_async
-            from worker import _run_coro_sync
-            def _enrich(*a, **k):
-                return _run_coro_sync(_enrich_async(*a, **k))
-        except ImportError:
-            with _enrich_lock:
-                _enrich_state["running"] = False
-                _enrich_state["elapsed"] = 0.0
-            log.warning("Metadata enrichment not available — upgrade SpotiFLAC")
-            return
-
-    _mb_lookup = _mb_to_tags = None
-    if use_mb:
-        try:
-            from SpotiFLAC.core.musicbrainz import fetch_mb_metadata_smart, mb_result_to_tags as _mb_to_tags
-            _mb_lookup = lambda isrc, title, artist: fetch_mb_metadata_smart(isrc, title, artist)
-        except ImportError:
-            try:
-                # Older SpotiFLAC without the text-search fallback (see
-                # patch_spotiflac.py Patch 4) — ISRC-only lookup still works.
-                from SpotiFLAC.core.musicbrainz import fetch_mb_metadata, mb_result_to_tags as _mb_to_tags
-                _mb_lookup = lambda isrc, title, artist: fetch_mb_metadata(isrc)
-            except ImportError:
-                pass
+    _enrich, _mb_lookup, _mb_to_tags = _enrich_setup(use_mb)
+    if _enrich is None:
+        with _enrich_lock:
+            _enrich_state["running"] = False
+            _enrich_state["elapsed"] = 0.0
+        log.warning("Metadata enrichment not available — upgrade SpotiFLAC")
+        return
 
     total    = len(rel_paths)
     enriched = moved = errors = 0
@@ -1234,77 +1398,22 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
                 _enrich_state.update(done=i + 1, errors=errors, error_log=list(error_log))
             continue
 
-        try:
-            audio = MFile(abs_path, easy=True)
-            if audio is None:
-                raise ValueError("Unrecognised format")
-
-            title  = str((audio.get("title")       or [""])[0]).strip()
-            artist = str((audio.get("artist")      or
-                          audio.get("albumartist") or [""])[0]).strip()
-            isrc   = str((audio.get("isrc")        or [""])[0]).strip()
-
-            has_genre = bool(str((audio.get("genre") or [""])[0]).strip())
-            has_bpm   = bool(str((audio.get("bpm")   or [""])[0]).strip())
-            has_mbid  = _has_mbid(abs_path)
-
-            if not (has_genre and has_bpm and has_mbid):
-                result   = _enrich(title, artist, isrc=isrc, providers=providers, timeout_s=12)
-                tags     = result.as_tags()
-
-                if not has_mbid and (isrc or (title and artist)) and _mb_lookup and _mb_to_tags:
-                    try:
-                        mb_tags = _mb_to_tags(_mb_lookup(isrc, title, artist))
-                        for k, v in mb_tags.items():
-                            tags.setdefault(k, v)
-                    except Exception as exc:
-                        log.debug("MusicBrainz lookup failed for %s: %s", rel, exc)
-
-                did_save = _write_enriched_tags(abs_path, tags)
-
-                cover_url = result.cover_url_hd
-                if cover_url and not _has_cover(abs_path):
-                    cover_data = _fetch_cover(cover_url)
-                    if cover_data:
-                        _embed_cover(abs_path, *cover_data)
-                        did_save = True
-
-                if did_save:
-                    enriched += 1
-                audio2 = MFile(abs_path, easy=True)
-            else:
-                if not _has_cover(abs_path):
-                    result = _enrich(title, artist, isrc=isrc, providers=providers, timeout_s=12)
-                    cover_url = result.cover_url_hd
-                    if cover_url:
-                        cover_data = _fetch_cover(cover_url)
-                        if cover_data and _embed_cover(abs_path, *cover_data):
-                            enriched += 1
-                audio2 = audio
-            if audio2:
-                ext     = os.path.splitext(abs_path)[1]
-                new_rel = _org_target(audio2, fmt, ext)
-                cur_rel = os.path.relpath(abs_path, root).replace(os.sep, "/")
-                if new_rel != cur_rel:
-                    dst_abs = os.path.join(root, *new_rel.replace("\\", "/").split("/"))
-                    os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
-                    if os.path.exists(dst_abs):
-                        # A correctly-named copy already exists — remove the stale
-                        # duplicate (e.g. old "Artist A, Artist B/" after switching
-                        # to first_artist_only) rather than leaving it orphaned.
-                        os.remove(abs_path)
-                    else:
-                        shutil.move(abs_path, dst_abs)
-                    moved += 1
-                    if len(moved_log) < 50:
-                        moved_log.append({"from": cur_rel, "to": new_rel})
-                    _cleanup_empty_dirs_up(os.path.dirname(abs_path), root)
-
-        except Exception as exc:
-            log.warning("Enrich failed for %s: %s", rel, exc)
+        _res = {"error": "no result"}
+        for _ev in _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
+                                    _enrich, _mb_lookup, _mb_to_tags):
+            if _ev.get("type") == "result":
+                _res = _ev
+        if _res.get("error"):
             errors += 1
             if len(error_log) < 50:
-                error_log.append({"path": rel, "error": str(exc)[:120]})
+                error_log.append({"path": rel, "error": str(_res["error"])[:120]})
+        else:
+            if _res.get("enriched"):
+                enriched += 1
+            if _res.get("moved"):
+                moved += 1
+                if len(moved_log) < 50:
+                    moved_log.append({"from": rel, "to": _res["moved"]})
 
         with _enrich_lock:
             _enrich_state.update(done=i + 1, enriched=enriched, moved=moved, errors=errors,
@@ -1364,6 +1473,65 @@ def api_library_enrich():
 def api_library_enrich_cancel():
     _enrich_cancel.set()
     return jsonify(ok=True)
+
+
+@bp.get("/api/library/enrich-one")
+def api_library_enrich_one():
+    """Enrich a single library file, streaming granular progress as SSE.
+
+    Independent of the batch enricher (doesn't touch _enrich_state or its
+    'running' guard) so it works even while a full library enrich is going,
+    and it deliberately skips the batch path's duplicate-deletion pre-pass —
+    a per-song action shouldn't delete anything.
+    """
+    rel = (request.args.get("path", "") or "").lstrip("/")
+    try:
+        abs_path = _safe_lib_path(rel)
+    except ValueError:
+        return jsonify(error="Path is outside the library"), 400
+    if not os.path.isfile(abs_path):
+        return jsonify(error="File not found"), 404
+    if os.path.splitext(abs_path)[1].lower() not in _ENRICH_AUDIO:
+        return jsonify(error="Only FLAC, MP3 and M4A files can be tagged"), 400
+
+    cfg       = _settings.load()
+    providers = cfg.get("enrich_providers", ["deezer", "apple"])
+    use_mb    = cfg.get("enrich_musicbrainz", True)
+    fmt       = cfg.get("filename_fmt", "{artist}/{album}/{track} {title}")
+    root      = _lib_root()
+
+    def generate():
+        with _single_enrich_active_lock:
+            if rel in _single_enrich_active:
+                yield _sse({"type": "error", "msg": "This file is already being enriched"})
+                return
+            # Cap so spam-clicking can't starve the (small) gunicorn thread pool.
+            if len(_single_enrich_active) >= 3:
+                yield _sse({"type": "error",
+                            "msg": "Too many single-song enrichments at once — wait for one to finish"})
+                return
+            _single_enrich_active.add(rel)
+        try:
+            enrich_fn, mb_lookup, mb_to_tags = _enrich_setup(use_mb)
+            if enrich_fn is None:
+                yield _sse({"type": "error",
+                            "msg": "Metadata enrichment isn't available in this SpotiFLAC build"})
+                return
+            for ev in _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
+                                       enrich_fn, mb_lookup, mb_to_tags):
+                yield _sse(ev)
+        except Exception as exc:
+            log.warning("enrich-one stream failed for %s: %s", rel, exc)
+            yield _sse({"type": "error", "msg": str(exc)[:200]})
+        finally:
+            with _single_enrich_active_lock:
+                _single_enrich_active.discard(rel)
+
+    return Response(
+        stream_with_context(generate()),
+        content_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 def _org_collect(root: str) -> list[tuple[str, str]]:

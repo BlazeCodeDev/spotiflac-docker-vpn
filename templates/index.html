@@ -889,6 +889,34 @@ html.theme-transitioning *::after {
 .lib-size  { font-size: .75rem; color: var(--md-on-surface-variant); white-space: nowrap; text-align: right; min-width: 54px; }
 .lib-mtime { font-size: .75rem; color: var(--md-on-surface-variant); white-space: nowrap; text-align: right; min-width: 96px; }
 .lib-actions { display: flex; justify-content: flex-end; flex-shrink: 0; }
+.lib-enrich-one.active { color: var(--md-primary); }
+.lib-enrich-one.active .material-icons { animation: spin-icon .9s linear infinite; }
+
+/* ─── Single-song enrich progress panel ─────────────────────────── */
+.lib-enrich-panel {
+  margin: 0 0 8px 26px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--md-on-surface) 4%, transparent);
+  border: 1px solid var(--md-outline-variant);
+  border-radius: 8px;
+}
+.lep-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.lep-head .lep-stat { font-size: 16px; color: var(--md-primary); flex-shrink: 0; }
+.lep-head .lep-stat.spin { animation: spin-icon .9s linear infinite; }
+.lep-head .lep-stat.err { color: var(--md-error, #b3261e); }
+.lep-title { font-size: .8rem; font-weight: 500; color: var(--md-on-surface); flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lep-close { width: 24px; height: 24px; }
+.lep-close .material-icons { font-size: 15px; }
+.lep-lines { display: flex; flex-direction: column; gap: 2px; max-height: 200px; overflow-y: auto; }
+.lep-line { display: flex; align-items: flex-start; gap: 6px; font-size: .74rem;
+  line-height: 1.5; color: var(--md-on-surface-variant); word-break: break-word; }
+.lep-line .lep-ico { font-size: 14px; flex-shrink: 0; margin-top: 1px; color: var(--md-primary); }
+.lep-line.pending .lep-ico { animation: spin-icon .9s linear infinite; }
+.lep-line.done { color: var(--md-on-surface); font-weight: 500; }
+.lep-line.done .lep-ico { color: var(--md-tertiary, #7d5260); }
+.lep-line.err  { color: var(--md-error, #b3261e); }
+.lep-line.err  .lep-ico { color: var(--md-error, #b3261e); animation: none; }
 
 /* ─── Library enrich selection bar ───────────────────────────────── */
 #lib-enrich-bar {
@@ -3194,7 +3222,7 @@ function _renderLibEntries(entries) {
       <span class="lib-mtime">${_fmtMtime(e.mtime)}</span>
       <div class="lib-actions">
         ${e.type === 'file' ? `<button class="job-btn lib-dl" title="Download to browser"><span class="material-icons">download</span></button>` : ''}
-        ${isAudio ? `<button class="job-btn lib-enrich-one" title="Enrich this file's metadata"><span class="material-icons" style="font-size:16px">auto_awesome</span></button>` : ''}
+        ${isAudio ? `<button class="job-btn lib-enrich-one" title="Enrich this song — fetch genre, BPM, MusicBrainz ID and cover art"><span class="material-icons" style="font-size:16px">auto_awesome</span></button>` : ''}
         <button class="job-btn lib-rename" title="Rename"><span class="material-icons">drive_file_rename_outline</span></button>
         <button class="job-btn lib-move"   title="Move"><span class="material-icons">drive_file_move</span></button>
         <button class="job-btn lib-del remove" title="Delete"><span class="material-icons">delete_outline</span></button>
@@ -3214,7 +3242,10 @@ function _renderLibEntries(entries) {
       a.download = name;
       document.body.appendChild(a); a.click(); a.remove();
     });
-    row.querySelector('.lib-enrich-one')?.addEventListener('click', () => _enrichFiles([path]));
+    row.querySelector('.lib-enrich-one')?.addEventListener('click', ev => {
+      ev.stopPropagation();
+      _enrichOneSong(path, row, name, ev.currentTarget);
+    });
     row.querySelector('.lib-rename')    ?.addEventListener('click', () => _libShowDialog('rename', path, name));
     row.querySelector('.lib-move')      ?.addEventListener('click', () => _libShowDialog('move', path, name));
     row.querySelector('.lib-del')       ?.addEventListener('click', () => _libDelete(path, name, type));
@@ -3659,6 +3690,84 @@ function _libEnrichSelectNone() {
     if (cb) cb.checked = false;
   });
   _libUpdateEnrichBar();
+}
+
+// ── Single-song enrich with live step-by-step progress (SSE) ──────────
+function _enrichOneSong(path, row, name, btn) {
+  // Toggle: clicking again while the panel is open closes it.
+  const existing = row.nextElementSibling;
+  if (existing && existing.classList.contains('lib-enrich-panel')) {
+    existing._es?.close();
+    if (existing._moved) loadLibrary(_libPath); else existing.remove();
+    btn?.classList.remove('active');
+    return;
+  }
+  btn?.classList.add('active');
+
+  const panel = document.createElement('div');
+  panel.className = 'lib-enrich-panel';
+  panel.innerHTML =
+    `<div class="lep-head">
+       <span class="material-icons lep-stat spin">autorenew</span>
+       <span class="lep-title">Enriching ${esc(name)}</span>
+       <button class="job-btn lep-close" title="Close"><span class="material-icons">close</span></button>
+     </div>
+     <div class="lep-lines"></div>`;
+  row.after(panel);
+  const lines = panel.querySelector('.lep-lines');
+  const lineEls = {};
+
+  const finish = () => { panel._es?.close(); btn?.classList.remove('active'); };
+  panel.querySelector('.lep-close').addEventListener('click', () => {
+    finish();
+    if (panel._moved) loadLibrary(_libPath); else panel.remove();
+  });
+
+  const upsert = (id, text, cls) => {
+    let el = lineEls[id];
+    if (!el) { el = document.createElement('div'); lines.appendChild(el); lineEls[id] = el; }
+    el.className = 'lep-line' + (cls ? ' ' + cls : '');
+    const ico = cls === 'pending' ? 'autorenew' : (cls === 'err' ? 'error' : 'check');
+    el.innerHTML = `<span class="material-icons lep-ico">${ico}</span><span>${esc(text)}</span>`;
+    lines.scrollTop = lines.scrollHeight;
+  };
+
+  const es = new EventSource('/api/library/enrich-one?path=' + encodeURIComponent(path));
+  panel._es = es;
+
+  es.onmessage = (e) => {
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    if (m.type === 'step') {
+      upsert(m.id, m.text, m.pending ? 'pending' : null);
+    } else if (m.type === 'result') {
+      finish();
+      const stat = panel.querySelector('.lep-stat');
+      stat.classList.remove('spin');
+      if (m.error) {
+        stat.textContent = 'error'; stat.classList.add('err');
+        upsert('_result', m.error, 'err');
+      } else {
+        stat.textContent = m.enriched ? 'auto_awesome' : 'check_circle';
+        const parts = [];
+        parts.push(m.enriched ? 'Enriched' : 'Already complete — nothing changed');
+        if (m.moved) { parts.push('file moved'); panel._moved = true; }
+        parts.push(m.elapsed + 's');
+        upsert('_result', parts.join(' · '), 'done');
+      }
+    } else if (m.type === 'error') {
+      finish();
+      panel.querySelector('.lep-stat').classList.remove('spin');
+      panel.querySelector('.lep-stat').classList.add('err');
+      panel.querySelector('.lep-stat').textContent = 'error';
+      upsert('_result', m.msg || 'Enrichment failed', 'err');
+    }
+  };
+  es.onerror = () => {
+    // Stream ended (normal completion closes it client-side) or dropped.
+    if (es.readyState === EventSource.CLOSED) return;
+    finish();
+    if (!lineEls['_result']) upsert('_result', 'Connection lost', 'err');
+  };
 }
 
 let _enrichPending = null;
