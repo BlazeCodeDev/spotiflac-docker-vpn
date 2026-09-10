@@ -983,7 +983,8 @@ def _has_cover(abs_path: str) -> bool:
 
 
 def _embed_cover(abs_path: str, image_data: bytes, mime: str = "image/jpeg") -> bool:
-    """Embed cover art bytes into a FLAC/MP3/M4A file. Returns True on success."""
+    """Embed cover art bytes into a FLAC/MP3/M4A file, *replacing* any art
+    already there (never appending a second picture). Returns True on success."""
     ext = os.path.splitext(abs_path)[1].lower()
     try:
         if ext == ".flac":
@@ -993,6 +994,7 @@ def _embed_cover(abs_path: str, image_data: bytes, mime: str = "image/jpeg") -> 
             pic.type = 3  # front cover
             pic.mime = mime
             pic.data = image_data
+            audio.clear_pictures()
             audio.add_picture(pic)
             audio.save()
             return True
@@ -1002,6 +1004,7 @@ def _embed_cover(abs_path: str, image_data: bytes, mime: str = "image/jpeg") -> 
                 audio = ID3(abs_path)
             except Exception:
                 audio = ID3()
+            audio.delall("APIC")
             audio.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=image_data))
             audio.save(abs_path)
             return True
@@ -1015,6 +1018,98 @@ def _embed_cover(abs_path: str, image_data: bytes, mime: str = "image/jpeg") -> 
     except Exception as exc:
         log.warning("Cover embed failed for %s: %s", abs_path, exc)
     return False
+
+
+def _existing_cover_bytes(abs_path: str) -> bytes | None:
+    """Raw bytes of the first embedded cover image, or None."""
+    ext = os.path.splitext(abs_path)[1].lower()
+    try:
+        if ext == ".flac":
+            from mutagen.flac import FLAC
+            pics = FLAC(abs_path).pictures
+            return pics[0].data if pics else None
+        elif ext == ".mp3":
+            from mutagen.id3 import ID3
+            apics = ID3(abs_path).getall("APIC")
+            return apics[0].data if apics else None
+        elif ext == ".m4a":
+            from mutagen.mp4 import MP4
+            covr = MP4(abs_path).get("covr")
+            return bytes(covr[0]) if covr else None
+    except Exception:
+        pass
+    return None
+
+
+def _img_dimensions(data: bytes | None) -> tuple[int, int] | None:
+    """(width, height) of a PNG or JPEG byte string, dependency-free.
+
+    Returns None for anything it can't parse (truncated data, WebP, etc.) —
+    callers treat "unknown" as "can't prove it's better/worse".
+    """
+    if not data or len(data) < 24:
+        return None
+    # PNG: IHDR is always the first chunk, width/height at bytes 16..24
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR":
+        return (int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big"))
+    # JPEG: walk the segment markers to the Start-Of-Frame
+    if data[:2] == b"\xff\xd8":
+        i, n = 2, len(data)
+        while i + 9 < n:
+            if data[i] != 0xFF:
+                i += 1
+                continue
+            marker = data[i + 1]
+            if marker == 0xFF:
+                i += 1
+                continue
+            if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+                i += 2
+                continue
+            if i + 4 > n:
+                break
+            seg_len = int.from_bytes(data[i + 2:i + 4], "big")
+            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                          0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                if i + 9 <= n:
+                    h = int.from_bytes(data[i + 5:i + 7], "big")
+                    w = int.from_bytes(data[i + 7:i + 9], "big")
+                    return (w, h)
+                break
+            i += 2 + seg_len
+    return None
+
+
+# Embedded covers at or above this width are treated as "already good" — a
+# provider lookup to try to beat them is skipped on the otherwise-complete path.
+_COVER_GOOD_WIDTH = 1400
+
+
+def _upgrade_cover(abs_path: str, cover_url: str, has_cover: bool) -> tuple[bool, str]:
+    """Fetch the provider's HD cover and embed it when the file has none, or
+    when it is clearly larger than the one already embedded. Never replaces a
+    cover with a smaller/equal one. Returns (changed, status_message)."""
+    if not cover_url:
+        return False, ("Cover art already present" if has_cover else "No cover art found")
+    fetched = _fetch_cover(cover_url)
+    if not fetched:
+        return False, "Cover art unavailable"
+    new_data, mime = fetched
+    new_dim = _img_dimensions(new_data)
+    if has_cover:
+        old_data = _existing_cover_bytes(abs_path)
+        old_dim = _img_dimensions(old_data) if old_data else None
+        if old_data is not None:
+            if not new_dim:
+                return False, "Kept existing cover — couldn't measure the provider's"
+            if old_dim and new_dim[0] <= old_dim[0] * 1.05 and new_dim[1] <= old_dim[1] * 1.05:
+                return False, (f"Kept existing cover — already {old_dim[0]}×{old_dim[1]}"
+                               f" (provider had {new_dim[0]}×{new_dim[1]})")
+            # new one is bigger, or the old one couldn't be measured → replace
+    if _embed_cover(abs_path, new_data, mime):
+        verb = "Replaced cover art" if has_cover else "Cover art embedded"
+        return True, (f"{verb} — {new_dim[0]}×{new_dim[1]}" if new_dim else verb)
+    return False, "Cover art unavailable"
 
 
 def _fetch_cover(url: str) -> tuple[bytes, str] | None:
@@ -1184,7 +1279,7 @@ def _enrich_setup(use_mb: bool):
 
 
 def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
-                     enrich_fn, mb_lookup, mb_to_tags):
+                     enrich_fn, mb_lookup, mb_to_tags, upgrade_cover=True):
     """Enrich one audio file, reporting every step.
 
     Generator: yields {"type":"step", "id":str, "text":str, "pending":bool}
@@ -1263,31 +1358,33 @@ def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
                    "pending": False}
 
             cover_url = getattr(result, "cover_url_hd", "")
-            if cover_url and not has_cover:
-                yield {"type": "step", "id": "cover", "text": "Fetching cover art…", "pending": True}
-                cover_data = _fetch_cover(cover_url)
-                if cover_data and _embed_cover(abs_path, *cover_data):
-                    did_save = True
-                    yield {"type": "step", "id": "cover", "text": "Cover art embedded", "pending": False}
-                else:
-                    yield {"type": "step", "id": "cover", "text": "Cover art unavailable", "pending": False}
+            if cover_url and (not has_cover or upgrade_cover):
+                yield {"type": "step", "id": "cover", "text": "Checking cover art…", "pending": True}
+                _changed, _msg = _upgrade_cover(abs_path, cover_url, has_cover)
+                did_save = did_save or _changed
+                yield {"type": "step", "id": "cover", "text": _msg, "pending": False}
+            elif not has_cover:
+                yield {"type": "step", "id": "cover",
+                       "text": "No cover art found", "pending": False}
 
             enriched = bool(did_save)
             audio2 = MFile(abs_path, easy=True)
         else:
-            if not has_cover:
-                yield {"type": "step", "id": "cover", "text": "Fetching cover art…", "pending": True}
+            # genre + BPM + MusicBrainz id are all present. Still worth a
+            # provider round-trip if there's no cover at all, or the embedded
+            # one is smaller than a typical HD cover and could be upgraded.
+            _need_cover = not has_cover
+            if has_cover and upgrade_cover:
+                _od = _img_dimensions(_existing_cover_bytes(abs_path))
+                if _od is None or _od[0] < _COVER_GOOD_WIDTH:
+                    _need_cover = True
+            if _need_cover:
+                yield {"type": "step", "id": "cover", "text": "Checking cover art…", "pending": True}
                 result = enrich_fn(title, artist, isrc=isrc, providers=providers, timeout_s=12)
                 cover_url = getattr(result, "cover_url_hd", "")
-                if cover_url:
-                    cover_data = _fetch_cover(cover_url)
-                    if cover_data and _embed_cover(abs_path, *cover_data):
-                        enriched = True
-                        yield {"type": "step", "id": "cover", "text": "Cover art embedded", "pending": False}
-                    else:
-                        yield {"type": "step", "id": "cover", "text": "Cover art unavailable", "pending": False}
-                else:
-                    yield {"type": "step", "id": "cover", "text": "No cover art found", "pending": False}
+                _changed, _msg = _upgrade_cover(abs_path, cover_url, has_cover)
+                enriched = enriched or _changed
+                yield {"type": "step", "id": "cover", "text": _msg, "pending": False}
             else:
                 yield {"type": "step", "id": "skip",
                        "text": "Genre, BPM, MusicBrainz ID and cover art all already present",
