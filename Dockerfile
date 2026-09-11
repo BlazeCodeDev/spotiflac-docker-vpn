@@ -99,7 +99,7 @@ RUN pip install --no-cache-dir flask python-dotenv gunicorn
 # list hand-maintained in lockstep here AND in entrypoint.sh's update_spotiflac
 # — a silent-breakage risk this project has been bitten by before — so the
 # full resolve is kept. Revisit if image size becomes the pressing problem.
-RUN pip install --no-cache-dir --target /spotiflac "SpotiFLAC==4.1.0" requests
+RUN pip install --no-cache-dir --target /spotiflac "SpotiFLAC==4.1.2" requests
 ENV PYTHONPATH=/spotiflac
 
 RUN mkdir -p /vpn /downloads /app/templates && \

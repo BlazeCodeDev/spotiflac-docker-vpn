@@ -19,8 +19,15 @@ LOG_LEVEL="${LOG_LEVEL:-info}"
 # title/artist fallback + the mobile cross-loop lock in-tree (so
 # patch_spotiflac.py Patches A/B/E were retired). Rolling back below 4.0 needs
 # the pre-4.x patch_spotiflac.py restored from git, not just a pin change —
-# see its module docstring.
-SPOTIFLAC_PINNED="4.1.0"
+# see its module docstring. 4.1.1 was never published (version skipped);
+# 4.1.2 fixed a real bug in the mobile signed-session refresh (a body/
+# signature mismatch meant the session was never actually renewed) and added
+# a backoff after a failed Turnstile auth so repeated failures stop hammering
+# the gateway — relevant to the "Turnstile token not obtained" issue seen
+# live. None of it touches our patch targets (musicbrainz.py,
+# signed_session_mono.py, _bridge.js, provider.py — all byte-identical
+# 4.1.0->4.1.2) or the _run_worker_async call shape worker.py overrides.
+SPOTIFLAC_PINNED="4.1.2"
 
 log()   { echo "[vpn] $(date '+%H:%M:%S') INFO  $*"; }
 err()   { echo "[vpn] $(date '+%H:%M:%S') ERROR $*" >&2; }
