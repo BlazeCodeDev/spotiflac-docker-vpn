@@ -897,6 +897,59 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
 
 
+_SOURCE_COMMENT_RE = re.compile(r"^\s*https?://github\.com/[^\s/]+/SpotiFLAC[\w.-]*/?\s*$", re.I)
+
+
+def _strip_source_comment(abs_path: str) -> bool:
+    """Remove the comment SpotiFLAC stamps on every file (a bare link to its
+    GitHub repo). Only a comment that is exactly that link is removed — any
+    real comment the user wrote is left alone. Returns True if the file changed."""
+    ext = os.path.splitext(abs_path)[1].lower()
+    is_src = lambda v: bool(_SOURCE_COMMENT_RE.match(str(v)))
+    try:
+        if ext == ".flac":
+            from mutagen.flac import FLAC
+            audio = FLAC(abs_path)
+            changed = False
+            for key in ("DESCRIPTION", "COMMENT"):
+                vals = audio.get(key) or []
+                keep = [v for v in vals if not is_src(v)]
+                if len(keep) != len(vals):
+                    if keep:
+                        audio[key] = keep
+                    else:
+                        del audio[key]
+                    changed = True
+            if changed:
+                audio.save()
+            return changed
+        if ext == ".mp3":
+            from mutagen.id3 import ID3
+            audio = ID3(abs_path)
+            drop = [k for k, f in audio.items()
+                    if k.startswith("COMM") and all(is_src(t) for t in f.text)]
+            for k in drop:
+                del audio[k]
+            if drop:
+                audio.save(abs_path)
+            return bool(drop)
+        if ext == ".m4a":
+            from mutagen.mp4 import MP4
+            audio = MP4(abs_path)
+            vals = audio.get("\xa9cmt") or []
+            keep = [v for v in vals if not is_src(v)]
+            if len(keep) != len(vals):
+                if keep:
+                    audio["\xa9cmt"] = keep
+                else:
+                    del audio["\xa9cmt"]
+                audio.save()
+                return True
+    except Exception as exc:
+        log.debug("Source-comment strip failed for %s: %s", abs_path, exc)
+    return False
+
+
 def _write_enriched_tags(abs_path: str, tags: dict) -> bool:
     """Write enriched tag dict to a FLAC/MP3/M4A file. Returns True if saved."""
     if not tags:
@@ -1308,6 +1361,8 @@ def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
         has_bpm   = bool(str((audio.get("bpm") or [""])[0]).strip())
         has_mbid  = _has_mbid(abs_path)
         has_cover = _has_cover(abs_path)
+        if _strip_source_comment(abs_path):
+            enriched = True
 
         _who = (f"“{title}”" if title else "(untitled)") + (f" by {artist}" if artist else "")
         yield {"type": "step", "id": "read",
@@ -1367,7 +1422,7 @@ def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
                 yield {"type": "step", "id": "cover",
                        "text": "No cover art found", "pending": False}
 
-            enriched = bool(did_save)
+            enriched = bool(did_save) or enriched
             audio2 = MFile(abs_path, easy=True)
         else:
             # genre + BPM + MusicBrainz id are all present. Still worth a

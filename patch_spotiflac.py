@@ -184,3 +184,34 @@ for _old, _new in (
         "raised the synchronous bridge-call ceiling from 60s to 200s to cover a legitimate Turnstile solve (Python's own watchdog budgets up to ~170s)",
         already_marker="200_000",
     )
+
+# ---------------------------------------------------------------------------
+# Patch H: core/tagger.py — don't stamp the SpotiFLAC repo link as a comment
+# ---------------------------------------------------------------------------
+# The tagger writes SOURCE_TAG (a bare GitHub URL) into every downloaded file:
+# ID3 COMM for MP3, the DESCRIPTION Vorbis tag for FLAC (which the M4A map
+# turns into ©cmt). Skip both writes. routes.py `_strip_source_comment`
+# removes the same comment from files that already have it during enrich.
+_apply(
+    "core/tagger.py",
+    '    audio.add(COMM(encoding=3, lang="eng", desc="", text=[SOURCE_TAG]))\n',
+    '    if SOURCE_TAG:\n'
+    '        audio.add(COMM(encoding=3, lang="eng", desc="", text=[SOURCE_TAG]))\n',
+    "MP3: no source-link COMM frame",
+    already_marker="    if SOURCE_TAG:\n        audio.add(COMM(",
+)
+_apply(
+    "core/tagger.py",
+    '    tags["DESCRIPTION"] = SOURCE_TAG\n',
+    '    if SOURCE_TAG:\n'
+    '        tags["DESCRIPTION"] = SOURCE_TAG\n',
+    "FLAC/M4A: no source-link DESCRIPTION tag",
+    already_marker='    if SOURCE_TAG:\n        tags["DESCRIPTION"]',
+)
+_apply(
+    "core/tagger.py",
+    'SOURCE_TAG = "https://github.com/BartolomeoRusso9/SpotiFLAC-Module-Version"\n',
+    'SOURCE_TAG = ""  # patched out (see patch_spotiflac.py Patch H)\n',
+    "SOURCE_TAG emptied",
+    already_marker='SOURCE_TAG = ""',
+)
