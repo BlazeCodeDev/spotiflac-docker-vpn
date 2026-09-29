@@ -27,7 +27,11 @@ LOG_LEVEL="${LOG_LEVEL:-info}"
 # live. None of it touches our patch targets (musicbrainz.py,
 # signed_session_mono.py, _bridge.js, provider.py — all byte-identical
 # 4.1.0->4.1.2) or the _run_worker_async call shape worker.py overrides.
-SPOTIFLAC_PINNED="4.1.2"
+# 5.0.0 moved download orchestration into SpotiFLAC/application/ (downloader.py
+# is now a compat facade; DownloadWorker = LegacyDownloadWorker) but kept the
+# _run_worker_async signature. 5.0.x annotated signed_session_mono.py, which
+# broke Patch F's old 3-line anchor (now a single-line anchor).
+SPOTIFLAC_PINNED="5.0.1"
 
 log()   { echo "[vpn] $(date '+%H:%M:%S') INFO  $*"; }
 err()   { echo "[vpn] $(date '+%H:%M:%S') ERROR $*" >&2; }

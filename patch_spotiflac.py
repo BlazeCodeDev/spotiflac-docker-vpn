@@ -43,7 +43,7 @@ NOTE for version bumps / rollbacks:
   not just a `SPOTIFLAC_PINNED` change. Prior porting history for reference:
   1.2.0->1.3.1, 1.3.1->1.4.5, 1.4.5->1.7.8, 1.7.8->3.0.4 (the provider-
   architecture cutover — bundled providers/*.py deleted, replaced by
-  operator-installed extensions), 3.0.5->3.8.0, 3.8.0->4.1.0 (A/B/E retired).
+  operator-installed extensions), 3.0.5->3.8.0, 3.8.0->4.1.0 (A/B/E retired), 4.1.2->5.0.1 (Patch F anchor).
 """
 import importlib.util
 import pathlib
@@ -139,16 +139,12 @@ _apply(
 
 _apply(
     "core/signed_session_mono.py",
-    (
-        "        self._browser: Chrome | None = None\n"
-        "        self._tab = None\n"
-        "        self._lock = asyncio.Lock()\n"
-    ),
-    (
-        "        self._browser: Chrome | None = None\n"
-        "        self._tab = None\n"
-        "        self._lock = _CrossLoopLock()\n"
-    ),
+    # Single-line anchor: 5.0 added type annotations to the neighbouring
+    # lines (`self._tab: Any = None`), which broke the old 3-line anchor and
+    # left the (now unused) _CrossLoopLock class inserted with the lock
+    # still an asyncio.Lock. This line is unique in the file.
+    "        self._lock = asyncio.Lock()\n",
+    "        self._lock = _CrossLoopLock()\n",
     "browser-session lock is now a threading.Lock-backed cross-loop/cross-thread-safe lock instead of asyncio.Lock",
 )
 
