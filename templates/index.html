@@ -1065,6 +1065,24 @@ html.theme-transitioning *::after {
 @keyframes org-slide { 0% { left: -40%; } 100% { left: 110%; } }
 .org-progress-label { font-size: .82rem; color: var(--md-on-surface); font-weight: 500; }
 .org-progress-sub   { font-size: .75rem; color: var(--md-on-surface-variant); }
+
+/* ─── Duplicate finder dialog ─────────────────────────────────────── */
+#dup-apply-btn {
+  background: var(--s-error); color: #fff; border-radius: 999px; height: 32px; padding: 0 20px;
+  font-size: .875rem; font-weight: 500;
+}
+#dup-apply-btn:disabled { opacity: .45; cursor: default; }
+.dup-list  { display: flex; flex-direction: column; gap: 10px; max-height: 420px; overflow-y: auto; }
+.dup-group { border: 1px solid var(--md-outline-variant); border-radius: 8px; overflow: hidden; }
+.dup-head  { display: flex; gap: 8px; align-items: baseline; padding: 7px 10px; background: var(--md-surface-container); font-size: .82rem; font-weight: 500; }
+.dup-head span.dup-badge { margin-left: auto; font-size: .68rem; font-weight: 500; color: var(--md-on-surface-variant); text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+.dup-row   { display: grid; grid-template-columns: 20px 1fr; gap: 0 8px; align-items: start; padding: 6px 10px; border-top: 1px solid var(--md-outline-variant); cursor: pointer; }
+.dup-row input { margin-top: 3px; }
+.dup-row.remove .dup-path { text-decoration: line-through; opacity: .6; }
+.dup-path  { font-size: .74rem; font-family: 'Roboto Mono', monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dup-meta  { font-size: .71rem; color: var(--md-on-surface-variant); margin-top: 1px; }
+.dup-meta .lossless { color: var(--md-primary); font-weight: 500; }
+.dup-best  { font-size: .66rem; color: var(--md-primary); font-weight: 600; margin-left: 6px; text-transform: uppercase; letter-spacing: .04em; }
 </style>
 </head>
 <body>
@@ -1181,6 +1199,7 @@ html.theme-transitioning *::after {
       <span class="section-title">Library</span>
       <div style="display:flex;gap:4px">
         <button class="btn-ghost" id="btn-lib-enrich-all" title="Enrich all files with metadata" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">auto_awesome</span></button>
+        <button class="btn-ghost" id="btn-lib-dups" title="Find duplicate songs" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">content_copy</span></button>
         <button class="btn-ghost" id="btn-lib-organize" title="Organize library" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">auto_fix_high</span></button>
         <button class="btn-ghost" id="btn-lib-search" title="Search library" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">search</span></button>
         <button class="btn-ghost" id="btn-lib-refresh" title="Refresh" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">refresh</span></button>
@@ -1484,6 +1503,29 @@ html.theme-transitioning *::after {
     <div class="modal-footer">
       <button id="btn-search-dl" style="display:none">Download 0 selected</button>
       <span id="search-msg"></span>
+    </div>
+  </div>
+</div>
+
+<!-- Duplicate finder dialog -->
+<div id="dup-modal" class="modal-overlay" role="dialog" aria-modal="true">
+  <div class="modal" style="max-width:760px">
+    <div class="modal-header">
+      <span class="modal-title">Duplicate Songs</span>
+      <button class="modal-close" id="dup-close" title="Close"><span class="material-icons">close</span></button>
+    </div>
+    <div class="modal-body">
+      <div class="org-hint" style="margin-top:0;margin-bottom:10px">
+        Finds the same recording anywhere in the library — matched by ISRC, or by artist + title
+        (ignoring “feat.”, “Remastered”, “Deluxe”…) and length. Live, remix and acoustic versions are never grouped.
+        Pick the copy to keep in each group; nothing is deleted until you press Remove.
+      </div>
+      <div id="dup-area"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" id="dup-cancel-btn">Close</button>
+      <button class="btn-ghost" id="dup-scan-btn">Scan</button>
+      <button id="dup-apply-btn" style="display:none" disabled>Remove</button>
     </div>
   </div>
 </div>
@@ -3660,6 +3702,140 @@ document.getElementById('org-preview-btn') .addEventListener('click', _orgPrevie
 document.getElementById('org-apply-btn')   .addEventListener('click', _orgApply);
 document.getElementById('org-modal')       .addEventListener('click', e => { if (e.target === e.currentTarget) _orgClose(); });
 document.getElementById('org-fmt')         .addEventListener('keydown', e => { if (e.key === 'Enter') _orgPreview(); });
+
+// ── Duplicate finder ───────────────────────────────────────────────────
+let _dupGroups = [];
+
+function _dupOpen() {
+  document.getElementById('dup-modal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  document.getElementById('dup-area').innerHTML = '';
+  document.getElementById('dup-apply-btn').style.display = 'none';
+  _dupScan();
+}
+function _dupClose() {
+  document.getElementById('dup-modal').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+function _dupQuality(f) {
+  const kind = f.lossless ? '<span class="lossless">lossless</span>'
+                          : (f.bitrate ? Math.round(f.bitrate / 1000) + ' kbps' : 'lossy');
+  return `${esc(f.ext.toUpperCase())} · ${kind} · ${_fmtSize(f.size)}` +
+         (f.album ? ` · ${esc(f.album)}` : '');
+}
+
+function _dupSelected(i) {
+  const el = document.querySelector(`input[name="dup-g${i}"]:checked`);
+  return el ? el.value : '';
+}
+
+function _dupSummary() {
+  let files = 0, bytes = 0;
+  _dupGroups.forEach((g, i) => {
+    const keep = _dupSelected(i);
+    if (!keep) return;
+    g.files.forEach(f => { if (f.rel !== keep) { files++; bytes += f.size; } });
+  });
+  document.querySelectorAll('.dup-row').forEach(row => {
+    const keep = _dupSelected(row.dataset.g);
+    row.classList.toggle('remove', !!keep && row.dataset.rel !== keep);
+  });
+  const btn = document.getElementById('dup-apply-btn');
+  btn.disabled = files === 0;
+  btn.textContent = files ? `Remove ${files} file${files !== 1 ? 's' : ''} (${_fmtSize(bytes)})` : 'Remove';
+}
+
+function _dupRender() {
+  const area = document.getElementById('dup-area');
+  const btn  = document.getElementById('dup-apply-btn');
+  if (!_dupGroups.length) {
+    area.innerHTML = '<div class="jobs-empty">No duplicate songs found</div>';
+    btn.style.display = 'none';
+    return;
+  }
+  let html = `<div class="org-summary"><span class="org-stat pending"><strong>${_dupGroups.length}</strong> song${_dupGroups.length !== 1 ? 's' : ''} with duplicates</span></div><div class="dup-list">`;
+  _dupGroups.forEach((g, i) => {
+    const f0 = g.files[0];
+    html += `<div class="dup-group"><div class="dup-head"><span>${esc(f0.artist)} — ${esc(f0.title)}</span><span class="dup-badge">${g.match === 'isrc' ? 'same ISRC' : 'title + length'}</span></div>`;
+    g.files.forEach(f => {
+      html += `<label class="dup-row" data-g="${i}" data-rel="${esc(f.rel)}">
+        <input type="radio" name="dup-g${i}" value="${esc(f.rel)}"${f.rel === g.keep ? ' checked' : ''}>
+        <div style="min-width:0"><div class="dup-path" title="${esc(f.rel)}">${esc(f.rel)}${f.rel === g.keep ? '<span class="dup-best">suggested</span>' : ''}</div>
+        <div class="dup-meta">${_dupQuality(f)}</div></div></label>`;
+    });
+    html += `<label class="dup-row" data-g="${i}" data-rel=""><input type="radio" name="dup-g${i}" value=""><div class="dup-meta" style="margin-top:0">Keep all copies</div></label></div>`;
+  });
+  html += '</div>';
+  area.innerHTML = html;
+  area.querySelectorAll('input[type=radio]').forEach(r => r.addEventListener('change', _dupSummary));
+  btn.style.display = '';
+  _dupSummary();
+}
+
+async function _dupScan() {
+  const scanBtn = document.getElementById('dup-scan-btn');
+  const area    = document.getElementById('dup-area');
+  scanBtn.disabled = true; scanBtn.textContent = 'Scanning…';
+  document.getElementById('dup-apply-btn').style.display = 'none';
+  area.innerHTML = _orgProgressHTML('Scanning library…');
+  let groups = null, error = null;
+  try {
+    const res = await fetch('/api/library/duplicates/scan', {method: 'POST'});
+    if (!res.ok) { area.innerHTML = '<div class="jobs-empty" style="color:var(--s-error)">Server error</div>'; return; }
+    await _readOrgStream(res, ev => {
+      if (ev.type === 'progress') _orgSetProgress(ev.done, ev.total, `${ev.done} / ${ev.total} files`);
+      else if (ev.type === 'done') groups = ev.groups;
+      else if (ev.type === 'error') error = ev.error;
+    });
+    if (error) { area.innerHTML = `<div class="jobs-empty" style="color:var(--s-error)">${esc(error)}</div>`; return; }
+    if (!groups) { area.innerHTML = '<div class="jobs-empty">No response from server</div>'; return; }
+    _dupGroups = groups;
+    _dupRender();
+  } catch {
+    area.innerHTML = '<div class="jobs-empty" style="color:var(--s-error)">Request failed</div>';
+  } finally {
+    scanBtn.disabled = false; scanBtn.textContent = 'Rescan';
+  }
+}
+
+async function _dupApply() {
+  const payload = [];
+  _dupGroups.forEach((g, i) => {
+    const keep = _dupSelected(i);
+    if (!keep) return;
+    const remove = g.files.filter(f => f.rel !== keep).map(f => f.rel);
+    if (remove.length) payload.push({keep, remove});
+  });
+  if (!payload.length) return;
+  const n = payload.reduce((a, g) => a + g.remove.length, 0);
+  if (!confirm(`Permanently delete ${n} file${n !== 1 ? 's' : ''}? This cannot be undone.`)) return;
+  const btn = document.getElementById('dup-apply-btn');
+  btn.disabled = true; btn.textContent = 'Removing…';
+  try {
+    const res = await fetch('/api/library/duplicates/apply', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({groups: payload}),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'failed');
+    showToast(`Removed ${data.removed} file${data.removed !== 1 ? 's' : ''} · freed ${_fmtSize(data.freed) || '0 B'}` +
+              (data.errors && data.errors.length ? ` · ${data.errors.length} error${data.errors.length !== 1 ? 's' : ''}` : ''),
+              data.errors && data.errors.length ? 'error' : 'done');
+    _dupClose();
+    loadLibrary(_libPath);
+  } catch (e) {
+    showToast('Removing duplicates failed', 'error');
+    btn.disabled = false; _dupSummary();
+  }
+}
+
+document.getElementById('btn-lib-dups')   .addEventListener('click', _dupOpen);
+document.getElementById('dup-close')      .addEventListener('click', _dupClose);
+document.getElementById('dup-cancel-btn') .addEventListener('click', _dupClose);
+document.getElementById('dup-scan-btn')   .addEventListener('click', _dupScan);
+document.getElementById('dup-apply-btn')  .addEventListener('click', _dupApply);
+document.getElementById('dup-modal')      .addEventListener('click', e => { if (e.target === e.currentTarget) _dupClose(); });
 
 // ── Library metadata enrichment ────────────────────────────────────────
 let _libEnrichSel = new Set();   // set of selected lib-file rel-paths

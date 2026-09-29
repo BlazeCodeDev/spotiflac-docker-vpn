@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import os
+import queue
 import re
 import shutil
 import signal
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 
 import json
 
@@ -1213,64 +1215,271 @@ def _metadata_score(abs_path: str, audio) -> int:
     return score
 
 
-def _find_duplicate_tracks(rel_paths: list[str], root: str) -> list[dict]:
-    """Return duplicate tracks to remove, each as {"removed": rel, "kept": rel}.
+# ── Duplicate detection ──────────────────────────────────────────────────────
+# Titles differ between releases of the same recording only by decoration —
+# "(feat. X)", "- Remastered 2011", "(Album Version)", "(Deluxe Edition)".
+# Those are stripped before comparing. Words that mark a genuinely different
+# recording (live, remix, acoustic, instrumental, …) are NOT stripped: they
+# become a "version" set that must match exactly, so "Song" and "Song (Live)"
+# are never grouped even though their base titles are equal.
+_DUP_FEAT_PAREN_RE = re.compile(r"\s*[\(\[]\s*(?:feat\.?|ft\.?|featuring|with)\b[^\)\]]*[\)\]]", re.I)
+_DUP_FEAT_TAIL_RE  = re.compile(r"\s+(?:feat\.?|ft\.?|featuring)\s+.*$", re.I)
+_DUP_NOISE_WORDS   = r"(?:re-?master(?:ed)?|album version|single version|deluxe(?: edition)?|bonus track|explicit|clean)"
+_DUP_NOISE_PAREN_RE = re.compile(r"\s*[\(\[][^\)\]]*\b" + _DUP_NOISE_WORDS + r"\b[^\)\]]*[\)\]]", re.I)
+_DUP_NOISE_DASH_RE  = re.compile(r"\s+[-\u2013\u2014]\s+(?:\d{4}\s+)?" + _DUP_NOISE_WORDS + r"\b.*$", re.I)
+_DUP_VERSION_RE = re.compile(
+    r"\b(remix|mix|live|acoustic|instrumental|demo|karaoke|cover|acapella|a cappella|"
+    r"reprise|edit|orchestral|piano|unplugged|sped up|slowed)\b", re.I)
+_DUP_DUR_TOL      = 3.0    # seconds — same recording, different encode/release
+_DUP_ISRC_DUR_TOL = 10.0   # an ISRC is exact, so allow more slack (padding/fades)
 
-    Identity key: (normalised first artist, normalised title, duration bucket).
-    Duration is bucketed to ±5 s to tolerate minor format differences.
 
-    "Best" is decided by metadata correctness first (_metadata_score — has a
-    verified MusicBrainz id, genre/BPM/album/ISRC tags present, cover art),
-    then by actual audio bitrate as a tiebreaker between two similarly
-    (in)complete copies. Bitrate rather than file extension/size: format
-    alone doesn't capture a poorly-encoded FLAC vs. a clean high-bitrate M4A,
-    and size conflates quality with track length.
-    """
+def _dup_artist_key(artist: str) -> str:
+    first = re.split(r"\s*(?:,|;|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b)\s*", artist or "", maxsplit=1, flags=re.I)[0]
+    return re.sub(r"\W+", " ", unicodedata.normalize("NFC", first).casefold()).strip()
+
+
+def _dup_title_key(title: str) -> tuple[str, frozenset]:
+    """(decoration-free folded title, set of version-marker words)."""
+    t = _DUP_FEAT_PAREN_RE.sub("", str(title or ""))
+    versions = frozenset(w.lower() for w in _DUP_VERSION_RE.findall(t))
+    prev = None
+    while prev != t:   # peel stacked suffixes: "X (Remastered) (feat. Y)"
+        prev = t
+        t = _DUP_NOISE_PAREN_RE.sub("", t)
+        t = _DUP_NOISE_DASH_RE.sub("", t)
+        t = _DUP_FEAT_TAIL_RE.sub("", t)
+    folded = re.sub(r"\W+", " ", unicodedata.normalize("NFC", t).casefold()).strip()
+    return folded, versions
+
+
+def _dup_read(abs_path: str, rel: str):
+    """Lightweight identity + quality info for one file, or None if unusable."""
     from mutagen import File as MFile
+    audio = MFile(abs_path, easy=True)
+    if audio is None:
+        return None
 
-    # First pass: score every file, grouped by identity key.
-    by_key: dict[tuple, list[tuple[int, int, str]]] = {}  # key → [(meta_score, bitrate, rel), ...]
+    def g(k):
+        return str((audio.get(k) or [""])[0]).strip()
 
-    for rel in rel_paths:
+    title  = g("title")
+    artist = g("artist") or g("albumartist")
+    if not title or not artist:
+        return None
+    ext   = os.path.splitext(abs_path)[1].lower()
+    info  = audio.info
+    codec = str(getattr(info, "codec", "") or "").lower()
+    isrc  = re.sub(r"[^A-Z0-9]", "", g("isrc").upper())
+    st    = os.stat(abs_path)
+    return {
+        "rel": rel, "abs": abs_path, "title": title, "artist": artist,
+        "album": g("album"), "isrc": isrc if len(isrc) >= 10 else "",
+        "dur": float(getattr(info, "length", 0) or 0),
+        "bitrate": int(getattr(info, "bitrate", 0) or 0),
+        "ext": ext.lstrip("."), "size": st.st_size, "mtime": st.st_mtime,
+        "lossless": ext in (".flac", ".wav") or (ext == ".m4a" and "alac" in codec),
+        "tkey": (_dup_artist_key(artist),) + _dup_title_key(title),
+        "_audio": audio,
+    }
+
+
+def _find_duplicate_groups(rel_paths: list[str], root: str, *,
+                           lossless_first: bool = True, progress=None) -> list[dict]:
+    """Group files that are the same recording, wherever they live.
+
+    Two files are linked when either
+      * they share an ISRC (exact id) and durations are within 10 s, or
+      * artist and title match after stripping decoration (see above), the
+        version markers (live/remix/…) are identical, and durations are
+        within 3 s (a chain of neighbours, so 2:29.9 / 2:30.1 still match —
+        unlike the old fixed 5 s buckets, which split them at a boundary).
+    Groups are the connected components, so a file linked by ISRC to one copy
+    and by title to another pulls all three together.
+
+    Returns [{"files": [...], "keep": rel, "match": "isrc"|"title"}], each
+    file dict ranked best-first; "keep" is the suggested survivor. Ranking is
+    lossless first (when lossless_first), then metadata completeness, then
+    bitrate — "best" for the user is normally the lossless copy.
+    """
+    infos: list[dict] = []
+    total = len(rel_paths)
+    for n, rel in enumerate(rel_paths, 1):
         abs_path = os.path.join(root, *rel.replace("\\", "/").split("/"))
-        if not os.path.isfile(abs_path):
-            continue
-        try:
-            audio = MFile(abs_path, easy=True)
-            if audio is None:
-                continue
-            title  = re.sub(r"[^\w]", "",
-                            str((audio.get("title") or [""])[0]).lower())
-            artist = re.sub(r"[^\w]", "",
-                            str((audio.get("albumartist") or
-                                 audio.get("artist") or [""])[0])
-                            .split(",")[0].lower())
-            if not title or not artist:
-                continue
-            # Bucket duration to nearest 5 s so minor encoding differences
-            # between formats don't prevent matching.
-            dur = round(getattr(audio.info, "length", 0) / 5) * 5
-            key = (artist, title, dur)
+        if os.path.isfile(abs_path):
+            try:
+                inf = _dup_read(abs_path, rel)
+                if inf:
+                    infos.append(inf)
+            except Exception:
+                pass
+        if progress:
+            progress(n, total)
 
-            meta_score = _metadata_score(abs_path, audio)
-            bitrate    = getattr(audio.info, "bitrate", 0) or 0
-            by_key.setdefault(key, []).append((meta_score, bitrate, rel))
-        except Exception:
-            continue
+    parent = list(range(len(infos)))
 
-    # Second pass: within each group of more than one copy, keep the single
-    # best and pair every other copy with it — so callers can show exactly
-    # what was removed *and* what survived in its place, not just a count.
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    isrc_linked: set[int] = set()
+    by_isrc: dict[str, list[int]] = {}
+    by_text: dict[tuple, list[int]] = {}
+    for i, inf in enumerate(infos):
+        if inf["isrc"]:
+            by_isrc.setdefault(inf["isrc"], []).append(i)
+        by_text.setdefault(inf["tkey"], []).append(i)
+
+    for members in by_isrc.values():
+        for a in range(len(members)):
+            for b in range(a + 1, len(members)):
+                ia, ib = members[a], members[b]
+                if abs(infos[ia]["dur"] - infos[ib]["dur"]) <= _DUP_ISRC_DUR_TOL:
+                    union(ia, ib)
+                    isrc_linked.update((ia, ib))
+
+    for members in by_text.values():
+        if len(members) < 2:
+            continue
+        members = sorted(members, key=lambda i: infos[i]["dur"])
+        for a, b in zip(members, members[1:]):
+            da, db = infos[a]["dur"], infos[b]["dur"]
+            if da and db and db - da <= _DUP_DUR_TOL:
+                union(a, b)
+
+    comps: dict[int, list[int]] = {}
+    for i in range(len(infos)):
+        comps.setdefault(find(i), []).append(i)
+
+    groups: list[dict] = []
+    for members in comps.values():
+        if len(members) < 2:
+            continue
+        files = [infos[i] for i in members]
+        for f in files:
+            f["score"] = _metadata_score(f["abs"], f["_audio"])
+        files.sort(key=lambda f: ((f["lossless"] if lossless_first else 0),
+                                  f["score"], f["bitrate"], f["size"]),
+                   reverse=True)
+        isrcs = {f["isrc"] for f in files}
+        groups.append({"files": files, "keep": files[0]["rel"],
+                       "match": "isrc" if (len(isrcs) == 1 and "" not in isrcs) else "title"})
+    groups.sort(key=lambda g: (_dup_artist_key(g["files"][0]["artist"]),
+                               g["files"][0]["title"].casefold()))
+    return groups
+
+
+def _find_duplicate_tracks(rel_paths: list[str], root: str) -> list[dict]:
+    """Duplicates to remove, each as {"removed": rel, "kept": rel} — the
+    enrich pre-pass view of _find_duplicate_groups(). Ranks metadata
+    completeness first (the survivor is about to be enriched anyway), unlike
+    the review dialog, which prefers lossless."""
     result: list[dict] = []
-    for entries in by_key.values():
-        if len(entries) < 2:
-            continue
-        best = max(entries, key=lambda e: (e[0], e[1]))
-        for meta_score, bitrate, rel in entries:
-            if rel != best[2]:
-                result.append({"removed": rel, "kept": best[2]})
-
+    for grp in _find_duplicate_groups(rel_paths, root, lossless_first=False):
+        for f in grp["files"]:
+            if f["rel"] != grp["keep"]:
+                result.append({"removed": f["rel"], "kept": grp["keep"]})
     return result
+
+
+@bp.post("/api/library/duplicates/scan")
+def api_dup_scan():
+    root = _lib_root()
+    if not os.path.isdir(root):
+        return jsonify(error="Library directory not found"), 404
+
+    def generate():
+        rels = [os.path.relpath(a, root).replace(os.sep, "/") for a, _ in _org_collect(root)]
+        yield _sse({"type": "total", "total": len(rels)})
+        # Scan in a worker thread and stream its progress as it happens.
+        q: "queue.Queue" = queue.Queue()
+        box: dict = {}
+
+        def work():
+            try:
+                box["groups"] = _find_duplicate_groups(
+                    rels, root, progress=lambda d, t: q.put((d, t)))
+            except Exception as exc:
+                box["error"] = str(exc)[:200]
+            q.put(None)
+
+        threading.Thread(target=work, daemon=True).start()
+        last = 0
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            d, t = item
+            if d - last >= max(1, t // 100) or d == t:
+                last = d
+                yield _sse({"type": "progress", "done": d, "total": t})
+        if "error" in box:
+            yield _sse({"type": "error", "error": box["error"]})
+            return
+        groups = box["groups"]
+        out = []
+        for g in groups:
+            out.append({
+                "match": g["match"], "keep": g["keep"],
+                "files": [{k: f[k] for k in ("rel", "title", "artist", "album", "ext",
+                                             "size", "bitrate", "dur", "lossless", "score")}
+                          for f in g["files"]],
+            })
+        yield _sse({"type": "done", "groups": out})
+
+    return Response(
+        stream_with_context(generate()),
+        content_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@bp.post("/api/library/duplicates/apply")
+def api_dup_apply():
+    """Delete the files the user chose to remove. Each group names the copy
+    that stays; a removal is refused unless that copy still exists and is a
+    different file, so a request can never leave a song with zero copies."""
+    body = request.get_json(silent=True) or {}
+    root = _lib_root()
+    removed = freed = 0
+    errors: list[str] = []
+    for grp in body.get("groups") or []:
+        try:
+            keep_abs = _safe_lib_path(str(grp.get("keep", "")))
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        if not os.path.isfile(keep_abs):
+            errors.append(f"Kept copy missing, nothing removed: {grp.get('keep')}")
+            continue
+        for rel in grp.get("remove") or []:
+            try:
+                target = _safe_lib_path(str(rel))
+                if os.path.splitext(target)[1].lower() not in _AUDIO_EXTS:
+                    raise ValueError("not an audio file")
+                if not os.path.isfile(target):
+                    raise ValueError("not found")
+                if os.path.samefile(target, keep_abs):
+                    raise ValueError("same file as the kept copy")
+                size = os.path.getsize(target)
+                os.remove(target)
+                _cleanup_empty_dirs_up(os.path.dirname(target), root)
+                removed += 1
+                freed += size
+            except (ValueError, OSError) as exc:
+                errors.append(f"{rel}: {exc}")
+    if removed:
+        lib_index.trigger_rescan()
+    log.info("Duplicate review: removed %d file(s), freed %d bytes, %d error(s)",
+             removed, freed, len(errors))
+    return jsonify(removed=removed, freed=freed, errors=errors[:20])
 
 
 # Per-path guard so the same file can't be single-song-enriched twice at once
