@@ -53,21 +53,6 @@ def _artist_title_key(artist: str, title: str) -> str:
     return f"{_fold(artist)}|{_fold(title)}"
 
 
-def _read_artist_title(path: str) -> tuple[str, str] | None:
-    try:
-        from mutagen import File as _MutagenFile
-        f = _MutagenFile(path, easy=True)
-        if f is None:
-            return None
-        artist = (f.get("artist") or [""])[0].strip()
-        title  = (f.get("title") or [""])[0].strip()
-        if not artist or not title:
-            return None
-        return artist, title
-    except Exception:
-        return None
-
-
 def _build_index(root: str) -> tuple[set[str], dict, dict[str, str]]:
     """Full library scan. Also reads each audio file's embedded artist/title
     tags (see _read_artist_title) to build an identity index that's robust to
@@ -76,9 +61,11 @@ def _build_index(root: str) -> tuple[set[str], dict, dict[str, str]]:
     every job start on a full-library tag read, brutal over network storage),
     now lives here in the existing background scan instead.
     """
+    import tagcache
     stems:            set[str]        = set()
     album_counts:     dict            = {}
     by_artist_title:  dict[str, str]  = {}
+    paths:            list[str]       = []
     try:
         for dirpath, _, files in os.walk(root):
             audio = [f for f in files if os.path.splitext(f)[1].lower() in _AUDIO_EXTS]
@@ -90,18 +77,21 @@ def _build_index(root: str) -> tuple[set[str], dict, dict[str, str]]:
                 base = _base(stem)
                 if base != stem:
                     stems.add(base)  # also index without "(Remastered)" etc.
-
-                full = os.path.join(dirpath, fname)
-                tags = _read_artist_title(full)
-                if tags:
-                    artist, title = tags
-                    by_artist_title[_artist_title_key(artist, title)] = full
+                paths.append(os.path.join(dirpath, fname))
 
             rel   = os.path.relpath(dirpath, root)
             parts = [p for p in rel.replace("\\", "/").split("/") if p and p != "."]
             if parts:
                 key = _normalise_title(parts[-1])
                 album_counts[key] = album_counts.get(key, 0) + len(audio)
+
+        # Tags come from the persistent cache (tagcache): unchanged files cost a
+        # stat, only new/changed ones are opened — in parallel.
+        for full, rec in tagcache.get_many(paths).items():
+            artist, title = rec.get("artist", ""), rec.get("title", "")
+            if artist and title:
+                by_artist_title[_artist_title_key(artist, title)] = full
+        tagcache.prune(paths)
     except Exception as exc:
         _log.warning("lib_index scan error: %s", exc)
     return stems, album_counts, by_artist_title

@@ -1275,37 +1275,6 @@ def _dup_title_key(title: str) -> tuple[str, frozenset]:
     return folded, versions
 
 
-def _dup_read(abs_path: str, rel: str):
-    """Lightweight identity + quality info for one file, or None if unusable."""
-    from mutagen import File as MFile
-    audio = MFile(abs_path, easy=True)
-    if audio is None:
-        return None
-
-    def g(k):
-        return str((audio.get(k) or [""])[0]).strip()
-
-    title  = g("title")
-    artist = g("artist") or g("albumartist")
-    if not title or not artist:
-        return None
-    ext   = os.path.splitext(abs_path)[1].lower()
-    info  = audio.info
-    codec = str(getattr(info, "codec", "") or "").lower()
-    isrc  = re.sub(r"[^A-Z0-9]", "", g("isrc").upper())
-    st    = os.stat(abs_path)
-    return {
-        "rel": rel, "abs": abs_path, "title": title, "artist": artist,
-        "album": g("album"), "isrc": isrc if len(isrc) >= 10 else "",
-        "dur": float(getattr(info, "length", 0) or 0),
-        "bitrate": int(getattr(info, "bitrate", 0) or 0),
-        "ext": ext.lstrip("."), "size": st.st_size, "mtime": st.st_mtime,
-        "lossless": ext in (".flac", ".wav") or (ext == ".m4a" and "alac" in codec),
-        "tkey": (_dup_artist_key(artist),) + _dup_title_key(title),
-        "_audio": audio,
-    }
-
-
 class _ScanCancelled(Exception):
     pass
 
@@ -1315,32 +1284,47 @@ def _check_cancel(cancel) -> None:
         raise _ScanCancelled()
 
 
+def _dup_info(abs_path: str, rel: str, rec: dict):
+    """Identity + quality info for one file from its tagcache record, or None."""
+    title  = rec.get("title", "")
+    artist = rec.get("artist") or rec.get("albumartist") or ""
+    if not title or not artist:
+        return None
+    ext   = os.path.splitext(abs_path)[1].lower()
+    codec = rec.get("codec", "").lower()
+    isrc  = re.sub(r"[^A-Z0-9]", "", rec.get("isrc", "").upper())
+    return {
+        "rel": rel, "abs": abs_path, "title": title, "artist": artist,
+        "album": rec.get("album", ""), "isrc": isrc if len(isrc) >= 10 else "",
+        "dur": rec.get("dur", 0.0), "bitrate": rec.get("bitrate", 0),
+        "ext": ext.lstrip("."), "size": rec["size"], "mtime": rec["mtime"],
+        "lossless": ext in (".flac", ".wav") or (ext == ".m4a" and "alac" in codec),
+        "tkey": (_dup_artist_key(artist),) + _dup_title_key(title),
+        # _metadata_score reads these like a mutagen easy-tags object
+        "_audio": {k: [rec[k]] for k in ("genre", "bpm", "album", "isrc") if rec.get(k)},
+    }
+
+
+def _dup_read(abs_path: str, rel: str):
+    import tagcache
+    rec = tagcache.get(abs_path)
+    return _dup_info(abs_path, rel, rec) if rec else None
+
+
 def _read_infos(rel_paths: list[str], root: str, progress=None, cancel=None) -> list[dict]:
-    """_dup_read() over many files. Tag reads are I/O-bound (often on a NAS), so
-    they run on a small thread pool instead of one at a time; order is kept."""
-    import concurrent.futures
-
-    def one(rel):
-        _check_cancel(cancel)
-        abs_path = os.path.join(root, *rel.replace("\\", "/").split("/"))
-        if not os.path.isfile(abs_path):
-            return None
-        try:
-            return _dup_read(abs_path, rel)
-        except _ScanCancelled:
-            raise
-        except Exception:
-            return None
-
-    total = len(rel_paths)
+    """Identity info for many files, via the persistent tag cache (only new or
+    changed files are actually opened, in parallel); order is kept."""
+    import tagcache
+    pairs = [(rel, os.path.join(root, *rel.replace("\\", "/").split("/"))) for rel in rel_paths]
+    recs = tagcache.get_many([a for _, a in pairs], progress=progress, cancel=cancel)
+    _check_cancel(cancel)
     out: list[dict] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
-        for n, inf in enumerate(ex.map(one, rel_paths), 1):
+    for rel, abs_path in pairs:
+        rec = recs.get(abs_path)
+        if rec:
+            inf = _dup_info(abs_path, rel, rec)
             if inf:
                 out.append(inf)
-            if progress:
-                progress(n, total)
-    _check_cancel(cancel)
     return out
 
 
