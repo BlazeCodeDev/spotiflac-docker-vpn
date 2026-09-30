@@ -1073,7 +1073,7 @@ html.theme-transitioning *::after {
 }
 #dup-apply-btn:disabled, #mis-apply-btn:disabled { opacity: .45; cursor: default; }
 .dup-list  { display: flex; flex-direction: column; gap: 10px; max-height: 420px; overflow-y: auto; }
-.dup-group { border: 1px solid var(--md-outline-variant); border-radius: 8px; overflow: hidden; }
+.dup-group { border: 1px solid var(--md-outline-variant); border-radius: 8px; overflow: hidden; flex-shrink: 0; }
 .dup-head  { display: flex; gap: 8px; align-items: baseline; padding: 7px 10px; background: var(--md-surface-container); font-size: .82rem; font-weight: 500; }
 .dup-head span.dup-badge { margin-left: auto; font-size: .68rem; font-weight: 500; color: var(--md-on-surface-variant); text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
 .dup-row   { display: grid; grid-template-columns: 20px 1fr; gap: 0 8px; align-items: start; padding: 6px 10px; border-top: 1px solid var(--md-outline-variant); cursor: pointer; }
