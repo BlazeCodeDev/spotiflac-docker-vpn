@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 import zlib
 
 _log = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ FP_SECONDS = 120          # fingerprint the first two minutes — plenty to matc
 SIM_THRESHOLD = 0.88      # cross-encode (FLAC vs AAC) lands ~0.90+, unrelated ~0.5
 MAX_OFFSET = 12           # ± ~1.5 s of lead-in difference (1 int ≈ 0.124 s)
 MIN_OVERLAP = 0.6         # of the shorter fingerprint
+CHECKPOINT_SECONDS = 60   # how often a running scan writes its progress to disk
 
 _CACHE_FILE = os.path.join(
     os.path.dirname(os.path.abspath(os.environ.get("SETTINGS_FILE", "/vpn/settings.json"))),
@@ -111,13 +113,13 @@ def _save_cache(cache: dict) -> None:
             json.dump(cache, f)
         os.replace(tmp, _CACHE_FILE)
     except Exception as exc:
-        _log.debug("could not save fingerprint cache: %s", exc)
+        _log.warning("could not save fingerprint cache: %s", exc)
 
 
 def fingerprints(paths: list[str], progress=None, workers: int | None = None, cancel=None) -> dict:
     """{abs_path: np.uint32 array} for every path that could be fingerprinted."""
     with _cache_lock:
-        cache = dict(_cache())      # snapshot; results merge back below
+        cache = dict(_cache())      # snapshot for the hit check; new results go straight to the shared cache
     result: dict = {}
     todo: list[tuple[str, str]] = []
     total = len(paths)
@@ -133,6 +135,9 @@ def fingerprints(paths: list[str], progress=None, workers: int | None = None, ca
         stamp = f"{st.st_size}:{int(st.st_mtime)}"
         hit = cache.get(p)
         if hit and hit[0] == stamp:
+            if not hit[1]:          # fpcalc already failed on this exact file
+                done += 1
+                continue
             try:
                 result[p] = _unpack(hit[1])
                 done += 1
@@ -143,8 +148,9 @@ def fingerprints(paths: list[str], progress=None, workers: int | None = None, ca
     if progress:
         progress(done, total)
 
-    new_entries = 0
     workers = workers or min(8, os.cpu_count() or 4)   # fpcalc is CPU-bound decoding
+    new_entries = 0
+    last_save = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         futs = {ex.submit(_compute, p): (p, stamp) for p, stamp in todo}
         for fut in concurrent.futures.as_completed(futs):
@@ -156,24 +162,26 @@ def fingerprints(paths: list[str], progress=None, workers: int | None = None, ca
             done += 1
             if arr is not None:
                 result[p] = arr
-                cache[p] = [stamp, _pack(arr)]
-                new_entries += 1
+            new_entries += 1
+            with _cache_lock:
+                # "" marks a file fpcalc can't decode, so it isn't retried every scan
+                _cache()[p] = [stamp, _pack(arr) if arr is not None else ""]
+                # Checkpoint: a first scan can take hours, and a container
+                # restart mid-scan must not throw all of that work away.
+                if time.monotonic() - last_save >= CHECKPOINT_SECONDS:
+                    _save_cache(_cache())
+                    last_save = time.monotonic()
             if progress:
                 progress(done, total)
 
     # Keep what was computed even when cancelled — the next scan resumes from it.
-    # Merge into the shared cache (not overwrite: add() may have stored new
-    # files while this scan ran), dropping entries for files that are gone.
+    # Drop entries for files that are gone.
     with _cache_lock:
         shared = _cache()
-        changed = bool(new_entries)
-        for p in paths:
-            if p in cache and shared.get(p) is not cache[p]:
-                shared[p] = cache[p]
         gone = [k for k in shared if not os.path.exists(k)]
         for k in gone:
             del shared[k]
-        if changed or gone:
+        if new_entries or gone:
             _save_cache(shared)
     return result
 
@@ -234,6 +242,21 @@ def add(path: str) -> bool:
         _cache()[path] = [f"{st.st_size}:{int(st.st_mtime)}", _pack(arr)]
         _save_soon()
     return True
+
+
+def rename(old: str, new: str) -> None:
+    """Carry a file's fingerprint over to its new path (the audio is unchanged)."""
+    with _cache_lock:
+        c = _cache()
+        hit = c.pop(old, None)
+        if hit is None:
+            return
+        try:
+            st = os.stat(new)
+            c[new] = [f"{st.st_size}:{int(st.st_mtime)}", hit[1]]
+        except OSError:
+            pass
+        _save_soon()
 
 
 def _save_soon(delay: float = 5.0) -> None:

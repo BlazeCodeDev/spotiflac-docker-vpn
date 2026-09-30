@@ -1071,7 +1071,15 @@ html.theme-transitioning *::after {
   background: var(--s-error); color: #fff; border-radius: 999px; height: 32px; padding: 0 20px;
   font-size: .875rem; font-weight: 500;
 }
-#dup-apply-btn:disabled, #mis-apply-btn:disabled { opacity: .45; cursor: default; }
+#dup-apply-btn:disabled, #mis-apply-btn:disabled, #mis-del-btn:disabled { opacity: .45; cursor: default; }
+#mis-apply-btn { background: var(--md-primary); color: var(--md-on-primary); }
+#mis-del-btn {
+  background: var(--s-error); color: #fff; border-radius: 999px; height: 32px; padding: 0 20px;
+  font-size: .875rem; font-weight: 500;
+}
+#mis-actions { display: flex; gap: 8px; }
+.mis-fix { height: 22px; padding: 0 8px; font-size: .72rem; margin-left: 6px; vertical-align: middle; }
+.org-summary .mis-fix-all { margin-left: auto; height: 26px; font-size: .78rem; }
 .dup-list  { display: flex; flex-direction: column; gap: 10px; max-height: 420px; overflow-y: auto; }
 .dup-group { border: 1px solid var(--md-outline-variant); border-radius: 8px; overflow: hidden; flex-shrink: 0; }
 .dup-head  { display: flex; gap: 8px; align-items: baseline; padding: 7px 10px; background: var(--md-surface-container); font-size: .82rem; font-weight: 500; }
@@ -1524,8 +1532,9 @@ html.theme-transitioning *::after {
     <div class="modal-body">
       <div class="org-hint" style="margin-top:0;margin-bottom:10px">
         Files that sound identical (audio fingerprint) or have the same length, but different artist/title tags —
-        so at least one holds the wrong song. Tick the file(s) whose <b>tags are wrong for what you want</b>:
-        each is deleted and downloaded again from its own tags. Files whose song can't be found online are left untouched.
+        so at least one holds the wrong song. Tick files, then <b>Redownload</b> fetches each one again from its own
+        tags (tick every file of a group when you can't tell which is wrong) or <b>Delete</b> removes it for good
+        (e.g. a radio edit you don't want). Files whose song can't be found online are never deleted by Redownload.
       </div>
       <div id="mis-area"></div>
     </div>
@@ -1533,7 +1542,10 @@ html.theme-transitioning *::after {
       <button class="btn-ghost" id="mis-cancel-btn">Close</button>
       <button class="btn-ghost" id="mis-stop-btn" style="display:none">Stop scan</button>
       <button class="btn-ghost" id="mis-scan-btn">Scan</button>
-      <button id="mis-apply-btn" style="display:none" disabled>Repair</button>
+      <span id="mis-actions" style="display:none">
+        <button id="mis-del-btn" disabled title="Delete the ticked files, e.g. an unwanted radio edit">Delete</button>
+        <button id="mis-apply-btn" disabled title="Delete the ticked files and download them again from their tags">Redownload</button>
+      </span>
     </div>
   </div>
 </div>
@@ -3966,7 +3978,7 @@ function _misInit() {
     area: document.getElementById('mis-area'),
     scanBtn: document.getElementById('mis-scan-btn'),
     stopBtn: document.getElementById('mis-stop-btn'),
-    applyBtn: document.getElementById('mis-apply-btn'),
+    applyBtn: document.getElementById('mis-actions'),
     label: 'Fingerprinting library… (the first scan is slow, later ones reuse the results)',
     close: () => _misClose(),
     render: r => { _misGroups = r.groups; _misRender(r.fingerprint, r); },
@@ -3977,7 +3989,7 @@ function _misOpen() {
   document.getElementById('mis-modal').classList.add('open');
   document.body.style.overflow = 'hidden';
   document.getElementById('mis-area').innerHTML = '';
-  document.getElementById('mis-apply-btn').style.display = 'none';
+  document.getElementById('mis-actions').style.display = 'none';
   _misInit().open();
 }
 function _misClose() {
@@ -3993,12 +4005,20 @@ function _misSummary() {
   });
   const btn = document.getElementById('mis-apply-btn');
   btn.disabled = n === 0;
-  btn.textContent = n ? `Repair ${n} song${n !== 1 ? 's' : ''}` : 'Repair';
+  btn.textContent = n ? `Redownload ${n}` : 'Redownload';
+  const del = document.getElementById('mis-del-btn');
+  del.disabled = n === 0;
+  del.textContent = n ? `Delete ${n}` : 'Delete';
 }
 
+let _misInfo = {fingerprint: true};
+
 function _misRender(fingerprint, info = {}) {
+  _misInfo = {...info, fingerprint};
   const area = document.getElementById('mis-area');
-  const btn  = document.getElementById('mis-apply-btn');
+  const acts = document.getElementById('mis-actions');
+  const list = area.querySelector('.dup-list');
+  const scroll = list ? list.scrollTop : 0;      // keep the place after an action re-renders
   let html = '';
   if (!fingerprint) {
     html += `<div class="org-hint" style="color:var(--s-error);margin:0 0 10px">Audio fingerprinting didn't run: ${esc(info.fp_reason || 'fpcalc missing')}. Only songs of the same length by the same artist are listed — these matches are unverified, check them before repairing.</div>`;
@@ -4007,10 +4027,13 @@ function _misRender(fingerprint, info = {}) {
   }
   if (!_misGroups.length) {
     area.innerHTML = html + '<div class="jobs-empty">No mistagged songs found</div>';
-    btn.style.display = 'none';
+    acts.style.display = 'none';
     return;
   }
-  html += `<div class="org-summary"><span class="org-stat pending"><strong>${_misGroups.length}</strong> group${_misGroups.length !== 1 ? 's' : ''} to review</span></div><div class="dup-list">`;
+  const badNames = _misGroups.reduce((a, g) => a + g.files.filter(f => !f.name_ok).length, 0);
+  html += `<div class="org-summary"><span class="org-stat pending"><strong>${_misGroups.length}</strong> group${_misGroups.length !== 1 ? 's' : ''} to review</span>` +
+          (badNames ? `<button class="btn-ghost mis-fix-all" title="Rename every file whose name doesn't match its title tag">Fix ${badNames} filename${badNames !== 1 ? 's' : ''}</button>` : '') +
+          `</div><div class="dup-list">`;
   _misGroups.forEach((g, i) => {
     const badge = g.kind === 'audio' ? `same audio · ${Math.round(g.sim * 100)}% match` : 'same length · unverified';
     html += `<div class="dup-group"><div class="dup-head"><span>${g.files.length} files, different tags</span><span class="dup-badge">${badge}</span></div>`;
@@ -4021,38 +4044,99 @@ function _misRender(fingerprint, info = {}) {
         <div style="min-width:0"><div class="dup-path" title="${esc(f.rel)}">${esc(f.artist)} — ${esc(f.title)}</div>
         <div class="dup-meta">${esc(f.rel)}</div>
         <div class="dup-meta">${esc(f.ext.toUpperCase())} · ${f.lossless ? '<span class="lossless">lossless</span>' : (f.bitrate ? Math.round(f.bitrate / 1000) + ' kbps' : 'lossy')} · ${_fmtSize(f.size)}${mins ? ' · ' + mins : ''}${f.album ? ' · ' + esc(f.album) : ''}</div>
-        ${f.name_ok ? '' : '<div class="dup-warn">Filename doesn\'t match its title tag</div>'}</div></label>`;
+        ${f.name_ok ? '' : `<div class="dup-warn">Filename doesn't match its title tag<button class="btn-ghost mis-fix" data-rel="${esc(f.rel)}" title="Rename the file after its tags">Fix filename</button></div>`}</div></label>`;
     });
     html += '</div>';
   });
   html += '</div>';
   area.innerHTML = html;
+  area.querySelector('.dup-list').scrollTop = scroll;
   area.querySelectorAll('input[type=checkbox]').forEach(c => c.addEventListener('change', _misSummary));
-  btn.style.display = '';
+  area.querySelectorAll('.mis-fix').forEach(b => b.addEventListener('click', e => {
+    e.preventDefault();          // inside the row's <label> — don't toggle its checkbox
+    _misRename([b.dataset.rel], b);
+  }));
+  const all = area.querySelector('.mis-fix-all');
+  if (all) all.addEventListener('click', () =>
+    _misRename(_misGroups.flatMap(g => g.files.filter(f => !f.name_ok).map(f => f.rel)), all));
+  acts.style.display = '';
   _misSummary();
 }
 
+// Mirror a server-side change locally (the server patches its stored result the
+// same way) so the list stays in place instead of rescanning the library.
+function _misUpdate(removed = [], renamed = {}) {
+  const gone = new Set(removed);
+  _misGroups = _misGroups.map(g => ({...g, files: g.files
+      .filter(f => !gone.has(f.rel))
+      .map(f => f.rel in renamed ? {...f, rel: renamed[f.rel], name_ok: true} : f)}))
+    .filter(g => g.files.length > 1);
+  _misRender(_misInfo.fingerprint, _misInfo);
+  loadLibrary(_libPath);
+}
+
+function _misChecked() {
+  return [...document.querySelectorAll('#mis-area input[type=checkbox]:checked')].map(c => c.value);
+}
+
+function _misErrToast(msg, errors) {
+  const errs = (errors || []).length;
+  showToast(msg + (errs ? ` · ${errs} failed: ${errors[0]}` : ''), errs ? 'error' : 'done');
+}
+
+async function _misPost(url, files) {
+  const res  = await fetch(url, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({files}),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'failed');
+  return data;
+}
+
+async function _misRename(files, btn) {
+  if (!files.length) return;
+  btn.disabled = true;
+  try {
+    const data = await _misPost('/api/library/mistag/rename', files);
+    const n = Object.keys(data.renamed).length;
+    _misErrToast(`Renamed ${n} file${n !== 1 ? 's' : ''}`, data.errors);
+    _misUpdate([], data.renamed);
+  } catch (e) {
+    showToast('Renaming failed', 'error');
+    btn.disabled = false;
+  }
+}
+
+async function _misDelete() {
+  const files = _misChecked();
+  if (!files.length) return;
+  if (!confirm(`Permanently delete ${files.length} file${files.length !== 1 ? 's' : ''}? Nothing is downloaded in ${files.length !== 1 ? 'their' : 'its'} place.`)) return;
+  const btn = document.getElementById('mis-del-btn');
+  btn.disabled = true; btn.textContent = 'Deleting…';
+  try {
+    const data = await _misPost('/api/library/mistag/delete', files);
+    _misErrToast(`Deleted ${data.removed.length} file${data.removed.length !== 1 ? 's' : ''}`, data.errors);
+    _misUpdate(data.removed);
+  } catch (e) {
+    showToast('Delete failed', 'error');
+    _misSummary();
+  }
+}
+
 async function _misApply() {
-  const files = [...document.querySelectorAll('#mis-area input[type=checkbox]:checked')].map(c => c.value);
+  const files = _misChecked();
   if (!files.length) return;
   if (!confirm(`Delete ${files.length} file${files.length !== 1 ? 's' : ''} and download ${files.length !== 1 ? 'them' : 'it'} again from ${files.length !== 1 ? 'their' : 'its'} tags?`)) return;
   const btn = document.getElementById('mis-apply-btn');
-  btn.disabled = true; btn.textContent = 'Repairing…';
+  btn.disabled = true; btn.textContent = 'Queuing…';
   try {
-    const res  = await fetch('/api/library/repair', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({files}),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'failed');
-    const errs = (data.errors || []).length;
-    showToast(`Queued ${data.repaired.length} song${data.repaired.length !== 1 ? 's' : ''} for redownload` +
-              (errs ? ` · ${errs} couldn't be repaired: ${data.errors[0]}` : ''), errs ? 'error' : 'done');
-    _misClose();
-    loadLibrary(_libPath);
+    const data = await _misPost('/api/library/repair', files);
+    _misErrToast(`Queued ${data.repaired.length} song${data.repaired.length !== 1 ? 's' : ''} for redownload`, data.errors);
+    _misUpdate(data.repaired.map(r => r.rel));
   } catch (e) {
-    showToast('Repair failed', 'error');
-    btn.disabled = false; _misSummary();
+    showToast('Redownload failed', 'error');
+    _misSummary();
   }
 }
 
@@ -4062,6 +4146,7 @@ document.getElementById('mis-cancel-btn') .addEventListener('click', _misClose);
 document.getElementById('mis-scan-btn')   .addEventListener('click', () => _misInit().start());
 document.getElementById('mis-stop-btn')   .addEventListener('click', () => _misInit().stop());
 document.getElementById('mis-apply-btn')  .addEventListener('click', _misApply);
+document.getElementById('mis-del-btn')    .addEventListener('click', _misDelete);
 document.getElementById('mis-modal')      .addEventListener('click', e => { if (e.target === e.currentTarget) _misClose(); });
 
 // ── Library metadata enrichment ────────────────────────────────────────

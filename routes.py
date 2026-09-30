@@ -1539,6 +1539,37 @@ def _scans_invalidate() -> None:
                 st["summary"] = "Library changed — rescan"
 
 
+def _scans_files_changed(removed=(), renamed=None) -> None:
+    """Some files were deleted/renamed from the mistag dialog. Patch the stored
+    mistag result to match (so it stays reviewable without a full rescan) and
+    drop everything else, which may now be stale."""
+    renamed = renamed or {}
+    with _scans_lock:
+        for kind, st in _scans.items():
+            if st["running"]:
+                continue
+            res = st.get("result")
+            if kind != "mistag" or not res:
+                st["result"] = None
+                st["summary"] = "Library changed — rescan"
+                continue
+            gone = set(removed)
+            groups = []
+            for g in res["groups"]:
+                files = []
+                for f in g["files"]:
+                    if f["rel"] in gone:
+                        continue
+                    if f["rel"] in renamed:
+                        f = {**f, "rel": renamed[f["rel"]], "name_ok": True}
+                    files.append(f)
+                if len(files) > 1:
+                    groups.append({**g, "files": files})
+            res["groups"] = groups
+            n = len(groups)
+            st["summary"] = f"{n} group{'s' if n != 1 else ''} to review" if n else "No mistagged songs found"
+
+
 @bp.post("/api/library/scan/<kind>")
 def api_scan_start(kind):
     if kind not in _SCAN_LABELS:
@@ -1840,7 +1871,7 @@ def api_library_repair():
 
     ids: list = []
     if repaired:
-        _scans_invalidate()
+        _scans_files_changed(removed=[r["rel"] for r in repaired])
     if urls:
         lib_index.trigger_rescan()
         os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
@@ -1851,6 +1882,79 @@ def api_library_repair():
         ) for u in urls]
     log.info("Library repair: %d file(s) queued for redownload, %d error(s)", len(repaired), len(errors))
     return jsonify(repaired=repaired, queued=len(ids), ids=ids, errors=errors[:20])
+
+
+def _mistag_audio_paths(files) -> tuple[list[tuple[str, str]], list[str]]:
+    """[(rel, abs)] for each named library audio file, plus per-file errors."""
+    ok, errors = [], []
+    for rel in files or []:
+        try:
+            abs_path = _safe_lib_path(str(rel))
+            if os.path.splitext(abs_path)[1].lower() not in _AUDIO_EXTS or not os.path.isfile(abs_path):
+                raise ValueError("not an audio file")
+            ok.append((str(rel), abs_path))
+        except (ValueError, OSError) as exc:
+            errors.append(f"{rel}: {exc}")
+    return ok, errors
+
+
+@bp.post("/api/library/mistag/delete")
+def api_mistag_delete():
+    """Delete files outright — for the unwanted version of a song (radio edit,
+    duplicate encode, …) where nothing needs to be downloaded again."""
+    body = request.get_json(silent=True) or {}
+    root = _lib_root()
+    targets, errors = _mistag_audio_paths(body.get("files"))
+    removed = []
+    for rel, abs_path in targets:
+        try:
+            os.remove(abs_path)
+            _cleanup_empty_dirs_up(os.path.dirname(abs_path), root)
+            removed.append(rel)
+        except OSError as exc:
+            errors.append(f"{rel}: {exc}")
+    if removed:
+        _scans_files_changed(removed=removed)
+        lib_index.trigger_rescan()
+    log.info("Mistag delete: %d file(s) removed, %d error(s)", len(removed), len(errors))
+    return jsonify(removed=removed, errors=errors[:20])
+
+
+@bp.post("/api/library/mistag/rename")
+def api_mistag_rename():
+    """Rename each file (in its own folder) to what the filename format makes of
+    its tags, so the filename matches the title tag again."""
+    from mutagen import File as MFile
+    import audiofp
+    body = request.get_json(silent=True) or {}
+    root = _lib_root()
+    fmt  = _settings.load().get("filename_fmt") or "{artist}/{album}/{track} {title}"
+    name_fmt = fmt.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or "{title}"
+    targets, errors = _mistag_audio_paths(body.get("files"))
+    renamed: dict[str, str] = {}
+    for rel, abs_path in targets:
+        try:
+            audio = MFile(abs_path, easy=True)
+            if audio is None or not (audio.get("title") or [""])[0].strip():
+                raise ValueError("no title tag to name the file after")
+            ext  = os.path.splitext(abs_path)[1]
+            name = _org_target(audio, name_fmt, ext).rsplit("/", 1)[-1]
+            dest = os.path.join(os.path.dirname(abs_path), name)
+            if dest == abs_path:
+                renamed[rel] = rel
+                continue
+            if os.path.exists(dest):
+                raise ValueError(f'"{name}" already exists in that folder')
+            os.rename(abs_path, dest)
+            audiofp.rename(abs_path, dest)
+            renamed[rel] = _lib_rel(dest)
+        except Exception as exc:
+            errors.append(f"{rel}: {exc}")
+    if renamed:
+        _scans_files_changed(renamed=renamed)
+        lib_index.trigger_rescan()
+    log.info("Mistag rename: %d file(s) renamed, %d error(s)", len(renamed), len(errors))
+    return jsonify(renamed=renamed, errors=errors[:20])
 
 
 # Per-path guard so the same file can't be single-song-enriched twice at once
