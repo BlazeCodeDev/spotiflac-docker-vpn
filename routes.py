@@ -1273,11 +1273,22 @@ def _metadata_score(abs_path: str, audio) -> int:
 # recording (live, remix, acoustic, instrumental, …) are NOT stripped: they
 # become a "version" set that must match exactly, so "Song" and "Song (Live)"
 # are never grouped even though their base titles are equal.
+# Credits move between fields from release to release — "A & B", "A, B",
+# "A feat. B", or artist "A" with title "Song (feat. B)" — so artists are
+# compared as sets: two copies match when they share any credited artist.
 _DUP_FEAT_PAREN_RE = re.compile(r"\s*[\(\[]\s*(?:feat\.?|ft\.?|featuring|with)\b[^\)\]]*[\)\]]", re.I)
 _DUP_FEAT_TAIL_RE  = re.compile(r"\s+(?:feat\.?|ft\.?|featuring)\s+.*$", re.I)
 _DUP_NOISE_WORDS   = r"(?:re-?master(?:ed)?|album version|single version|deluxe(?: edition)?|bonus track|explicit|clean)"
 _DUP_NOISE_PAREN_RE = re.compile(r"\s*[\(\[][^\)\]]*\b" + _DUP_NOISE_WORDS + r"\b[^\)\]]*[\)\]]", re.I)
 _DUP_NOISE_DASH_RE  = re.compile(r"\s+[-\u2013\u2014]\s+(?:\d{4}\s+)?" + _DUP_NOISE_WORDS + r"\b.*$", re.I)
+# Soundtrack / compilation provenance: '- From "Saturday Night Fever" Soundtrack',
+# '(From the Motion Picture "X")', '(Original Soundtrack Version)'.
+_DUP_FROM_PAREN_RE  = re.compile(r"\s*[\(\[]\s*(?:from\b|[^\)\]]*\bsoundtrack\b)[^\)\]]*[\)\]]", re.I)
+_DUP_FROM_DASH_RE   = re.compile(r"\s+[-\u2013\u2014]\s+(?:from\b|[^-\u2013\u2014]*\bsoundtrack\b).*$", re.I)
+_DUP_FEAT_CREDIT_RE = re.compile(r"[\(\[]\s*(?:feat\.?|ft\.?|featuring|with)\s+([^\)\]]*)[\)\]]"
+                                 r"|\s(?:feat\.?|ft\.?|featuring)\s+(.*)$", re.I)
+_DUP_ARTIST_SPLIT_RE = re.compile(
+    r"\s*(?:,|;|/|&|\+|\bfeat\.?|\bft\.?|\bfeaturing\b|\bwith\b|\bx\b|\bvs\.?)\s*", re.I)
 _DUP_VERSION_RE = re.compile(
     r"\b(remix|mix|live|acoustic|instrumental|demo|karaoke|cover|acapella|a cappella|"
     r"reprise|edit|orchestral|piano|unplugged|sped up|slowed)\b", re.I)
@@ -1285,9 +1296,21 @@ _DUP_DUR_TOL      = 3.0    # seconds — same recording, different encode/releas
 _DUP_ISRC_DUR_TOL = 10.0   # an ISRC is exact, so allow more slack (padding/fades)
 
 
+def _dup_fold(s: str) -> str:
+    return re.sub(r"\W+", " ", unicodedata.normalize("NFC", s).casefold()).strip()
+
+
+def _dup_artists(artist: str, title: str = "") -> frozenset:
+    """Every artist credited in the artist tag, plus any "feat." credit in the title."""
+    parts = _DUP_ARTIST_SPLIT_RE.split(artist or "")
+    for m in _DUP_FEAT_CREDIT_RE.finditer(title or ""):
+        parts += _DUP_ARTIST_SPLIT_RE.split(m.group(1) or m.group(2) or "")
+    return frozenset(f for f in map(_dup_fold, parts) if f)
+
+
 def _dup_artist_key(artist: str) -> str:
-    first = re.split(r"\s*(?:,|;|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b)\s*", artist or "", maxsplit=1, flags=re.I)[0]
-    return re.sub(r"\W+", " ", unicodedata.normalize("NFC", first).casefold()).strip()
+    """The first credited artist — used for sorting."""
+    return _dup_fold(_DUP_ARTIST_SPLIT_RE.split(artist or "", maxsplit=1)[0])
 
 
 def _dup_title_key(title: str) -> tuple[str, frozenset]:
@@ -1299,9 +1322,16 @@ def _dup_title_key(title: str) -> tuple[str, frozenset]:
         prev = t
         t = _DUP_NOISE_PAREN_RE.sub("", t)
         t = _DUP_NOISE_DASH_RE.sub("", t)
+        t = _DUP_FROM_PAREN_RE.sub("", t)
+        t = _DUP_FROM_DASH_RE.sub("", t)
         t = _DUP_FEAT_TAIL_RE.sub("", t)
-    folded = re.sub(r"\W+", " ", unicodedata.normalize("NFC", t).casefold()).strip()
-    return folded, versions
+    return _dup_fold(t), versions
+
+
+def _dup_same_tags(a: dict, b: dict) -> bool:
+    """Same song by its tags: equal decoration-free title and version markers,
+    and at least one credited artist in common."""
+    return a["tkey"] == b["tkey"] and bool(a["artists"] & b["artists"])
 
 
 class _ScanCancelled(Exception):
@@ -1325,10 +1355,12 @@ def _dup_info(abs_path: str, rel: str, rec: dict):
     return {
         "rel": rel, "abs": abs_path, "title": title, "artist": artist,
         "album": rec.get("album", ""), "isrc": isrc if len(isrc) >= 10 else "",
+        "mbid": rec.get("musicbrainz_trackid", "").strip().lower(),
         "dur": rec.get("dur", 0.0), "bitrate": rec.get("bitrate", 0),
         "ext": ext.lstrip("."), "size": rec["size"], "mtime": rec["mtime"],
         "lossless": ext in (".flac", ".wav") or (ext == ".m4a" and "alac" in codec),
-        "tkey": (_dup_artist_key(artist),) + _dup_title_key(title),
+        "tkey": _dup_title_key(title),
+        "artists": _dup_artists(artist, title),
         # _metadata_score reads these like a mutagen easy-tags object
         "_audio": {k: [rec[k]] for k in ("genre", "bpm", "album", "isrc") if rec.get(k)},
     }
@@ -1363,15 +1395,17 @@ def _find_duplicate_groups(rel_paths: list[str], root: str, *,
     """Group files that are the same recording, wherever they live.
 
     Two files are linked when either
-      * they share an ISRC (exact id) and durations are within 10 s, or
-      * artist and title match after stripping decoration (see above), the
+      * they share an ISRC or MusicBrainz recording id (exact ids) and
+        durations are within 10 s, or
+      * titles match after stripping decoration (see above), they share a
+        credited artist, the
         version markers (live/remix/…) are identical, and durations are
         within 3 s (a chain of neighbours, so 2:29.9 / 2:30.1 still match —
         unlike the old fixed 5 s buckets, which split them at a boundary).
     Groups are the connected components, so a file linked by ISRC to one copy
     and by title to another pulls all three together.
 
-    Returns [{"files": [...], "keep": rel, "match": "isrc"|"title"}], each
+    Returns [{"files": [...], "keep": rel, "match": "isrc"|"mbid"|"title"}], each
     file dict ranked best-first; "keep" is the suggested survivor. Ranking is
     lossless first (when lossless_first), then metadata completeness, then
     bitrate — "best" for the user is normally the lossless copy.
@@ -1393,30 +1427,32 @@ def _find_duplicate_groups(rel_paths: list[str], root: str, *,
         if ra != rb:
             parent[rb] = ra
 
-    isrc_linked: set[int] = set()
-    by_isrc: dict[str, list[int]] = {}
+    by_id: dict[tuple[str, str], list[int]] = {}
     by_text: dict[tuple, list[int]] = {}
     for i, inf in enumerate(infos):
-        if inf["isrc"]:
-            by_isrc.setdefault(inf["isrc"], []).append(i)
+        for kind in ("isrc", "mbid"):
+            if inf[kind]:
+                by_id.setdefault((kind, inf[kind]), []).append(i)
         by_text.setdefault(inf["tkey"], []).append(i)
 
-    for members in by_isrc.values():
+    for members in by_id.values():
         for a in range(len(members)):
             for b in range(a + 1, len(members)):
                 ia, ib = members[a], members[b]
                 if abs(infos[ia]["dur"] - infos[ib]["dur"]) <= _DUP_ISRC_DUR_TOL:
                     union(ia, ib)
-                    isrc_linked.update((ia, ib))
 
     for members in by_text.values():
         if len(members) < 2:
             continue
         members = sorted(members, key=lambda i: infos[i]["dur"])
-        for a, b in zip(members, members[1:]):
-            da, db = infos[a]["dur"], infos[b]["dur"]
-            if da and db and db - da <= _DUP_DUR_TOL:
-                union(a, b)
+        for x, a in enumerate(members):
+            for b in members[x + 1:]:
+                da, db = infos[a]["dur"], infos[b]["dur"]
+                if not (da and db) or db - da > _DUP_DUR_TOL:
+                    break
+                if infos[a]["artists"] & infos[b]["artists"]:
+                    union(a, b)
 
     comps: dict[int, list[int]] = {}
     for i in range(len(infos)):
@@ -1434,8 +1470,10 @@ def _find_duplicate_groups(rel_paths: list[str], root: str, *,
                                   f["score"], f["bitrate"], f["size"]),
                    reverse=True)
         isrcs = {f["isrc"] for f in files}
-        groups.append({"files": files, "keep": files[0]["rel"],
-                       "match": "isrc" if (len(isrcs) == 1 and "" not in isrcs) else "title"})
+        mbids = {f["mbid"] for f in files}
+        match = ("isrc" if (len(isrcs) == 1 and "" not in isrcs)
+                 else "mbid" if (len(mbids) == 1 and "" not in mbids) else "title")
+        groups.append({"files": files, "keep": files[0]["rel"], "match": match})
     groups.sort(key=lambda g: (_dup_artist_key(g["files"][0]["artist"]),
                                g["files"][0]["title"].casefold()))
     return groups
@@ -1731,14 +1769,14 @@ def _find_mistagged_groups(rel_paths: list[str], root: str, progress=None, cance
             gap = ib["dur"] - ia["dur"]
             if gap > tol:
                 break
-            if ia["tkey"] == ib["tkey"]:
+            if _dup_same_tags(ia, ib):
                 continue          # same tags → an ordinary duplicate, handled elsewhere
             fa, fb = fps.get(ia["abs"]), fps.get(ib["abs"])
             if fa is not None and fb is not None:
                 sim = audiofp.similarity(fa, fb)
                 if sim >= audiofp.SIM_THRESHOLD:
                     links.append((a, b, sim, "audio"))
-            elif (ia["tkey"][0] == ib["tkey"][0]
+            elif (ia["artists"] & ib["artists"]
                   and (gap <= 0.1 or (gap <= _MISTAG_LEN_TOL
                                       and ia["album"].casefold() == ib["album"].casefold()))):
                 # No fingerprint to check with: same artist and (near-)identical
@@ -1810,7 +1848,7 @@ def _resolve_track_url(title: str, artist: str, isrc: str) -> str:
         queries.append((f"isrc:{isrc}", True))
     queries.append((f"track:{title} artist:{artist}", False))
     want_t = _dup_title_key(title)
-    want_a = _dup_artist_key(artist)
+    want_a = _dup_artists(artist, title)
     for q, exact in queries:
         try:
             data = client._get("/search", params={"q": q, "type": "track", "limit": 5})
@@ -1825,8 +1863,8 @@ def _resolve_track_url(title: str, artist: str, isrc: str) -> str:
                 continue
             if exact:
                 return url
-            first = ((t.get("artists") or [{}])[0].get("name")) or ""
-            if _dup_title_key(t.get("name", "")) == want_t and _dup_artist_key(first) == want_a:
+            names = ", ".join(a.get("name") or "" for a in t.get("artists") or [])
+            if _dup_title_key(t.get("name", "")) == want_t and _dup_artists(names, t.get("name", "")) & want_a:
                 return url
     return ""
 

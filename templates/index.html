@@ -4101,7 +4101,7 @@ function _dupRender() {
   let html = `<div class="org-summary"><span class="org-stat pending"><strong>${_dupGroups.length}</strong> song${_dupGroups.length !== 1 ? 's' : ''} with duplicates</span></div><div class="dup-list">`;
   _dupGroups.forEach((g, i) => {
     const f0 = g.files[0];
-    html += `<div class="dup-group"><div class="dup-head"><span>${esc(f0.artist)} — ${esc(f0.title)}</span><span class="dup-badge">${g.match === 'isrc' ? 'same ISRC' : 'title + length'}</span></div>`;
+    html += `<div class="dup-group"><div class="dup-head"><span>${esc(f0.artist)} — ${esc(f0.title)}</span><span class="dup-badge">${g.match === 'isrc' ? 'same ISRC' : g.match === 'mbid' ? 'same MusicBrainz ID' : 'title + length'}</span></div>`;
     g.files.forEach(f => {
       html += `<label class="dup-row" data-g="${i}" data-rel="${esc(f.rel)}">
         <input type="radio" name="dup-g${i}" value="${esc(f.rel)}"${f.rel === g.keep ? ' checked' : ''}>
