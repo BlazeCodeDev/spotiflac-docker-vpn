@@ -15,6 +15,9 @@ FROM python:3.12-alpine
 # flac: core/flac_validation.py shells out to the `flac` binary to verify FLAC
 # integrity. Upstream treats a missing binary as "valid, skip the check"
 # rather than a false-positive corruption.
+# chromaprint: provides `fpcalc`, used by audiofp.py for the library's
+# mistag finder (audio fingerprints). Without it that feature falls back to
+# unverified same-length matching.
 # nodejs: as of 1.8.0 SpotiFLAC bundles no download providers at all — every
 # provider is an externally-installed "extension" (see worker.refresh_extensions),
 # and the default/legacy-aliased ones (tidal-web, qobuz-web, ytmusic-spotiflac,
@@ -60,6 +63,7 @@ RUN apk add --no-cache \
     iputils \
     ffmpeg \
     flac \
+    chromaprint \
     nodejs \
     su-exec && \
     if [ "$INSTALL_BROWSER_SOLVER" = "true" ]; then apk add --no-cache xvfb chromium; fi
@@ -115,7 +119,7 @@ RUN apk add --no-cache netcat-openbsd
 
 COPY entrypoint.sh /entrypoint.sh
 COPY patch_spotiflac.py /app/patch_spotiflac.py
-COPY app.py config.py worker.py vpn.py routes.py settings.py lib_index.py listenbrainz.py /app/
+COPY app.py config.py worker.py vpn.py routes.py settings.py lib_index.py listenbrainz.py audiofp.py /app/
 COPY templates/ /app/templates/
 COPY static/ /app/static/
 COPY --from=gitinfo /GIT_COMMIT /app/GIT_COMMIT

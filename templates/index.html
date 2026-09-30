@@ -1067,17 +1067,18 @@ html.theme-transitioning *::after {
 .org-progress-sub   { font-size: .75rem; color: var(--md-on-surface-variant); }
 
 /* ─── Duplicate finder dialog ─────────────────────────────────────── */
-#dup-apply-btn {
+#dup-apply-btn, #mis-apply-btn {
   background: var(--s-error); color: #fff; border-radius: 999px; height: 32px; padding: 0 20px;
   font-size: .875rem; font-weight: 500;
 }
-#dup-apply-btn:disabled { opacity: .45; cursor: default; }
+#dup-apply-btn:disabled, #mis-apply-btn:disabled { opacity: .45; cursor: default; }
 .dup-list  { display: flex; flex-direction: column; gap: 10px; max-height: 420px; overflow-y: auto; }
 .dup-group { border: 1px solid var(--md-outline-variant); border-radius: 8px; overflow: hidden; }
 .dup-head  { display: flex; gap: 8px; align-items: baseline; padding: 7px 10px; background: var(--md-surface-container); font-size: .82rem; font-weight: 500; }
 .dup-head span.dup-badge { margin-left: auto; font-size: .68rem; font-weight: 500; color: var(--md-on-surface-variant); text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
 .dup-row   { display: grid; grid-template-columns: 20px 1fr; gap: 0 8px; align-items: start; padding: 6px 10px; border-top: 1px solid var(--md-outline-variant); cursor: pointer; }
 .dup-row input { margin-top: 3px; }
+.dup-warn { font-size: .72rem; color: var(--s-error); margin-top: 1px; }
 .dup-row.remove .dup-path { text-decoration: line-through; opacity: .6; }
 .dup-path  { font-size: .74rem; font-family: 'Roboto Mono', monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dup-meta  { font-size: .71rem; color: var(--md-on-surface-variant); margin-top: 1px; }
@@ -1199,6 +1200,7 @@ html.theme-transitioning *::after {
       <span class="section-title">Library</span>
       <div style="display:flex;gap:4px">
         <button class="btn-ghost" id="btn-lib-enrich-all" title="Enrich all files with metadata" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">auto_awesome</span></button>
+        <button class="btn-ghost" id="btn-lib-mistag" title="Find mistagged songs (same audio, different tags)" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">fingerprint</span></button>
         <button class="btn-ghost" id="btn-lib-dups" title="Find duplicate songs" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">content_copy</span></button>
         <button class="btn-ghost" id="btn-lib-organize" title="Organize library" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">auto_fix_high</span></button>
         <button class="btn-ghost" id="btn-lib-search" title="Search library" style="width:32px;padding:0;display:flex;align-items:center;justify-content:center"><span class="material-icons" style="font-size:18px">search</span></button>
@@ -1503,6 +1505,29 @@ html.theme-transitioning *::after {
     <div class="modal-footer">
       <button id="btn-search-dl" style="display:none">Download 0 selected</button>
       <span id="search-msg"></span>
+    </div>
+  </div>
+</div>
+
+<!-- Mistag finder dialog -->
+<div id="mis-modal" class="modal-overlay" role="dialog" aria-modal="true">
+  <div class="modal" style="max-width:760px">
+    <div class="modal-header">
+      <span class="modal-title">Mistagged Songs</span>
+      <button class="modal-close" id="mis-close" title="Close"><span class="material-icons">close</span></button>
+    </div>
+    <div class="modal-body">
+      <div class="org-hint" style="margin-top:0;margin-bottom:10px">
+        Files that sound identical (audio fingerprint) or have the same length, but different artist/title tags —
+        so at least one holds the wrong song. Tick the file(s) whose <b>tags are wrong for what you want</b>:
+        each is deleted and downloaded again from its own tags. Files whose song can't be found online are left untouched.
+      </div>
+      <div id="mis-area"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" id="mis-cancel-btn">Close</button>
+      <button class="btn-ghost" id="mis-scan-btn">Scan</button>
+      <button id="mis-apply-btn" style="display:none" disabled>Repair</button>
     </div>
   </div>
 </div>
@@ -3836,6 +3861,122 @@ document.getElementById('dup-cancel-btn') .addEventListener('click', _dupClose);
 document.getElementById('dup-scan-btn')   .addEventListener('click', _dupScan);
 document.getElementById('dup-apply-btn')  .addEventListener('click', _dupApply);
 document.getElementById('dup-modal')      .addEventListener('click', e => { if (e.target === e.currentTarget) _dupClose(); });
+
+// ── Mistag finder ──────────────────────────────────────────────────────
+let _misGroups = [];
+
+function _misOpen() {
+  document.getElementById('mis-modal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  document.getElementById('mis-area').innerHTML = '';
+  document.getElementById('mis-apply-btn').style.display = 'none';
+  _misScan();
+}
+function _misClose() {
+  document.getElementById('mis-modal').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+function _misSummary() {
+  const n = document.querySelectorAll('#mis-area input[type=checkbox]:checked').length;
+  document.querySelectorAll('#mis-area .dup-row').forEach(row => {
+    row.classList.toggle('remove', row.querySelector('input').checked);
+  });
+  const btn = document.getElementById('mis-apply-btn');
+  btn.disabled = n === 0;
+  btn.textContent = n ? `Repair ${n} song${n !== 1 ? 's' : ''}` : 'Repair';
+}
+
+function _misRender(fingerprint) {
+  const area = document.getElementById('mis-area');
+  const btn  = document.getElementById('mis-apply-btn');
+  let html = '';
+  if (!fingerprint) {
+    html += `<div class="org-hint" style="color:var(--s-error);margin:0 0 10px">Audio fingerprinting isn't available on this server (fpcalc missing), so only songs of the same length by the same artist are listed. These matches are unverified — check them before repairing.</div>`;
+  }
+  if (!_misGroups.length) {
+    area.innerHTML = html + '<div class="jobs-empty">No mistagged songs found</div>';
+    btn.style.display = 'none';
+    return;
+  }
+  html += `<div class="org-summary"><span class="org-stat pending"><strong>${_misGroups.length}</strong> group${_misGroups.length !== 1 ? 's' : ''} to review</span></div><div class="dup-list">`;
+  _misGroups.forEach((g, i) => {
+    const badge = g.kind === 'audio' ? `same audio · ${Math.round(g.sim * 100)}% match` : 'same length · unverified';
+    html += `<div class="dup-group"><div class="dup-head"><span>${g.files.length} files, different tags</span><span class="dup-badge">${badge}</span></div>`;
+    g.files.forEach(f => {
+      const mins = f.dur ? `${Math.floor(f.dur / 60)}:${String(Math.round(f.dur % 60)).padStart(2, '0')}` : '';
+      html += `<label class="dup-row" data-g="${i}">
+        <input type="checkbox" value="${esc(f.rel)}">
+        <div style="min-width:0"><div class="dup-path" title="${esc(f.rel)}">${esc(f.artist)} — ${esc(f.title)}</div>
+        <div class="dup-meta">${esc(f.rel)}</div>
+        <div class="dup-meta">${esc(f.ext.toUpperCase())} · ${f.lossless ? '<span class="lossless">lossless</span>' : (f.bitrate ? Math.round(f.bitrate / 1000) + ' kbps' : 'lossy')} · ${_fmtSize(f.size)}${mins ? ' · ' + mins : ''}${f.album ? ' · ' + esc(f.album) : ''}</div>
+        ${f.name_ok ? '' : '<div class="dup-warn">Filename doesn\'t match its title tag</div>'}</div></label>`;
+    });
+    html += '</div>';
+  });
+  html += '</div>';
+  area.innerHTML = html;
+  area.querySelectorAll('input[type=checkbox]').forEach(c => c.addEventListener('change', _misSummary));
+  btn.style.display = '';
+  _misSummary();
+}
+
+async function _misScan() {
+  const scanBtn = document.getElementById('mis-scan-btn');
+  const area    = document.getElementById('mis-area');
+  scanBtn.disabled = true; scanBtn.textContent = 'Scanning…';
+  document.getElementById('mis-apply-btn').style.display = 'none';
+  area.innerHTML = _orgProgressHTML('Fingerprinting library… (the first scan is slow, later ones reuse the results)');
+  let done = null, error = null;
+  try {
+    const res = await fetch('/api/library/mistagged/scan', {method: 'POST'});
+    if (!res.ok) { area.innerHTML = '<div class="jobs-empty" style="color:var(--s-error)">Server error</div>'; return; }
+    await _readOrgStream(res, ev => {
+      if (ev.type === 'progress') _orgSetProgress(ev.done, ev.total, `${ev.done} / ${ev.total} files`);
+      else if (ev.type === 'done') done = ev;
+      else if (ev.type === 'error') error = ev.error;
+    });
+    if (error) { area.innerHTML = `<div class="jobs-empty" style="color:var(--s-error)">${esc(error)}</div>`; return; }
+    if (!done) { area.innerHTML = '<div class="jobs-empty">No response from server</div>'; return; }
+    _misGroups = done.groups;
+    _misRender(done.fingerprint);
+  } catch {
+    area.innerHTML = '<div class="jobs-empty" style="color:var(--s-error)">Request failed</div>';
+  } finally {
+    scanBtn.disabled = false; scanBtn.textContent = 'Rescan';
+  }
+}
+
+async function _misApply() {
+  const files = [...document.querySelectorAll('#mis-area input[type=checkbox]:checked')].map(c => c.value);
+  if (!files.length) return;
+  if (!confirm(`Delete ${files.length} file${files.length !== 1 ? 's' : ''} and download ${files.length !== 1 ? 'them' : 'it'} again from ${files.length !== 1 ? 'their' : 'its'} tags?`)) return;
+  const btn = document.getElementById('mis-apply-btn');
+  btn.disabled = true; btn.textContent = 'Repairing…';
+  try {
+    const res  = await fetch('/api/library/repair', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({files}),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'failed');
+    const errs = (data.errors || []).length;
+    showToast(`Queued ${data.repaired.length} song${data.repaired.length !== 1 ? 's' : ''} for redownload` +
+              (errs ? ` · ${errs} couldn't be repaired: ${data.errors[0]}` : ''), errs ? 'error' : 'done');
+    _misClose();
+    loadLibrary(_libPath);
+  } catch (e) {
+    showToast('Repair failed', 'error');
+    btn.disabled = false; _misSummary();
+  }
+}
+
+document.getElementById('btn-lib-mistag') .addEventListener('click', _misOpen);
+document.getElementById('mis-close')      .addEventListener('click', _misClose);
+document.getElementById('mis-cancel-btn') .addEventListener('click', _misClose);
+document.getElementById('mis-scan-btn')   .addEventListener('click', _misScan);
+document.getElementById('mis-apply-btn')  .addEventListener('click', _misApply);
+document.getElementById('mis-modal')      .addEventListener('click', e => { if (e.target === e.currentTarget) _misClose(); });
 
 // ── Library metadata enrichment ────────────────────────────────────────
 let _libEnrichSel = new Set();   // set of selected lib-file rel-paths

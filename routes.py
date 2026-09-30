@@ -1482,6 +1482,244 @@ def api_dup_apply():
     return jsonify(removed=removed, freed=freed, errors=errors[:20])
 
 
+# ── Mistag finder + repair ───────────────────────────────────────────────────
+# The duplicate finder above groups files whose *tags* agree. This one looks at
+# the audio: two files that sound identical (Chromaprint fingerprint) or are the
+# same length to a fraction of a second, yet carry different artist/title tags,
+# mean at least one of them holds the wrong song. Which one can't be decided
+# from the files alone, so the user ticks the ones to repair, and repair
+# deletes each and downloads it again from its own tags.
+_MISTAG_LEN_TOL = 0.3   # seconds — "same length" when there is no fingerprint
+
+
+def _find_mistagged_groups(rel_paths: list[str], root: str, progress=None) -> dict:
+    import audiofp
+    infos: list[dict] = []
+    for rel in rel_paths:
+        abs_path = os.path.join(root, *rel.replace("\\", "/").split("/"))
+        if os.path.isfile(abs_path):
+            try:
+                inf = _dup_read(abs_path, rel)
+                if inf and inf["dur"] > 0:
+                    infos.append(inf)
+            except Exception:
+                pass
+
+    fp_ok = audiofp.available()
+    fps = audiofp.fingerprints([i["abs"] for i in infos], progress=progress) if fp_ok else {}
+
+    infos.sort(key=lambda i: i["dur"])
+    parent = list(range(len(infos)))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    links: list[tuple[int, int, float, str]] = []
+    n = len(infos)
+    tol = _DUP_DUR_TOL if fp_ok else _MISTAG_LEN_TOL
+    for a in range(n):
+        ia = infos[a]
+        for b in range(a + 1, n):
+            ib = infos[b]
+            gap = ib["dur"] - ia["dur"]
+            if gap > tol:
+                break
+            if ia["tkey"] == ib["tkey"]:
+                continue          # same tags → an ordinary duplicate, handled elsewhere
+            fa, fb = fps.get(ia["abs"]), fps.get(ib["abs"])
+            if fa is not None and fb is not None:
+                sim = audiofp.similarity(fa, fb)
+                if sim >= audiofp.SIM_THRESHOLD:
+                    links.append((a, b, sim, "audio"))
+            elif (ia["tkey"][0] == ib["tkey"][0]
+                  and (gap <= 0.1 or (gap <= _MISTAG_LEN_TOL
+                                      and ia["album"].casefold() == ib["album"].casefold()))):
+                # No fingerprint to check with: same artist and (near-)identical
+                # length. Weak evidence, so shown as "unverified".
+                links.append((a, b, 0.0, "length"))
+
+    for a, b, _, _ in links:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    comps: dict[int, set[int]] = {}
+    sims: dict[int, float] = {}
+    audio_root: set[int] = set()
+    for a, b, sim, kind in links:
+        r = find(a)
+        comps.setdefault(r, set()).update((a, b))
+        sims[r] = max(sims.get(r, 0.0), sim)
+        if kind == "audio":
+            audio_root.add(r)
+
+    groups = []
+    for r, members in comps.items():
+        files = []
+        for i in sorted(members, key=lambda i: infos[i]["rel"]):
+            f = infos[i]
+            stem = re.sub(r"\W+", " ", os.path.splitext(os.path.basename(f["rel"]))[0].casefold())
+            files.append({
+                **{k: f[k] for k in ("rel", "title", "artist", "album", "ext", "size",
+                                     "bitrate", "dur", "lossless")},
+                "name_ok": _dup_title_key(f["title"])[0] in stem,
+            })
+        groups.append({"kind": "audio" if r in audio_root else "length", "sim": round(sims.get(r, 0.0), 3),
+                       "files": files})
+    groups.sort(key=lambda g: (g["kind"] != "audio", g["files"][0]["artist"].casefold(),
+                               g["files"][0]["title"].casefold()))
+    return {"groups": groups, "fingerprint": fp_ok}
+
+
+@bp.post("/api/library/mistagged/scan")
+def api_mistag_scan():
+    root = _lib_root()
+    if not os.path.isdir(root):
+        return jsonify(error="Library directory not found"), 404
+
+    def generate():
+        rels = [os.path.relpath(a, root).replace(os.sep, "/") for a, _ in _org_collect(root)]
+        yield _sse({"type": "total", "total": len(rels)})
+        q: "queue.Queue" = queue.Queue()
+        box: dict = {}
+
+        def work():
+            try:
+                box["res"] = _find_mistagged_groups(rels, root, progress=lambda d, t: q.put((d, t)))
+            except Exception as exc:
+                log.exception("Mistag scan failed")
+                box["error"] = str(exc)[:200]
+            q.put(None)
+
+        threading.Thread(target=work, daemon=True).start()
+        last = 0
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            d, t = item
+            if d - last >= max(1, t // 100) or d == t:
+                last = d
+                yield _sse({"type": "progress", "done": d, "total": t})
+        if "error" in box:
+            yield _sse({"type": "error", "error": box["error"]})
+            return
+        yield _sse({"type": "done", **box["res"]})
+
+    return Response(
+        stream_with_context(generate()),
+        content_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _read_source_url(abs_path: str) -> str:
+    """The Spotify URL SpotiFLAC embedded when it downloaded this file, if any."""
+    ext = os.path.splitext(abs_path)[1].lower()
+    try:
+        if ext == ".flac":
+            from mutagen.flac import FLAC
+            for v in FLAC(abs_path).get("url") or []:
+                if "open.spotify.com/track/" in v:
+                    return v.strip()
+        elif ext == ".mp3":
+            from mutagen.id3 import ID3
+            for f in ID3(abs_path).getall("WXXX"):
+                if "open.spotify.com/track/" in f.url:
+                    return f.url.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _resolve_track_url(title: str, artist: str, isrc: str) -> str:
+    """Find the Spotify track for a file with no embedded link. ISRC first (exact);
+    otherwise the first search hit whose title and first artist both match. Never
+    guesses — returns "" when nothing matches cleanly."""
+    client = _spotify
+    if client is None:
+        from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient
+        client = _patch_spotify_client(SpotifyMetadataClient(timeout_s=15))
+    queries = []
+    if isrc:
+        queries.append((f"isrc:{isrc}", True))
+    queries.append((f"track:{title} artist:{artist}", False))
+    want_t = _dup_title_key(title)
+    want_a = _dup_artist_key(artist)
+    for q, exact in queries:
+        try:
+            data = client._get("/search", params={"q": q, "type": "track", "limit": 5})
+        except Exception as exc:
+            log.debug("Track lookup failed for %r: %s", q, exc)
+            continue
+        for t in (data.get("tracks") or {}).get("items") or []:
+            if not t:
+                continue
+            url = ((t.get("external_urls") or {}).get("spotify")) or ""
+            if not url:
+                continue
+            if exact:
+                return url
+            first = ((t.get("artists") or [{}])[0].get("name")) or ""
+            if _dup_title_key(t.get("name", "")) == want_t and _dup_artist_key(first) == want_a:
+                return url
+    return ""
+
+
+@bp.post("/api/library/repair")
+def api_library_repair():
+    """Delete each named file and queue a fresh download of the song its tags
+    describe. A file is only deleted once its download link has been found, so
+    a song that can't be resolved is left untouched and reported."""
+    body = request.get_json(silent=True) or {}
+    root = _lib_root()
+    cfg  = _settings.load()
+    plan: list[tuple[str, str, str]] = []
+    errors: list[str] = []
+    for rel in body.get("files") or []:
+        try:
+            abs_path = _safe_lib_path(str(rel))
+            if os.path.splitext(abs_path)[1].lower() not in _AUDIO_EXTS or not os.path.isfile(abs_path):
+                raise ValueError("not an audio file")
+            inf = _dup_read(abs_path, str(rel))
+            if not inf:
+                raise ValueError("no title/artist tags to look the song up by")
+            url = _read_source_url(abs_path) or _resolve_track_url(inf["title"], inf["artist"], inf["isrc"])
+            if not url:
+                raise ValueError("couldn't find this song on Spotify")
+            plan.append((str(rel), abs_path, url))
+        except (ValueError, OSError) as exc:
+            errors.append(f"{rel}: {exc}")
+
+    repaired = []
+    urls: list[str] = []
+    for rel, abs_path, url in plan:
+        try:
+            os.remove(abs_path)
+            _cleanup_empty_dirs_up(os.path.dirname(abs_path), root)
+        except OSError as exc:
+            errors.append(f"{rel}: {exc}")
+            continue
+        repaired.append({"rel": rel, "url": url})
+        if url not in urls:
+            urls.append(url)
+
+    ids: list = []
+    if urls:
+        lib_index.trigger_rescan()
+        os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
+        ids = [worker.enqueue(
+            url=u, output_dir=Config.OUTPUT_DIR, services=cfg["services"],
+            filename_fmt=cfg["filename_fmt"], qobuz_token=str(cfg["qobuz_token"]),
+            quality="lossless", generate_m3u=False,
+        ) for u in urls]
+    log.info("Library repair: %d file(s) queued for redownload, %d error(s)", len(repaired), len(errors))
+    return jsonify(repaired=repaired, queued=len(ids), ids=ids, errors=errors[:20])
+
+
 # Per-path guard so the same file can't be single-song-enriched twice at once
 # (double-click, or re-click while the first run is still streaming). Different
 # files may enrich concurrently — no shared mutable state between them.
