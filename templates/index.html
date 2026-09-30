@@ -555,6 +555,12 @@ button { cursor: pointer; font-family: inherit; border: none; }
 
 /* ─── Job list / search ───────────────────────────────────────────── */
 .jobs-empty { color: var(--md-on-surface-variant); font-size: .875rem; padding: 32px 0; text-align: center; }
+.empty-state .material-icons { font-size: 40px; opacity: .45; display: block; margin: 0 auto 6px; }
+.empty-title { font-weight: 500; color: var(--md-on-surface); }
+.empty-hint  { font-size: .8rem; margin-top: 2px; }
+.list-skel { display: flex; align-items: center; gap: 12px; padding: 10px 4px; border-bottom: 1px solid var(--md-outline-variant); }
+.list-skel:last-child { border-bottom: none; }
+.job-eta { color: var(--md-on-surface-variant); font-size: .72rem; }
 .search-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
 .search-wrap { position: relative; }
 .search-wrap .material-icons { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 20px; color: var(--md-on-surface-variant); pointer-events: none; }
@@ -1678,6 +1684,39 @@ html.theme-transitioning *::after {
 <script>
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+// Per-browser UI state (filters, last folder, draft). Never required for the page to work.
+const _ui = {
+  get(k, d) { try { const v = localStorage.getItem('ui.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { if (v === null || v === '' || v === undefined) localStorage.removeItem('ui.' + k); else localStorage.setItem('ui.' + k, JSON.stringify(v)); } catch {} },
+};
+
+// Loading + empty states
+function _skelRows(n = 5) {
+  return Array.from({length: n}, (_, i) => `
+    <div class="list-skel">
+      <div class="skel-block" style="width:20px;height:20px;border-radius:4px;flex-shrink:0"></div>
+      <div class="skel-block" style="height:12px;width:${[58, 42, 66, 35, 50][i % 5]}%;border-radius:3px"></div>
+      <div class="skel-block" style="height:12px;width:48px;border-radius:3px;margin-left:auto"></div>
+    </div>`).join('');
+}
+function _emptyState(icon, title, hint = '') {
+  return `<div class="jobs-empty empty-state"><span class="material-icons" aria-hidden="true">${icon}</span>` +
+         `<div class="empty-title">${esc(title)}</div>${hint ? `<div class="empty-hint">${esc(hint)}</div>` : ''}</div>`;
+}
+
+// Shift-click range selection over a list of checkboxes (rows in DOM order).
+// Call from a click handler; returns true when a range was applied.
+function _rangeSelect(e, cb, cbs, lastRef) {
+  const prev = lastRef.cb;
+  lastRef.cb = cb;
+  if (!e.shiftKey || !prev || prev === cb || !cbs.includes(prev)) return false;
+  const a = cbs.indexOf(prev), b = cbs.indexOf(cb);
+  cbs.slice(Math.min(a, b), Math.max(a, b) + 1).forEach(x => {
+    if (x.checked !== cb.checked) { x.checked = cb.checked; x.dispatchEvent(new Event('change')); }
+  });
+  return true;
+}
+
 function fmtTime(ts) {
   if (!ts) return '';
   if (ts.includes('T')) return new Date(ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
@@ -2203,8 +2242,8 @@ document.addEventListener('keydown', e => {
 let _searchResults  = [];
 let _searchOffset   = 0;
 let _searchQuery    = '';
-let _searchFilter   = 'all';
-let _searchSort     = 'relevance';
+let _searchFilter   = _ui.get('searchFilter', 'all');
+let _searchSort     = _ui.get('searchSort', 'relevance');
 let _searchHasMore  = false;
 let _searchLoading  = false;
 let _libPresence    = {};   // url → bool, cached for current search session
@@ -2383,13 +2422,9 @@ async function doSearch(append = false) {
     _searchResults  = [];
     _searchOffset   = 0;
     _searchQuery    = q;
-    _searchFilter   = 'all';
     _libPresence    = {};
-    _searchSort     = 'relevance';
     _selectedItems.clear();
-    document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p.dataset.filter === 'all'));
-    document.querySelectorAll('.sort-pill').forEach(p => p.classList.toggle('active', p.dataset.sort === 'relevance'));
-    document.getElementById('search-results').innerHTML = '<div class="jobs-empty">Searching…</div>';
+    document.getElementById('search-results').innerHTML = _skelRows(6);
     document.getElementById('btn-search-dl').style.display = 'none';
     document.getElementById('search-msg').textContent = '';
     if (!document.getElementById('search-modal').classList.contains('open')) openModal();
@@ -2438,7 +2473,8 @@ function renderSearchResults() {
   const visible = sortResults(filtered);
 
   if (!visible.length) {
-    el.innerHTML = '<div class="jobs-empty">' + (_searchResults.length ? 'No results for this filter' : 'No results') + '</div>';
+    el.innerHTML = _searchResults.length ? _emptyState('filter_list_off', 'Nothing matches this filter', 'Switch back to "All" to see every result')
+                                       : _emptyState('search_off', 'No results', 'Try fewer or different keywords');
     return;
   }
 
@@ -2817,9 +2853,12 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') { closeModal(); closeSettingsModal(); _closeEnrichConfirm(); }
 });
 
+document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p.dataset.filter === _searchFilter));
+document.querySelectorAll('.sort-pill').forEach(p => p.classList.toggle('active', p.dataset.sort === _searchSort));
 document.querySelectorAll('.filter-pill').forEach(pill => {
   pill.addEventListener('click', () => {
     _searchFilter = pill.dataset.filter;
+    _ui.set('searchFilter', _searchFilter === 'all' ? null : _searchFilter);
     document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p === pill));
     renderSearchResults();
   });
@@ -2828,6 +2867,7 @@ document.querySelectorAll('.filter-pill').forEach(pill => {
 document.querySelectorAll('.sort-pill').forEach(pill => {
   pill.addEventListener('click', () => {
     _searchSort = pill.dataset.sort;
+    _ui.set('searchSort', _searchSort === 'relevance' ? null : _searchSort);
     document.querySelectorAll('.sort-pill').forEach(p => p.classList.toggle('active', p === pill));
     renderSearchResults();
   });
@@ -2863,7 +2903,7 @@ document.getElementById('btn-search-dl').addEventListener('click', async () => {
   btn.disabled = false;
   if (errors === 0) {
     _selectedItems.clear();
-    _urlsEl.value = '';
+    _urlsEl.value = ''; _saveDraft();
     _urlsClear.style.display = 'none';
     refreshJobs();
     closeModal();
@@ -2879,6 +2919,7 @@ let _selectedJobIds = new Set();
 let _prevJobIds     = new Set();
 let _jobDragSrc     = null;
 let _jobsLoaded     = false;
+const _lastJobCb    = {cb: null};
 let _jobExpanded    = new Set();
 let _jobShowAll     = new Set();
 const JOBS_PAGE_SIZE = 10;
@@ -2894,6 +2935,16 @@ function renderSkeleton() {
       <div class="skel-block" style="width:58px;height:20px;border-radius:999px;flex-shrink:0"></div>
       <div class="skel-block" style="width:28px;height:24px;border-radius:5px;flex-shrink:0"></div>
     </div>`).join('');
+}
+
+// Rough time-left for a running multi-track job, from the average time per finished track.
+function _jobEta(j) {
+  if (j.status !== 'running' || !(j.total > 1) || !(j.progress >= 1) || !j.started_at || !j.started_at.includes('T')) return '';
+  const elapsed = (Date.now() - new Date(j.started_at).getTime()) / 1000;
+  if (!(elapsed > 0) || j.progress >= j.total) return '';
+  const left = Math.round(elapsed / j.progress * (j.total - j.progress));
+  const txt = left < 60 ? '<1 min' : left < 3600 ? `~${Math.round(left / 60)} min` : `~${Math.floor(left / 3600)}h ${Math.round(left % 3600 / 60)}m`;
+  return ` <span class="job-eta">· ${txt} left</span>`;
 }
 
 function updateJobCounts() {
@@ -2926,8 +2977,8 @@ function renderJobs() {
     ? _allJobs.filter(j => (j.title || j.url).toLowerCase().includes(q) || (j.status || '').includes(q))
     : _allJobs.slice()
   ).sort((a, b) => (a.status === 'done' ? 1 : 0) - (b.status === 'done' ? 1 : 0));
-  if (!_allJobs.length) { if (_jobsLoaded) el.innerHTML = '<div class="jobs-empty">No downloads yet</div>'; updateJobCounts(); updateBulkBar(); return; }
-  if (!jobs.length)     { el.innerHTML = '<div class="jobs-empty">No matches</div>'; updateJobCounts(); updateBulkBar(); return; }
+  if (!_allJobs.length) { if (_jobsLoaded) el.innerHTML = _emptyState('download', 'No downloads yet', 'Paste a Spotify link above, or use Search'); updateJobCounts(); updateBulkBar(); return; }
+  if (!jobs.length)     { el.innerHTML = _emptyState('search_off', 'No matching downloads', 'Try a different filter'); updateJobCounts(); updateBulkBar(); return; }
 
   const visibleJobs = _jobsExpandedList ? jobs : jobs.slice(0, JOBS_PAGE_SIZE);
 
@@ -2998,7 +3049,7 @@ function renderJobs() {
         <a href="${esc(j.url)}" target="_blank" title="${esc(j.url)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${esc(label)}</a>
         ${hasTracks ? `<button class="job-expand-btn" data-action="expand" data-id="${esc(j.id)}" title="Show tracks"><span class="material-icons" style="font-size:16px">expand_more</span></button>` : ''}
       </div>
-      <div class="job-time">${fmtTime(j.started_at)}${j.finished_at ? ' → ' + fmtTime(j.finished_at) : ''}</div>
+      <div class="job-time">${fmtTime(j.started_at)}${j.finished_at ? ' → ' + fmtTime(j.finished_at) : ''}${_jobEta(j)}</div>
       <span class="badge ${j.status === 'done' && j.fail_count > 0 && j.success_count > 0 ? 'partial' : j.status === 'done' && j.fail_count > 0 ? 'error' : j.status}">${
         j.status === 'running' && j.total > 1 ? j.progress + '/' + j.total
         : j.status === 'done'  && j.fail_count > 0 && j.total > 1 && j.success_count > 0 ? j.success_count + '/' + j.total
@@ -3057,7 +3108,9 @@ function renderJobs() {
   }
 
   // Checkboxes
-  el.querySelectorAll('.job-cb').forEach(cb => {
+  const _jobCbs = [...el.querySelectorAll('.job-cb')];
+  _jobCbs.forEach(cb => {
+    cb.addEventListener('click', e => _rangeSelect(e, cb, _jobCbs, _lastJobCb));
     cb.addEventListener('change', () => {
       if (cb.checked) _selectedJobIds.add(cb.dataset.id);
       else            _selectedJobIds.delete(cb.dataset.id);
@@ -3118,6 +3171,7 @@ function renderJobs() {
         refreshJobs();
       } else if (action === 'jobs-show-toggle') {
         _jobsExpandedList = !_jobsExpandedList;
+        _ui.set('jobsExpanded', _jobsExpandedList || null);
         renderJobs();
       }
     });
@@ -3182,10 +3236,15 @@ const _jobSearchEl    = document.getElementById('job-search');
 const _jobSearchClear = document.getElementById('btn-job-search-clear');
 _jobSearchEl.addEventListener('input', () => {
   _jobSearchClear.style.display = _jobSearchEl.value ? '' : 'none';
+  _ui.set('jobFilter', _jobSearchEl.value);
   renderJobs();
 });
+_jobSearchEl.value = _ui.get('jobFilter', '');
+_jobSearchClear.style.display = _jobSearchEl.value ? '' : 'none';
+_jobsExpandedList = _ui.get('jobsExpanded', false);
 _jobSearchClear.addEventListener('click', () => {
   _jobSearchEl.value = '';
+  _ui.set('jobFilter', '');
   _jobSearchClear.style.display = 'none';
   renderJobs();
   _jobSearchEl.focus();
@@ -3194,11 +3253,17 @@ _jobSearchClear.addEventListener('click', () => {
 
 const _urlsEl    = document.getElementById('urls');
 const _urlsClear = document.getElementById('btn-urls-clear');
+function _saveDraft() { _ui.set('draft', _urlsEl.value.trim() ? _urlsEl.value : null); }
 _urlsEl.addEventListener('input', () => {
   _urlsClear.style.display = _urlsEl.value.trim() ? 'flex' : 'none';
+  _saveDraft();
 });
+if (!_urlsEl.value) {
+  _urlsEl.value = _ui.get('draft', '');
+  _urlsClear.style.display = _urlsEl.value.trim() ? 'flex' : 'none';
+}
 _urlsClear.addEventListener('click', () => {
-  _urlsEl.value = '';
+  _urlsEl.value = ''; _saveDraft();
   _urlsClear.style.display = 'none';
   document.getElementById('msg').textContent = '';
   _urlsEl.focus();
@@ -3226,7 +3291,7 @@ async function _submitDownload(urls, generateM3u) {
   });
   const data = await res.json();
   msg.textContent = res.ok ? `${data.queued} job(s) started` : (data.error||'Error');
-  if (res.ok) { _urlsEl.value=''; _urlsClear.style.display='none'; refreshJobs(); }
+  if (res.ok) { _urlsEl.value=''; _saveDraft(); _urlsClear.style.display='none'; refreshJobs(); }
 }
 
 let _m3uPending = null;
@@ -3330,7 +3395,13 @@ async function bulkAction(action) {
   if (action === 'remove') _selectedJobIds.clear();
   refreshJobs();
 }
-document.getElementById('btn-bulk-all').addEventListener('click',    () => { _allJobs.forEach(j => _selectedJobIds.add(j.id)); renderJobs(); });
+// "All" respects the current filter: it selects what you can see, not hidden jobs.
+document.getElementById('btn-bulk-all').addEventListener('click',    () => {
+  const q = _jobSearchEl.value.trim().toLowerCase();
+  _allJobs.filter(j => !q || (j.title || j.url).toLowerCase().includes(q) || (j.status || '').includes(q))
+          .forEach(j => _selectedJobIds.add(j.id));
+  renderJobs();
+});
 document.getElementById('btn-bulk-none').addEventListener('click',   () => { _selectedJobIds.clear(); renderJobs(); });
 document.getElementById('btn-bulk-cancel').addEventListener('click', () => bulkAction('cancel'));
 document.getElementById('btn-bulk-retry').addEventListener('click',  () => bulkAction('retry'));
@@ -3365,6 +3436,7 @@ function fmtTrackError(raw) {
 
 // ── Library ───────────────────────────────────────────────────────────
 let _libPath  = '';
+const _lastLibCb = {cb: null};
 let _libStamp = '';
 
 function _libFileIcon(e) {
@@ -3414,7 +3486,7 @@ function _isAudioFile(name) { return _AUDIO_EXTS_JS.has((name.split('.').pop() |
 function _renderLibEntries(entries) {
   const el = document.getElementById('lib-list');
   if (!entries.length) {
-    el.innerHTML = '<div class="jobs-empty">Empty folder</div>';
+    el.innerHTML = _emptyState('folder_open', 'Empty folder');
     return;
   }
   el.innerHTML = entries.map(e => {
@@ -3456,6 +3528,10 @@ function _renderLibEntries(entries) {
     row.querySelector('.lib-rename')    ?.addEventListener('click', () => _libShowDialog('rename', path, name));
     row.querySelector('.lib-move')      ?.addEventListener('click', () => _libShowDialog('move', path, name));
     row.querySelector('.lib-del')       ?.addEventListener('click', () => _libDelete(path, name, type));
+    row.querySelector('.lib-enrich-cb') ?.addEventListener('click', ev => {
+      if (type === 'dir') return;
+      _rangeSelect(ev, ev.target, [...el.querySelectorAll('.lib-entry.file .lib-enrich-cb')], _lastLibCb);
+    });
     row.querySelector('.lib-enrich-cb') ?.addEventListener('change', ev => {
       if (type === 'dir') return;
       if (ev.target.checked) _libEnrichSel.add(path);
@@ -3468,14 +3544,18 @@ function _renderLibEntries(entries) {
 
 async function loadLibrary(relPath) {
   _libPath = relPath || '';
+  _ui.set('libPath', _libPath);
   document.getElementById('lib-stale-bar').classList.remove('visible');
   _renderLibCrumbs(_libPath);
   const el = document.getElementById('lib-list');
-  el.innerHTML = '<div class="jobs-empty" style="padding:12px 0">Loading…</div>';
+  el.innerHTML = _skelRows(6);
   try {
     const res  = await fetch('/api/library?path=' + encodeURIComponent(_libPath));
     const data = await res.json();
-    if (!res.ok) { el.innerHTML = `<div class="jobs-empty">${esc(data.error || 'Error')}</div>`; return; }
+    if (!res.ok) {
+      if (_libPath) { _ui.set('libPath', ''); return loadLibrary(''); }   // remembered folder is gone
+      el.innerHTML = `<div class="jobs-empty">${esc(data.error || 'Error')}</div>`; return;
+    }
     _renderLibEntries(data.entries);
     if (data.stamp !== undefined) _libStamp = data.stamp || ''; else _libFreshStamp();
   } catch { el.innerHTML = '<div class="jobs-empty">Failed to load</div>'; }
@@ -3595,7 +3675,7 @@ async function _lsfSearch() {
   if (!track && !artist && !album && !year) return;
   const el = document.getElementById('lib-list');
   document.getElementById('lib-crumbs').innerHTML = '';
-  el.innerHTML = '<div class="jobs-empty" style="padding:12px 0">Searching…</div>';
+  el.innerHTML = _skelRows(5);
   const params = new URLSearchParams();
   if (track)  params.set('track',  track);
   if (artist) params.set('artist', artist);
@@ -3611,7 +3691,7 @@ async function _lsfSearch() {
 
 function _renderLibSearchResults(results, capped) {
   const el = document.getElementById('lib-list');
-  if (!results.length) { el.innerHTML = '<div class="jobs-empty">No files found</div>'; return; }
+  if (!results.length) { el.innerHTML = _emptyState('search_off', 'No files found', 'Check the spelling or loosen the filters'); return; }
   let html = '';
   if (capped) html += `<div class="hint" style="padding:4px 0 8px">Showing first 200 results</div>`;
   for (const e of results) {
@@ -4428,7 +4508,7 @@ document.getElementById('btn-lib-enrich-sel-all') .addEventListener('click', _li
 document.getElementById('btn-lib-enrich-sel-none').addEventListener('click', _libEnrichSelectNone);
 document.getElementById('btn-lib-enrich-sel-run') .addEventListener('click', () => _enrichFiles([..._libEnrichSel]));
 
-loadLibrary('');
+loadLibrary(_ui.get('libPath', ''));
 
 // ── SpotiFLAC update check ─────────────────────────────────────────────
 async function checkSpotiflacUpdate() {
