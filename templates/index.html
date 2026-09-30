@@ -2170,11 +2170,6 @@ function _closeToast(t) {
   t.classList.add('out');
   setTimeout(() => t.remove(), 220);
 }
-(() => {
-  const w = document.getElementById('toast-wrap');
-  w.setAttribute('aria-live', 'polite');
-  w.setAttribute('aria-atomic', 'false');
-})();
 
 // ─── Accessibility ───────────────────────────────────────────────────
 // Icon-only buttons: use the title as the accessible name; hide decorative icons.
@@ -4719,6 +4714,6 @@ _sysDark.addEventListener('change', () => {
   if (!localStorage.getItem('theme')) applyTheme(null);
 });
 </script>
-<div id="toast-wrap"></div>
+<div id="toast-wrap" aria-live="polite" aria-atomic="false"></div>
 </body>
 </html>
