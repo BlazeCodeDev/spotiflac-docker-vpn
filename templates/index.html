@@ -1078,6 +1078,8 @@ html.theme-transitioning *::after {
 .dup-head span.dup-badge { margin-left: auto; font-size: .68rem; font-weight: 500; color: var(--md-on-surface-variant); text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
 .dup-row   { display: grid; grid-template-columns: 20px 1fr; gap: 0 8px; align-items: start; padding: 6px 10px; border-top: 1px solid var(--md-outline-variant); cursor: pointer; }
 .dup-row input { margin-top: 3px; }
+.dup-album { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-top: 1px solid var(--md-outline-variant); font-size: .74rem; color: var(--md-on-surface-variant); }
+.dup-album select { flex: 1; min-width: 0; font-size: .74rem; }
 .dup-warn { font-size: .72rem; color: var(--s-error); margin-top: 1px; }
 .dup-row.remove .dup-path { text-decoration: line-through; opacity: .6; }
 .dup-path  { font-size: .74rem; font-family: 'Roboto Mono', monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1526,6 +1528,7 @@ html.theme-transitioning *::after {
     </div>
     <div class="modal-footer">
       <button class="btn-ghost" id="mis-cancel-btn">Close</button>
+      <button class="btn-ghost" id="mis-stop-btn" style="display:none">Stop scan</button>
       <button class="btn-ghost" id="mis-scan-btn">Scan</button>
       <button id="mis-apply-btn" style="display:none" disabled>Repair</button>
     </div>
@@ -1543,12 +1546,13 @@ html.theme-transitioning *::after {
       <div class="org-hint" style="margin-top:0;margin-bottom:10px">
         Finds the same recording anywhere in the library — matched by ISRC, or by artist + title
         (ignoring “feat.”, “Remastered”, “Deluxe”…) and length. Live, remix and acoustic versions are never grouped.
-        Pick the copy to keep in each group; nothing is deleted until you press Remove.
+        Pick the copy to keep in each group (and its album tag); nothing is deleted until you press Remove. Scans run in the background — you can close this and check Background Tasks.
       </div>
       <div id="dup-area"></div>
     </div>
     <div class="modal-footer">
       <button class="btn-ghost" id="dup-cancel-btn">Close</button>
+      <button class="btn-ghost" id="dup-stop-btn" style="display:none">Stop scan</button>
       <button class="btn-ghost" id="dup-scan-btn">Scan</button>
       <button id="dup-apply-btn" style="display:none" disabled>Remove</button>
     </div>
@@ -3728,19 +3732,91 @@ document.getElementById('org-apply-btn')   .addEventListener('click', _orgApply)
 document.getElementById('org-modal')       .addEventListener('click', e => { if (e.target === e.currentTarget) _orgClose(); });
 document.getElementById('org-fmt')         .addEventListener('keydown', e => { if (e.key === 'Enter') _orgPreview(); });
 
+// ── Background scans (shared by the duplicate + mistag finders) ────────
+const _scanTimers = {};
+
+function _scanUi(kind, ui) {
+  // ui: {area, scanBtn, stopBtn, applyBtn, render(result)}
+  const stopPoll = () => { clearInterval(_scanTimers[kind]); delete _scanTimers[kind]; };
+
+  async function paint() {
+    let st;
+    try { st = await fetch(`/api/library/scan/${kind}`).then(r => r.json()); }
+    catch { return; }
+    if (st.idle) { stopPoll(); return; }
+    if (st.running) {
+      ui.scanBtn.disabled = true; ui.scanBtn.textContent = 'Scanning…';
+      ui.stopBtn.style.display = ''; ui.stopBtn.disabled = false; ui.stopBtn.textContent = 'Stop scan';
+      ui.applyBtn.style.display = 'none';
+      if (!ui.area.querySelector('#org-prog-label')) ui.area.innerHTML = _orgProgressHTML(ui.label);
+      if (st.total) _orgSetProgress(st.done, st.total, `${st.done} / ${st.total} files`);
+      return;
+    }
+    stopPoll();
+    ui.stopBtn.style.display = 'none';
+    ui.scanBtn.disabled = false; ui.scanBtn.textContent = 'Rescan';
+    if (st.error)          ui.area.innerHTML = `<div class="jobs-empty" style="color:var(--s-error)">${esc(st.error)}</div>`;
+    else if (st.cancelled) ui.area.innerHTML = '<div class="jobs-empty">Scan stopped</div>';
+    else if (st.result)    ui.render(st.result);
+    else                   { start(); }   // results were invalidated (library changed) → rescan
+  }
+
+  function attach() {
+    if (_scanTimers[kind]) return;
+    _scanTimers[kind] = setInterval(paint, 700);
+    paint();
+  }
+
+  async function start() {
+    ui.area.innerHTML = _orgProgressHTML(ui.label);
+    ui.applyBtn.style.display = 'none';
+    await fetch(`/api/library/scan/${kind}`, {method: 'POST'});
+    attach();
+    refreshTasks();
+  }
+
+  async function open() {
+    let st;
+    try { st = await fetch(`/api/library/scan/${kind}`).then(r => r.json()); } catch { st = {idle: true}; }
+    if (st.idle) start(); else { attach(); }
+  }
+
+  async function stop() {
+    ui.stopBtn.disabled = true; ui.stopBtn.textContent = 'Stopping…';
+    await fetch(`/api/library/scan/${kind}`, {method: 'DELETE'});
+    refreshTasks();
+  }
+
+  return {open, start, stop, detach: stopPoll};
+}
+
 // ── Duplicate finder ───────────────────────────────────────────────────
 let _dupGroups = [];
 
+let _dupCtl = null;
+function _dupInit() {
+  if (_dupCtl) return _dupCtl;
+  _dupCtl = _scanUi('dups', {
+    area: document.getElementById('dup-area'),
+    scanBtn: document.getElementById('dup-scan-btn'),
+    stopBtn: document.getElementById('dup-stop-btn'),
+    applyBtn: document.getElementById('dup-apply-btn'),
+    label: 'Scanning library…',
+    render: r => { _dupGroups = r.groups; _dupRender(); },
+  });
+  return _dupCtl;
+}
 function _dupOpen() {
   document.getElementById('dup-modal').classList.add('open');
   document.body.style.overflow = 'hidden';
   document.getElementById('dup-area').innerHTML = '';
   document.getElementById('dup-apply-btn').style.display = 'none';
-  _dupScan();
+  _dupInit().open();
 }
 function _dupClose() {
   document.getElementById('dup-modal').classList.remove('open');
   document.body.style.overflow = '';
+  if (_dupCtl) _dupCtl.detach();   // the scan itself keeps running in the background
 }
 
 function _dupQuality(f) {
@@ -3767,8 +3843,16 @@ function _dupSummary() {
     row.classList.toggle('remove', !!keep && row.dataset.rel !== keep);
   });
   const btn = document.getElementById('dup-apply-btn');
-  btn.disabled = files === 0;
-  btn.textContent = files ? `Remove ${files} file${files !== 1 ? 's' : ''} (${_fmtSize(bytes)})` : 'Remove';
+  let albumFixes = 0;
+  _dupGroups.forEach((g, i) => {
+    const keep = _dupSelected(i), sel = document.getElementById(`dup-alb-${i}`);
+    const kept = g.files.find(f => f.rel === keep);
+    if (keep && sel && kept && sel.value !== kept.album) albumFixes++;
+  });
+  btn.disabled = files === 0 && albumFixes === 0;
+  btn.textContent = (files || albumFixes)
+    ? 'Apply' + (files ? ` · remove ${files} file${files !== 1 ? 's' : ''} (${_fmtSize(bytes)})` : '') + (albumFixes ? ` · fix ${albumFixes} album${albumFixes !== 1 ? 's' : ''}` : '')
+    : 'Remove';
 }
 
 function _dupRender() {
@@ -3789,39 +3873,22 @@ function _dupRender() {
         <div style="min-width:0"><div class="dup-path" title="${esc(f.rel)}">${esc(f.rel)}${f.rel === g.keep ? '<span class="dup-best">suggested</span>' : ''}</div>
         <div class="dup-meta">${_dupQuality(f)}</div></div></label>`;
     });
-    html += `<label class="dup-row" data-g="${i}" data-rel=""><input type="radio" name="dup-g${i}" value=""><div class="dup-meta" style="margin-top:0">Keep all copies</div></label></div>`;
+    html += `<label class="dup-row" data-g="${i}" data-rel=""><input type="radio" name="dup-g${i}" value=""><div class="dup-meta" style="margin-top:0">Keep all copies</div></label>`;
+    const albums = [...new Set(g.files.map(f => f.album).filter(Boolean))];
+    const keptAlbum = (g.files.find(f => f.rel === g.keep) || {}).album || '';
+    if (albums.length > 1 || (!keptAlbum && albums.length)) {
+      const dflt = keptAlbum || albums[0];
+      html += `<div class="dup-album"><span>Album tag of the kept file</span><select id="dup-alb-${i}">` +
+        albums.map(a => `<option value="${esc(a)}"${a === dflt ? ' selected' : ''}>${esc(a)}</option>`).join('') +
+        `</select></div>`;
+    }
+    html += '</div>';
   });
   html += '</div>';
   area.innerHTML = html;
-  area.querySelectorAll('input[type=radio]').forEach(r => r.addEventListener('change', _dupSummary));
+  area.querySelectorAll('input[type=radio], select').forEach(r => r.addEventListener('change', _dupSummary));
   btn.style.display = '';
   _dupSummary();
-}
-
-async function _dupScan() {
-  const scanBtn = document.getElementById('dup-scan-btn');
-  const area    = document.getElementById('dup-area');
-  scanBtn.disabled = true; scanBtn.textContent = 'Scanning…';
-  document.getElementById('dup-apply-btn').style.display = 'none';
-  area.innerHTML = _orgProgressHTML('Scanning library…');
-  let groups = null, error = null;
-  try {
-    const res = await fetch('/api/library/duplicates/scan', {method: 'POST'});
-    if (!res.ok) { area.innerHTML = '<div class="jobs-empty" style="color:var(--s-error)">Server error</div>'; return; }
-    await _readOrgStream(res, ev => {
-      if (ev.type === 'progress') _orgSetProgress(ev.done, ev.total, `${ev.done} / ${ev.total} files`);
-      else if (ev.type === 'done') groups = ev.groups;
-      else if (ev.type === 'error') error = ev.error;
-    });
-    if (error) { area.innerHTML = `<div class="jobs-empty" style="color:var(--s-error)">${esc(error)}</div>`; return; }
-    if (!groups) { area.innerHTML = '<div class="jobs-empty">No response from server</div>'; return; }
-    _dupGroups = groups;
-    _dupRender();
-  } catch {
-    area.innerHTML = '<div class="jobs-empty" style="color:var(--s-error)">Request failed</div>';
-  } finally {
-    scanBtn.disabled = false; scanBtn.textContent = 'Rescan';
-  }
 }
 
 async function _dupApply() {
@@ -3830,11 +3897,14 @@ async function _dupApply() {
     const keep = _dupSelected(i);
     if (!keep) return;
     const remove = g.files.filter(f => f.rel !== keep).map(f => f.rel);
-    if (remove.length) payload.push({keep, remove});
+    const sel   = document.getElementById(`dup-alb-${i}`);
+    const kept  = g.files.find(f => f.rel === keep) || {};
+    const album = sel && sel.value && sel.value !== kept.album ? sel.value : '';
+    if (remove.length || album) payload.push({keep, remove, album});
   });
   if (!payload.length) return;
   const n = payload.reduce((a, g) => a + g.remove.length, 0);
-  if (!confirm(`Permanently delete ${n} file${n !== 1 ? 's' : ''}? This cannot be undone.`)) return;
+  if (n && !confirm(`Permanently delete ${n} file${n !== 1 ? 's' : ''}? This cannot be undone.`)) return;
   const btn = document.getElementById('dup-apply-btn');
   btn.disabled = true; btn.textContent = 'Removing…';
   try {
@@ -3845,6 +3915,7 @@ async function _dupApply() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'failed');
     showToast(`Removed ${data.removed} file${data.removed !== 1 ? 's' : ''} · freed ${_fmtSize(data.freed) || '0 B'}` +
+              (data.albums ? ` · ${data.albums} album tag${data.albums !== 1 ? 's' : ''} fixed` : '') +
               (data.errors && data.errors.length ? ` · ${data.errors.length} error${data.errors.length !== 1 ? 's' : ''}` : ''),
               data.errors && data.errors.length ? 'error' : 'done');
     _dupClose();
@@ -3858,23 +3929,38 @@ async function _dupApply() {
 document.getElementById('btn-lib-dups')   .addEventListener('click', _dupOpen);
 document.getElementById('dup-close')      .addEventListener('click', _dupClose);
 document.getElementById('dup-cancel-btn') .addEventListener('click', _dupClose);
-document.getElementById('dup-scan-btn')   .addEventListener('click', _dupScan);
+document.getElementById('dup-scan-btn')   .addEventListener('click', () => _dupInit().start());
+document.getElementById('dup-stop-btn')   .addEventListener('click', () => _dupInit().stop());
 document.getElementById('dup-apply-btn')  .addEventListener('click', _dupApply);
 document.getElementById('dup-modal')      .addEventListener('click', e => { if (e.target === e.currentTarget) _dupClose(); });
 
 // ── Mistag finder ──────────────────────────────────────────────────────
 let _misGroups = [];
 
+let _misCtl = null;
+function _misInit() {
+  if (_misCtl) return _misCtl;
+  _misCtl = _scanUi('mistag', {
+    area: document.getElementById('mis-area'),
+    scanBtn: document.getElementById('mis-scan-btn'),
+    stopBtn: document.getElementById('mis-stop-btn'),
+    applyBtn: document.getElementById('mis-apply-btn'),
+    label: 'Fingerprinting library… (the first scan is slow, later ones reuse the results)',
+    render: r => { _misGroups = r.groups; _misRender(r.fingerprint); },
+  });
+  return _misCtl;
+}
 function _misOpen() {
   document.getElementById('mis-modal').classList.add('open');
   document.body.style.overflow = 'hidden';
   document.getElementById('mis-area').innerHTML = '';
   document.getElementById('mis-apply-btn').style.display = 'none';
-  _misScan();
+  _misInit().open();
 }
 function _misClose() {
   document.getElementById('mis-modal').classList.remove('open');
   document.body.style.overflow = '';
+  if (_misCtl) _misCtl.detach();
 }
 
 function _misSummary() {
@@ -3921,32 +4007,6 @@ function _misRender(fingerprint) {
   _misSummary();
 }
 
-async function _misScan() {
-  const scanBtn = document.getElementById('mis-scan-btn');
-  const area    = document.getElementById('mis-area');
-  scanBtn.disabled = true; scanBtn.textContent = 'Scanning…';
-  document.getElementById('mis-apply-btn').style.display = 'none';
-  area.innerHTML = _orgProgressHTML('Fingerprinting library… (the first scan is slow, later ones reuse the results)');
-  let done = null, error = null;
-  try {
-    const res = await fetch('/api/library/mistagged/scan', {method: 'POST'});
-    if (!res.ok) { area.innerHTML = '<div class="jobs-empty" style="color:var(--s-error)">Server error</div>'; return; }
-    await _readOrgStream(res, ev => {
-      if (ev.type === 'progress') _orgSetProgress(ev.done, ev.total, `${ev.done} / ${ev.total} files`);
-      else if (ev.type === 'done') done = ev;
-      else if (ev.type === 'error') error = ev.error;
-    });
-    if (error) { area.innerHTML = `<div class="jobs-empty" style="color:var(--s-error)">${esc(error)}</div>`; return; }
-    if (!done) { area.innerHTML = '<div class="jobs-empty">No response from server</div>'; return; }
-    _misGroups = done.groups;
-    _misRender(done.fingerprint);
-  } catch {
-    area.innerHTML = '<div class="jobs-empty" style="color:var(--s-error)">Request failed</div>';
-  } finally {
-    scanBtn.disabled = false; scanBtn.textContent = 'Rescan';
-  }
-}
-
 async function _misApply() {
   const files = [...document.querySelectorAll('#mis-area input[type=checkbox]:checked')].map(c => c.value);
   if (!files.length) return;
@@ -3974,7 +4034,8 @@ async function _misApply() {
 document.getElementById('btn-lib-mistag') .addEventListener('click', _misOpen);
 document.getElementById('mis-close')      .addEventListener('click', _misClose);
 document.getElementById('mis-cancel-btn') .addEventListener('click', _misClose);
-document.getElementById('mis-scan-btn')   .addEventListener('click', _misScan);
+document.getElementById('mis-scan-btn')   .addEventListener('click', () => _misInit().start());
+document.getElementById('mis-stop-btn')   .addEventListener('click', () => _misInit().stop());
 document.getElementById('mis-apply-btn')  .addEventListener('click', _misApply);
 document.getElementById('mis-modal')      .addEventListener('click', e => { if (e.target === e.currentTarget) _misClose(); });
 
@@ -4260,6 +4321,9 @@ function renderTasks(tasks) {
     btn.addEventListener('click', async () => {
       if (btn.dataset.id === 'lib-enrich') {
         await fetch('/api/library/enrich', {method: 'DELETE'});
+        refreshTasks();
+      } else if (btn.dataset.id.startsWith('scan-')) {
+        await fetch('/api/library/scan/' + btn.dataset.id.slice(5), {method: 'DELETE'});
         refreshTasks();
       }
     });

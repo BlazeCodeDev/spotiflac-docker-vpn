@@ -84,7 +84,7 @@ def _save_cache(cache: dict) -> None:
         _log.debug("could not save fingerprint cache: %s", exc)
 
 
-def fingerprints(paths: list[str], progress=None, workers: int = 4) -> dict:
+def fingerprints(paths: list[str], progress=None, workers: int = 4, cancel=None) -> dict:
     """{abs_path: np.uint32 array} for every path that could be fingerprinted."""
     with _cache_lock:
         cache = _load_cache()
@@ -115,6 +115,9 @@ def fingerprints(paths: list[str], progress=None, workers: int = 4) -> dict:
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         futs = {ex.submit(_compute, p): (p, stamp) for p, stamp in todo}
         for fut in concurrent.futures.as_completed(futs):
+            if cancel is not None and cancel.is_set():
+                ex.shutdown(wait=False, cancel_futures=True)
+                break
             p, stamp = futs[fut]
             arr = fut.result()
             done += 1
@@ -125,6 +128,7 @@ def fingerprints(paths: list[str], progress=None, workers: int = 4) -> dict:
             if progress:
                 progress(done, total)
 
+    # Keep what was computed even when cancelled — the next scan resumes from it.
     # Drop cache entries for files that no longer exist, then persist.
     if new_entries or len(cache) != len(paths):
         live = set(paths)

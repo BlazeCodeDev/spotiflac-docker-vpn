@@ -768,6 +768,27 @@ def api_tasks():
             "dupes_log":      es.get("dupes_log", []),
         })
 
+    for kind, label in _SCAN_LABELS.items():
+        st = _scans.get(kind)
+        if not st:
+            continue
+        if st["running"]:
+            detail = (f"{st['done']}/{st['total']} files" if st["total"] else "Starting…")
+        elif st["error"]:
+            detail = st["error"]
+        else:
+            detail = st["summary"] or "Done"
+            if st["elapsed"] is not None and not st["cancelled"]:
+                detail += f" · {st['elapsed']}s"
+        tasks.append({
+            "id":          f"scan-{kind}",
+            "label":       label,
+            "running":     st["running"],
+            "detail":      detail,
+            "cancellable": st["running"],
+            "last_error":  st["error"] or "",
+        })
+
     import listenbrainz as _lb
     lb  = _lb.get_state()
     cfg = _settings.load()
@@ -1284,8 +1305,18 @@ def _dup_read(abs_path: str, rel: str):
     }
 
 
+class _ScanCancelled(Exception):
+    pass
+
+
+def _check_cancel(cancel) -> None:
+    if cancel is not None and cancel.is_set():
+        raise _ScanCancelled()
+
+
 def _find_duplicate_groups(rel_paths: list[str], root: str, *,
-                           lossless_first: bool = True, progress=None) -> list[dict]:
+                           lossless_first: bool = True, progress=None,
+                           cancel=None) -> list[dict]:
     """Group files that are the same recording, wherever they live.
 
     Two files are linked when either
@@ -1305,6 +1336,7 @@ def _find_duplicate_groups(rel_paths: list[str], root: str, *,
     infos: list[dict] = []
     total = len(rel_paths)
     for n, rel in enumerate(rel_paths, 1):
+        _check_cancel(cancel)
         abs_path = os.path.join(root, *rel.replace("\\", "/").split("/"))
         if os.path.isfile(abs_path):
             try:
@@ -1360,6 +1392,7 @@ def _find_duplicate_groups(rel_paths: list[str], root: str, *,
 
     groups: list[dict] = []
     for members in comps.values():
+        _check_cancel(cancel)
         if len(members) < 2:
             continue
         files = [infos[i] for i in members]
@@ -1389,66 +1422,141 @@ def _find_duplicate_tracks(rel_paths: list[str], root: str) -> list[dict]:
     return result
 
 
-@bp.post("/api/library/duplicates/scan")
-def api_dup_scan():
+# ── Background library scans ─────────────────────────────────────────────────
+# The duplicate and mistag scans run in a background thread, so closing the
+# dialog doesn't stop them; they show up under Background Tasks, can be
+# cancelled there or from the dialog, and keep their result until the library
+# changes under them.
+_scans: dict[str, dict] = {}
+_scans_lock = threading.Lock()
+_SCAN_LABELS = {"dups": "Duplicate Scan", "mistag": "Mistag Scan"}
+
+
+def _scan_public(st: dict, with_result: bool = True) -> dict:
+    out = {k: st.get(k) for k in ("running", "done", "total", "cancelled", "error",
+                                  "started_at", "elapsed", "summary")}
+    if with_result and st.get("result") is not None:
+        out["result"] = st["result"]
+    return out
+
+
+def _scan_start(kind: str) -> bool:
+    """Start a scan unless one of that kind is already running."""
     root = _lib_root()
-    if not os.path.isdir(root):
+    with _scans_lock:
+        cur = _scans.get(kind)
+        if cur and cur["running"]:
+            return False
+        st = {"running": True, "done": 0, "total": 0, "cancelled": False, "error": None,
+              "started_at": time.monotonic(), "elapsed": None, "summary": "",
+              "result": None, "cancel": threading.Event()}
+        _scans[kind] = st
+
+    def progress(d, t):
+        st["done"], st["total"] = d, t
+
+    def work():
+        try:
+            rels = [os.path.relpath(a, root).replace(os.sep, "/") for a, _ in _org_collect(root)]
+            st["total"] = len(rels)
+            if kind == "dups":
+                groups = _find_duplicate_groups(rels, root, progress=progress, cancel=st["cancel"])
+                st["result"] = {"groups": [{
+                    "match": g["match"], "keep": g["keep"],
+                    "files": [{k: f[k] for k in ("rel", "title", "artist", "album", "ext",
+                                                 "size", "bitrate", "dur", "lossless", "score")}
+                              for f in g["files"]],
+                } for g in groups]}
+                extra = sum(len(g["files"]) - 1 for g in groups)
+                st["summary"] = (f"{len(groups)} song{'s' if len(groups) != 1 else ''} with duplicates · "
+                                 f"{extra} extra cop{'ies' if extra != 1 else 'y'}") if groups else "No duplicates found"
+            else:
+                res = _find_mistagged_groups(rels, root, progress=progress, cancel=st["cancel"])
+                st["result"] = res
+                n = len(res["groups"])
+                st["summary"] = f"{n} group{'s' if n != 1 else ''} to review" if n else "No mistagged songs found"
+        except _ScanCancelled:
+            st["cancelled"] = True
+            st["summary"] = "Cancelled"
+        except Exception as exc:
+            log.exception("%s failed", _SCAN_LABELS[kind])
+            st["error"] = str(exc)[:200]
+        finally:
+            st["elapsed"] = round(time.monotonic() - st["started_at"], 1)
+            st["running"] = False
+
+    threading.Thread(target=work, daemon=True, name=f"scan-{kind}").start()
+    return True
+
+
+def _scans_invalidate() -> None:
+    """Library contents changed — stored scan results no longer describe it."""
+    with _scans_lock:
+        for st in _scans.values():
+            if not st["running"]:
+                st["result"] = None
+                st["summary"] = "Library changed — rescan"
+
+
+@bp.post("/api/library/scan/<kind>")
+def api_scan_start(kind):
+    if kind not in _SCAN_LABELS:
+        return jsonify(error="Unknown scan"), 404
+    if not os.path.isdir(_lib_root()):
         return jsonify(error="Library directory not found"), 404
+    return jsonify(started=_scan_start(kind))
 
-    def generate():
-        rels = [os.path.relpath(a, root).replace(os.sep, "/") for a, _ in _org_collect(root)]
-        yield _sse({"type": "total", "total": len(rels)})
-        # Scan in a worker thread and stream its progress as it happens.
-        q: "queue.Queue" = queue.Queue()
-        box: dict = {}
 
-        def work():
-            try:
-                box["groups"] = _find_duplicate_groups(
-                    rels, root, progress=lambda d, t: q.put((d, t)))
-            except Exception as exc:
-                box["error"] = str(exc)[:200]
-            q.put(None)
+@bp.get("/api/library/scan/<kind>")
+def api_scan_status(kind):
+    st = _scans.get(kind)
+    if st is None:
+        return jsonify(idle=True)
+    return jsonify(_scan_public(st))
 
-        threading.Thread(target=work, daemon=True).start()
-        last = 0
-        while True:
-            item = q.get()
-            if item is None:
-                break
-            d, t = item
-            if d - last >= max(1, t // 100) or d == t:
-                last = d
-                yield _sse({"type": "progress", "done": d, "total": t})
-        if "error" in box:
-            yield _sse({"type": "error", "error": box["error"]})
-            return
-        groups = box["groups"]
-        out = []
-        for g in groups:
-            out.append({
-                "match": g["match"], "keep": g["keep"],
-                "files": [{k: f[k] for k in ("rel", "title", "artist", "album", "ext",
-                                             "size", "bitrate", "dur", "lossless", "score")}
-                          for f in g["files"]],
-            })
-        yield _sse({"type": "done", "groups": out})
 
-    return Response(
-        stream_with_context(generate()),
-        content_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+@bp.delete("/api/library/scan/<kind>")
+def api_scan_cancel(kind):
+    st = _scans.get(kind)
+    if st and st["running"]:
+        st["cancel"].set()
+        return jsonify(ok=True)
+    return jsonify(ok=False)
+
+
+def _write_album_tag(abs_path: str, album: str) -> None:
+    ext = os.path.splitext(abs_path)[1].lower()
+    if ext == ".flac":
+        from mutagen.flac import FLAC
+        audio = FLAC(abs_path)
+        audio["album"] = [album]
+        audio.save()
+    elif ext == ".mp3":
+        from mutagen.id3 import ID3, TALB
+        try:
+            audio = ID3(abs_path)
+        except Exception:
+            audio = ID3()
+        audio.setall("TALB", [TALB(encoding=3, text=[album])])
+        audio.save(abs_path)
+    elif ext == ".m4a":
+        from mutagen.mp4 import MP4
+        audio = MP4(abs_path)
+        audio["\xa9alb"] = [album]
+        audio.save()
+    else:
+        raise ValueError("can't write tags to this format")
 
 
 @bp.post("/api/library/duplicates/apply")
 def api_dup_apply():
-    """Delete the files the user chose to remove. Each group names the copy
+    """Delete the files the user chose to remove, and set the surviving copy's
+    album tag when the group carries an `album`. Each group names the copy
     that stays; a removal is refused unless that copy still exists and is a
     different file, so a request can never leave a song with zero copies."""
     body = request.get_json(silent=True) or {}
     root = _lib_root()
-    removed = freed = 0
+    removed = freed = albums_fixed = 0
     errors: list[str] = []
     for grp in body.get("groups") or []:
         try:
@@ -1475,11 +1583,20 @@ def api_dup_apply():
                 freed += size
             except (ValueError, OSError) as exc:
                 errors.append(f"{rel}: {exc}")
+        album = str(grp.get("album") or "").strip()
+        if album:
+            try:
+                _write_album_tag(keep_abs, album)
+                albums_fixed += 1
+            except Exception as exc:
+                errors.append(f"{grp.get('keep')}: album tag not written ({exc})")
+    if removed or albums_fixed:
+        _scans_invalidate()
     if removed:
         lib_index.trigger_rescan()
-    log.info("Duplicate review: removed %d file(s), freed %d bytes, %d error(s)",
-             removed, freed, len(errors))
-    return jsonify(removed=removed, freed=freed, errors=errors[:20])
+    log.info("Duplicate review: removed %d file(s), freed %d bytes, %d album tag(s) set, %d error(s)",
+             removed, freed, albums_fixed, len(errors))
+    return jsonify(removed=removed, freed=freed, albums=albums_fixed, errors=errors[:20])
 
 
 # ── Mistag finder + repair ───────────────────────────────────────────────────
@@ -1492,10 +1609,11 @@ def api_dup_apply():
 _MISTAG_LEN_TOL = 0.3   # seconds — "same length" when there is no fingerprint
 
 
-def _find_mistagged_groups(rel_paths: list[str], root: str, progress=None) -> dict:
+def _find_mistagged_groups(rel_paths: list[str], root: str, progress=None, cancel=None) -> dict:
     import audiofp
     infos: list[dict] = []
     for rel in rel_paths:
+        _check_cancel(cancel)
         abs_path = os.path.join(root, *rel.replace("\\", "/").split("/"))
         if os.path.isfile(abs_path):
             try:
@@ -1506,7 +1624,7 @@ def _find_mistagged_groups(rel_paths: list[str], root: str, progress=None) -> di
                 pass
 
     fp_ok = audiofp.available()
-    fps = audiofp.fingerprints([i["abs"] for i in infos], progress=progress) if fp_ok else {}
+    fps = audiofp.fingerprints([i["abs"] for i in infos], progress=progress, cancel=cancel) if fp_ok else {}
 
     infos.sort(key=lambda i: i["dur"])
     parent = list(range(len(infos)))
@@ -1521,6 +1639,7 @@ def _find_mistagged_groups(rel_paths: list[str], root: str, progress=None) -> di
     n = len(infos)
     tol = _DUP_DUR_TOL if fp_ok else _MISTAG_LEN_TOL
     for a in range(n):
+        _check_cancel(cancel)
         ia = infos[a]
         for b in range(a + 1, n):
             ib = infos[b]
@@ -1572,48 +1691,6 @@ def _find_mistagged_groups(rel_paths: list[str], root: str, progress=None) -> di
     groups.sort(key=lambda g: (g["kind"] != "audio", g["files"][0]["artist"].casefold(),
                                g["files"][0]["title"].casefold()))
     return {"groups": groups, "fingerprint": fp_ok}
-
-
-@bp.post("/api/library/mistagged/scan")
-def api_mistag_scan():
-    root = _lib_root()
-    if not os.path.isdir(root):
-        return jsonify(error="Library directory not found"), 404
-
-    def generate():
-        rels = [os.path.relpath(a, root).replace(os.sep, "/") for a, _ in _org_collect(root)]
-        yield _sse({"type": "total", "total": len(rels)})
-        q: "queue.Queue" = queue.Queue()
-        box: dict = {}
-
-        def work():
-            try:
-                box["res"] = _find_mistagged_groups(rels, root, progress=lambda d, t: q.put((d, t)))
-            except Exception as exc:
-                log.exception("Mistag scan failed")
-                box["error"] = str(exc)[:200]
-            q.put(None)
-
-        threading.Thread(target=work, daemon=True).start()
-        last = 0
-        while True:
-            item = q.get()
-            if item is None:
-                break
-            d, t = item
-            if d - last >= max(1, t // 100) or d == t:
-                last = d
-                yield _sse({"type": "progress", "done": d, "total": t})
-        if "error" in box:
-            yield _sse({"type": "error", "error": box["error"]})
-            return
-        yield _sse({"type": "done", **box["res"]})
-
-    return Response(
-        stream_with_context(generate()),
-        content_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
 
 
 def _read_source_url(abs_path: str) -> str:
@@ -1708,6 +1785,8 @@ def api_library_repair():
             urls.append(url)
 
     ids: list = []
+    if repaired:
+        _scans_invalidate()
     if urls:
         lib_index.trigger_rescan()
         os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
