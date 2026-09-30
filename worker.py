@@ -722,6 +722,18 @@ def _index_existing_files(base: str) -> dict[str, tuple[str, int]]:
     return index
 
 
+def _fingerprint_async(path: str) -> None:
+    """Fingerprint a freshly-downloaded file off the download thread and store
+    it in the shared cache (see audiofp.add) so the mistag scan finds it ready."""
+    def run():
+        try:
+            import audiofp
+            audiofp.add(path)
+        except Exception as exc:
+            log.debug("Fingerprint of %s failed: %s", path, exc)
+    threading.Thread(target=run, daemon=True, name="fingerprint").start()
+
+
 def _find_existing_track(
     index: dict[str, tuple[str, int]], out_dir: str, base_out: str, fname: str,
 ):
@@ -873,6 +885,7 @@ class _TrackingWorker(DownloadWorker):
                     _run_coro(manager.complete_download(track.id, result.file_path or "", size_mb))
                     if result.file_path:
                         lib_index.add_track(track.first_artist, track.title, result.file_path)
+                        _fingerprint_async(result.file_path)
                     if self._on_track_result:
                         self._on_track_result({
                             "track_id": track.id,
@@ -1028,6 +1041,7 @@ class _TrackingWorker(DownloadWorker):
                         await coro
                     if result.file_path:
                         lib_index.add_track(track.first_artist, track.title, result.file_path)
+                        _fingerprint_async(result.file_path)
                     if self._on_track_result:
                         self._on_track_result({
                             "track_id": track.id,

@@ -65,12 +65,20 @@ def _unpack(s: str):
     return np.frombuffer(zlib.decompress(base64.b64decode(s)), dtype=np.uint32)
 
 
-def _load_cache() -> dict:
-    try:
-        with open(_CACHE_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return {}
+_mem: dict | None = None      # {path: [stamp, packed]} — shared by scans and add()
+_save_timer = None
+
+
+def _cache() -> dict:
+    """The shared cache, loaded from disk on first use. Caller holds _cache_lock."""
+    global _mem
+    if _mem is None:
+        try:
+            with open(_CACHE_FILE) as f:
+                _mem = json.load(f)
+        except Exception:
+            _mem = {}
+    return _mem
 
 
 def _save_cache(cache: dict) -> None:
@@ -87,7 +95,7 @@ def _save_cache(cache: dict) -> None:
 def fingerprints(paths: list[str], progress=None, workers: int = 4, cancel=None) -> dict:
     """{abs_path: np.uint32 array} for every path that could be fingerprinted."""
     with _cache_lock:
-        cache = _load_cache()
+        cache = dict(_cache())      # snapshot; results merge back below
     result: dict = {}
     todo: list[tuple[str, str]] = []
     total = len(paths)
@@ -129,12 +137,19 @@ def fingerprints(paths: list[str], progress=None, workers: int = 4, cancel=None)
                 progress(done, total)
 
     # Keep what was computed even when cancelled — the next scan resumes from it.
-    # Drop cache entries for files that no longer exist, then persist.
-    if new_entries or len(cache) != len(paths):
-        live = set(paths)
-        cache = {k: v for k, v in cache.items() if k in live}
-        with _cache_lock:
-            _save_cache(cache)
+    # Merge into the shared cache (not overwrite: add() may have stored new
+    # files while this scan ran), dropping entries for files that are gone.
+    with _cache_lock:
+        shared = _cache()
+        changed = bool(new_entries)
+        for p in paths:
+            if p in cache and shared.get(p) is not cache[p]:
+                shared[p] = cache[p]
+        gone = [k for k in shared if not os.path.exists(k)]
+        for k in gone:
+            del shared[k]
+        if changed or gone:
+            _save_cache(shared)
     return result
 
 
@@ -175,3 +190,40 @@ def similarity(a, b) -> float:
         if sim > best:
             best = float(sim)
     return best
+
+
+def add(path: str) -> bool:
+    """Fingerprint one newly-added file and store the result in the same cache
+    the library scans use, so the next scan doesn't have to. Safe to call from
+    any thread; returns True if a fingerprint was stored."""
+    if not available():
+        return False
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    arr = _compute(path)
+    if arr is None:
+        return False
+    with _cache_lock:
+        _cache()[path] = [f"{st.st_size}:{int(st.st_mtime)}", _pack(arr)]
+        _save_soon()
+    return True
+
+
+def _save_soon(delay: float = 5.0) -> None:
+    """Coalesce a burst of add() calls (a playlist download) into one write.
+    Caller holds _cache_lock."""
+    global _save_timer
+    if _save_timer is not None:
+        return
+
+    def flush():
+        global _save_timer
+        with _cache_lock:
+            _save_timer = None
+            _save_cache(_cache())
+
+    _save_timer = threading.Timer(delay, flush)
+    _save_timer.daemon = True
+    _save_timer.start()
