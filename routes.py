@@ -774,7 +774,7 @@ def api_tasks():
             continue
         if st["running"]:
             detail = ("Stopping…" if st["stopping"]
-                      else f"{st['done']}/{st['total']} files" if st["total"] else "Starting…")
+                      else f"{st['phase']} {st['done']}/{st['total']}".strip() if st["total"] else "Starting…")
         elif st["error"]:
             detail = st["error"]
         else:
@@ -1315,9 +1315,38 @@ def _check_cancel(cancel) -> None:
         raise _ScanCancelled()
 
 
+def _read_infos(rel_paths: list[str], root: str, progress=None, cancel=None) -> list[dict]:
+    """_dup_read() over many files. Tag reads are I/O-bound (often on a NAS), so
+    they run on a small thread pool instead of one at a time; order is kept."""
+    import concurrent.futures
+
+    def one(rel):
+        _check_cancel(cancel)
+        abs_path = os.path.join(root, *rel.replace("\\", "/").split("/"))
+        if not os.path.isfile(abs_path):
+            return None
+        try:
+            return _dup_read(abs_path, rel)
+        except _ScanCancelled:
+            raise
+        except Exception:
+            return None
+
+    total = len(rel_paths)
+    out: list[dict] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        for n, inf in enumerate(ex.map(one, rel_paths), 1):
+            if inf:
+                out.append(inf)
+            if progress:
+                progress(n, total)
+    _check_cancel(cancel)
+    return out
+
+
 def _find_duplicate_groups(rel_paths: list[str], root: str, *,
                            lossless_first: bool = True, progress=None,
-                           cancel=None) -> list[dict]:
+                           cancel=None, phase=None) -> list[dict]:
     """Group files that are the same recording, wherever they live.
 
     Two files are linked when either
@@ -1334,20 +1363,9 @@ def _find_duplicate_groups(rel_paths: list[str], root: str, *,
     lossless first (when lossless_first), then metadata completeness, then
     bitrate — "best" for the user is normally the lossless copy.
     """
-    infos: list[dict] = []
-    total = len(rel_paths)
-    for n, rel in enumerate(rel_paths, 1):
-        _check_cancel(cancel)
-        abs_path = os.path.join(root, *rel.replace("\\", "/").split("/"))
-        if os.path.isfile(abs_path):
-            try:
-                inf = _dup_read(abs_path, rel)
-                if inf:
-                    infos.append(inf)
-            except Exception:
-                pass
-        if progress:
-            progress(n, total)
+    if phase:
+        phase("Reading tags")
+    infos = _read_infos(rel_paths, root, progress, cancel)
 
     parent = list(range(len(infos)))
 
@@ -1435,7 +1453,7 @@ _SCAN_LABELS = {"dups": "Duplicate Scan", "mistag": "Mistag Scan"}
 
 def _scan_public(st: dict, with_result: bool = True) -> dict:
     out = {k: st.get(k) for k in ("running", "done", "total", "cancelled", "error",
-                                  "started_at", "elapsed", "summary", "stopping")}
+                                  "started_at", "elapsed", "summary", "stopping", "phase")}
     if with_result and st.get("result") is not None:
         out["result"] = st["result"]
     return out
@@ -1449,19 +1467,22 @@ def _scan_start(kind: str) -> bool:
         if cur and cur["running"]:
             return False
         st = {"running": True, "done": 0, "total": 0, "cancelled": False, "error": None,
-              "started_at": time.monotonic(), "elapsed": None, "summary": "", "stopping": False,
+              "started_at": time.monotonic(), "elapsed": None, "summary": "", "stopping": False, "phase": "",
               "result": None, "cancel": threading.Event()}
         _scans[kind] = st
 
     def progress(d, t):
         st["done"], st["total"] = d, t
 
+    def phase(name):
+        st["phase"], st["done"] = name, 0
+
     def work():
         try:
             rels = [os.path.relpath(a, root).replace(os.sep, "/") for a, _ in _org_collect(root)]
             st["total"] = len(rels)
             if kind == "dups":
-                groups = _find_duplicate_groups(rels, root, progress=progress, cancel=st["cancel"])
+                groups = _find_duplicate_groups(rels, root, progress=progress, cancel=st["cancel"], phase=phase)
                 st["result"] = {"groups": [{
                     "match": g["match"], "keep": g["keep"],
                     "files": [{k: f[k] for k in ("rel", "title", "artist", "album", "ext",
@@ -1472,7 +1493,7 @@ def _scan_start(kind: str) -> bool:
                 st["summary"] = (f"{len(groups)} song{'s' if len(groups) != 1 else ''} with duplicates · "
                                  f"{extra} extra cop{'ies' if extra != 1 else 'y'}") if groups else "No duplicates found"
             else:
-                res = _find_mistagged_groups(rels, root, progress=progress, cancel=st["cancel"])
+                res = _find_mistagged_groups(rels, root, progress=progress, cancel=st["cancel"], phase=phase)
                 st["result"] = res
                 n = len(res["groups"])
                 st["summary"] = f"{n} group{'s' if n != 1 else ''} to review" if n else "No mistagged songs found"
@@ -1617,22 +1638,19 @@ def api_dup_apply():
 _MISTAG_LEN_TOL = 0.3   # seconds — "same length" when there is no fingerprint
 
 
-def _find_mistagged_groups(rel_paths: list[str], root: str, progress=None, cancel=None) -> dict:
+def _find_mistagged_groups(rel_paths: list[str], root: str, progress=None, cancel=None,
+                           phase=None) -> dict:
     import audiofp
-    infos: list[dict] = []
-    for rel in rel_paths:
-        _check_cancel(cancel)
-        abs_path = os.path.join(root, *rel.replace("\\", "/").split("/"))
-        if os.path.isfile(abs_path):
-            try:
-                inf = _dup_read(abs_path, rel)
-                if inf and inf["dur"] > 0:
-                    infos.append(inf)
-            except Exception:
-                pass
+    if phase:
+        phase("Reading tags")
+    infos = [i for i in _read_infos(rel_paths, root, progress, cancel) if i["dur"] > 0]
 
     fp_ok = audiofp.available()
+    if phase:
+        phase("Fingerprinting" if fp_ok else "Comparing")
     fps = audiofp.fingerprints([i["abs"] for i in infos], progress=progress, cancel=cancel) if fp_ok else {}
+    if phase:
+        phase("Comparing")
 
     infos.sort(key=lambda i: i["dur"])
     parent = list(range(len(infos)))

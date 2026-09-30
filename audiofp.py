@@ -92,7 +92,7 @@ def _save_cache(cache: dict) -> None:
         _log.debug("could not save fingerprint cache: %s", exc)
 
 
-def fingerprints(paths: list[str], progress=None, workers: int = 4, cancel=None) -> dict:
+def fingerprints(paths: list[str], progress=None, workers: int | None = None, cancel=None) -> dict:
     """{abs_path: np.uint32 array} for every path that could be fingerprinted."""
     with _cache_lock:
         cache = dict(_cache())      # snapshot; results merge back below
@@ -122,6 +122,7 @@ def fingerprints(paths: list[str], progress=None, workers: int = 4, cancel=None)
         progress(done, total)
 
     new_entries = 0
+    workers = workers or min(8, os.cpu_count() or 4)   # fpcalc is CPU-bound decoding
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         futs = {ex.submit(_compute, p): (p, stamp) for p, stamp in todo}
         for fut in concurrent.futures.as_completed(futs):

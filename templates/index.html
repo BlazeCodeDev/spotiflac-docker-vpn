@@ -3762,6 +3762,8 @@ function _scanUi(kind, ui) {
       ui.stopBtn.textContent = st.stopping ? 'Stopping…' : 'Stop scan';
       ui.applyBtn.style.display = 'none';
       if (!ui.area.querySelector('#org-prog-label')) ui.area.innerHTML = _orgProgressHTML(ui.label);
+      const lbl = ui.area.querySelector('#org-prog-label');
+      if (lbl && st.phase) lbl.textContent = st.phase + '…';
       if (st.total) _orgSetProgress(st.done, st.total, `${st.done} / ${st.total} files`);
       return;
     }
