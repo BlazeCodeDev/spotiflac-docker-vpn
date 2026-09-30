@@ -40,6 +40,12 @@ lib_index.start(lambda: Config.OUTPUT_DIR)
 _lb.start()
 
 _log = logging.getLogger("startup")
+
+import audiofp as _afp
+if _afp.unavailable_reason():
+    _log.warning("Audio fingerprinting disabled: %s", _afp.unavailable_reason())
+else:
+    _log.info("Audio fingerprinting available (fpcalc: %s)", _afp.shutil.which("fpcalc"))
 _log.info("OUTPUT_DIR  = %s", os.path.abspath(Config.OUTPUT_DIR))
 _log.info("PORT        = %s", Config.PORT)
 _log.info("SERVICES    = %s", _cfg["services"])

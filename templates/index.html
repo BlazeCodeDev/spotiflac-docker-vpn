@@ -3969,7 +3969,7 @@ function _misInit() {
     applyBtn: document.getElementById('mis-apply-btn'),
     label: 'Fingerprinting library… (the first scan is slow, later ones reuse the results)',
     close: () => _misClose(),
-    render: r => { _misGroups = r.groups; _misRender(r.fingerprint); },
+    render: r => { _misGroups = r.groups; _misRender(r.fingerprint, r); },
   });
   return _misCtl;
 }
@@ -3996,12 +3996,14 @@ function _misSummary() {
   btn.textContent = n ? `Repair ${n} song${n !== 1 ? 's' : ''}` : 'Repair';
 }
 
-function _misRender(fingerprint) {
+function _misRender(fingerprint, info = {}) {
   const area = document.getElementById('mis-area');
   const btn  = document.getElementById('mis-apply-btn');
   let html = '';
   if (!fingerprint) {
-    html += `<div class="org-hint" style="color:var(--s-error);margin:0 0 10px">Audio fingerprinting isn't available on this server (fpcalc missing), so only songs of the same length by the same artist are listed. These matches are unverified — check them before repairing.</div>`;
+    html += `<div class="org-hint" style="color:var(--s-error);margin:0 0 10px">Audio fingerprinting didn't run: ${esc(info.fp_reason || 'fpcalc missing')}. Only songs of the same length by the same artist are listed — these matches are unverified, check them before repairing.</div>`;
+  } else if (info.fp_failed) {
+    html += `<div class="org-hint" style="margin:0 0 10px">${info.fp_failed} file${info.fp_failed !== 1 ? 's' : ''} couldn't be fingerprinted and were compared by length only.</div>`;
   }
   if (!_misGroups.length) {
     area.innerHTML = html + '<div class="jobs-empty">No mistagged songs found</div>';

@@ -1658,10 +1658,25 @@ def _find_mistagged_groups(rel_paths: list[str], root: str, progress=None, cance
         phase("Reading tags")
     infos = [i for i in _read_infos(rel_paths, root, progress, cancel) if i["dur"] > 0]
 
-    fp_ok = audiofp.available()
-    if phase:
-        phase("Fingerprinting" if fp_ok else "Comparing")
-    fps = audiofp.fingerprints([i["abs"] for i in infos], progress=progress, cancel=cancel) if fp_ok else {}
+    fp_reason = audiofp.unavailable_reason()
+    fp_ok = not fp_reason
+    fp_failed = 0
+    if fp_ok:
+        if phase:
+            phase("Fingerprinting")
+        log.info("Mistag scan: fingerprinting %d file(s)", len(infos))
+        fps = audiofp.fingerprints([i["abs"] for i in infos], progress=progress, cancel=cancel)
+        fp_failed = len(infos) - len(fps)
+        if infos and not fps:
+            # fpcalc is installed but decoded nothing — treat as unavailable and say why.
+            fp_ok = False
+            fp_reason = f"fpcalc failed on every file ({audiofp._last_error or 'unknown error'})"
+        if fp_failed:
+            log.warning("Mistag scan: fpcalc could not fingerprint %d of %d file(s); last error: %s",
+                        fp_failed, len(infos), audiofp._last_error)
+    else:
+        log.warning("Mistag scan: audio fingerprinting unavailable — %s", fp_reason)
+        fps = {}
     if phase:
         phase("Comparing")
 
@@ -1729,7 +1744,7 @@ def _find_mistagged_groups(rel_paths: list[str], root: str, progress=None, cance
                        "files": files})
     groups.sort(key=lambda g: (g["kind"] != "audio", g["files"][0]["artist"].casefold(),
                                g["files"][0]["title"].casefold()))
-    return {"groups": groups, "fingerprint": fp_ok}
+    return {"groups": groups, "fingerprint": fp_ok, "fp_reason": fp_reason, "fp_failed": fp_failed}
 
 
 def _read_source_url(abs_path: str) -> str:

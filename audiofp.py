@@ -37,8 +37,21 @@ _CACHE_FILE = os.path.join(
 _cache_lock = threading.Lock()
 
 
+_last_error = ""        # most recent fpcalc failure, for the scan to report
+
+
+def unavailable_reason() -> str:
+    """Why fingerprinting can't run here, or "" if it can."""
+    if np is None:
+        return "numpy isn't importable in the app's Python"
+    if shutil.which("fpcalc") is None:
+        return ("fpcalc (Chromaprint) isn't installed — rebuild the Docker image "
+                "(the Dockerfile installs the 'chromaprint' package)")
+    return ""
+
+
 def available() -> bool:
-    return np is not None and shutil.which("fpcalc") is not None
+    return not unavailable_reason()
 
 
 def _compute(path: str):
@@ -52,9 +65,18 @@ def _compute(path: str):
         if len(fp) < 20:
             return None
         return np.array(fp, dtype=np.uint32)
-    except Exception as exc:
-        _log.debug("fpcalc failed for %s: %s", path, exc)
+    except subprocess.CalledProcessError as exc:
+        _note_error(path, (exc.stderr or b"").decode(errors="replace").strip() or f"exit {exc.returncode}")
         return None
+    except Exception as exc:
+        _note_error(path, str(exc))
+        return None
+
+
+def _note_error(path: str, msg: str) -> None:
+    global _last_error
+    _last_error = msg.splitlines()[-1][:200] if msg else "unknown error"
+    _log.debug("fpcalc failed for %s: %s", path, msg)
 
 
 def _pack(arr) -> str:
