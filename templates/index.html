@@ -3341,7 +3341,7 @@ async function loadLibrary(relPath) {
     const data = await res.json();
     if (!res.ok) { el.innerHTML = `<div class="jobs-empty">${esc(data.error || 'Error')}</div>`; return; }
     _renderLibEntries(data.entries);
-    _libFreshStamp();
+    if (data.stamp !== undefined) _libStamp = data.stamp || ''; else _libFreshStamp();
   } catch { el.innerHTML = '<div class="jobs-empty">Failed to load</div>'; }
 }
 

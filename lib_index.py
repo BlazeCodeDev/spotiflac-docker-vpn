@@ -15,6 +15,7 @@ _PAREN_RE     = re.compile(r'\s*[\(\[].*?[\)\]]\s*$')
 _index:           set[str]        = set()
 _album_counts:    dict            = {}   # normalised album name → track count
 _by_artist_title: dict[str, str]  = {}   # folded "artist|title" → absolute path
+_files:           list | None     = None # [(rel_dir, filename)] of every audio file, for search
 _index_lock:      threading.RLock = threading.RLock()
 _scan_event:   threading.Event = threading.Event()
 _root_fn       = None
@@ -53,7 +54,7 @@ def _artist_title_key(artist: str, title: str) -> str:
     return f"{_fold(artist)}|{_fold(title)}"
 
 
-def _build_index(root: str) -> tuple[set[str], dict, dict[str, str]]:
+def _build_index(root: str) -> tuple[set[str], dict, dict[str, str], list]:
     """Full library scan. Also reads each audio file's embedded artist/title
     tags (see _read_artist_title) to build an identity index that's robust to
     album metadata varying between provider results for the same song — this
@@ -66,18 +67,22 @@ def _build_index(root: str) -> tuple[set[str], dict, dict[str, str]]:
     album_counts:     dict            = {}
     by_artist_title:  dict[str, str]  = {}
     paths:            list[str]       = []
+    file_list:        list            = []
     try:
         for dirpath, _, files in os.walk(root):
             audio = [f for f in files if os.path.splitext(f)[1].lower() in _AUDIO_EXTS]
             if not audio:
                 continue
-            for fname in audio:
+            rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
+            rel_dir = "" if rel_dir == "." else rel_dir
+            for fname in sorted(audio):
                 stem = _normalise_filename(os.path.splitext(fname)[0])
                 stems.add(stem)
                 base = _base(stem)
                 if base != stem:
                     stems.add(base)  # also index without "(Remastered)" etc.
                 paths.append(os.path.join(dirpath, fname))
+                file_list.append((rel_dir, fname))
 
             rel   = os.path.relpath(dirpath, root)
             parts = [p for p in rel.replace("\\", "/").split("/") if p and p != "."]
@@ -94,11 +99,11 @@ def _build_index(root: str) -> tuple[set[str], dict, dict[str, str]]:
         tagcache.prune(paths)
     except Exception as exc:
         _log.warning("lib_index scan error: %s", exc)
-    return stems, album_counts, by_artist_title
+    return stems, album_counts, by_artist_title, file_list
 
 
 def _worker():
-    global _index, _album_counts, _by_artist_title, _ready, _scanning, _last_elapsed, _last_scanned
+    global _index, _album_counts, _by_artist_title, _files, _ready, _scanning, _last_elapsed, _last_scanned
     while True:
         _scan_event.wait()
         _scan_event.clear()
@@ -110,13 +115,14 @@ def _worker():
 
         _scanning = True
         t0            = time.monotonic()
-        stems, ac, at = _build_index(root)
+        stems, ac, at, fl = _build_index(root)
         elapsed       = time.monotonic() - t0
 
         with _index_lock:
             _index           = stems
             _album_counts    = ac
             _by_artist_title = at
+            _files           = fl
         _scanning     = False
         _ready        = True
         _last_elapsed = elapsed
@@ -180,14 +186,26 @@ def find_by_artist_title(artist: str, title: str) -> str | None:
         return _by_artist_title.get(_artist_title_key(artist, title))
 
 
+def all_files() -> list | None:
+    """[(rel_dir, filename)] of every audio file as of the last scan (plus
+    tracks added since), or None before the first scan has finished."""
+    with _index_lock:
+        return None if _files is None else list(_files)
+
+
 def add_track(artist: str, title: str, path: str) -> None:
     """Incrementally registers a freshly-downloaded track so later tracks in
     the same (or a concurrent) job see it immediately, without waiting for
     the next full background rescan."""
-    if not artist or not title:
-        return
+    root = _root_fn() if callable(_root_fn) else None
     with _index_lock:
-        _by_artist_title[_artist_title_key(artist, title)] = path
+        if artist and title:
+            _by_artist_title[_artist_title_key(artist, title)] = path
+        if _files is not None and root and path:
+            rel = os.path.relpath(path, root).replace(os.sep, "/")
+            if not rel.startswith(".."):
+                d, _, f = rel.rpartition("/")
+                _files.append((d, f))
 
 
 def check_album(album: str, total: int | None) -> str:

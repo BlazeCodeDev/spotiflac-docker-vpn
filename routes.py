@@ -485,6 +485,25 @@ def _lib_rel(abs_path: str) -> str:
     return os.path.relpath(abs_path, root).replace(os.sep, "/")
 
 
+def _scan_dir(target: str) -> list[tuple[os.DirEntry, os.stat_result]]:
+    """One directory read + one stat per entry (scandir gets file vs folder
+    from the directory listing itself — no extra isdir() round trips, which
+    matters over network storage)."""
+    out = []
+    with os.scandir(target) as it:
+        for e in it:
+            try:
+                out.append((e, e.stat()))
+            except OSError:
+                pass
+    return out
+
+
+def _dir_stamp(items) -> str:
+    parts = sorted(f"{e.name}:{st.st_mtime:.0f}:{st.st_size}" for e, st in items)
+    return hashlib.md5("\n".join(parts).encode()).hexdigest()[:12]
+
+
 @bp.get("/api/library")
 def api_library():
     rel = request.args.get("path", "")
@@ -494,27 +513,24 @@ def api_library():
         return jsonify(error=str(exc)), 400
     if not os.path.isdir(target):
         return jsonify(error="Not a directory"), 404
-    entries = []
     try:
-        names = sorted(os.listdir(target),
-                       key=lambda n: (not os.path.isdir(os.path.join(target, n)), n.lower()))
+        items = _scan_dir(target)
     except PermissionError:
         return jsonify(error="Permission denied"), 403
-    for name in names:
-        p = os.path.join(target, name)
-        try:
-            st    = os.stat(p)
-            is_dir = os.path.isdir(p)
-            entries.append({
-                "name":  name,
-                "type":  "dir" if is_dir else "file",
-                "size":  0 if is_dir else st.st_size,
-                "mtime": st.st_mtime,
-                "path":  _lib_rel(p),
-            })
-        except OSError:
-            pass
-    return jsonify(path=rel, entries=entries)
+    base = _lib_rel(target)
+    entries = []
+    for e, st in sorted(items, key=lambda x: (not x[0].is_dir(), x[0].name.lower())):
+        is_dir = e.is_dir()
+        entries.append({
+            "name":  e.name,
+            "type":  "dir" if is_dir else "file",
+            "size":  0 if is_dir else st.st_size,
+            "mtime": st.st_mtime,
+            "path":  f"{base}/{e.name}" if base else e.name,
+        })
+    # The change-stamp comes with the listing so the page needn't re-read the
+    # folder straight away just to learn it.
+    return jsonify(path=rel, entries=entries, stamp=_dir_stamp(items))
 
 
 @bp.get("/api/library/stamp")
@@ -525,15 +541,7 @@ def api_library_stamp():
     except ValueError:
         return jsonify(stamp=""), 200
     try:
-        parts = []
-        for name in sorted(os.listdir(target)):
-            p = os.path.join(target, name)
-            try:
-                st = os.stat(p)
-                parts.append(f"{name}:{st.st_mtime:.0f}:{st.st_size}")
-            except OSError:
-                pass
-        stamp = hashlib.md5("\n".join(parts).encode()).hexdigest()[:12]
+        stamp = _dir_stamp(_scan_dir(target))
     except Exception:
         stamp = ""
     return jsonify(stamp=stamp)
@@ -555,6 +563,7 @@ def api_library_delete():
             shutil.rmtree(target)
         else:
             os.remove(target)
+        lib_index.trigger_rescan()
         return jsonify(ok=True)
     except Exception as exc:
         log.error("Library delete failed: %s", exc)
@@ -581,6 +590,7 @@ def api_library_rename():
         return jsonify(error="A file or folder with that name already exists"), 409
     try:
         os.rename(target, dest)
+        lib_index.trigger_rescan()
         return jsonify(ok=True)
     except Exception as exc:
         log.error("Library rename failed: %s", exc)
@@ -610,6 +620,7 @@ def api_library_move():
         return jsonify(error=f'"{os.path.basename(src)}" already exists at destination'), 409
     try:
         shutil.move(src, dest)
+        lib_index.trigger_rescan()
         return jsonify(ok=True)
     except Exception as exc:
         log.error("Library move failed: %s", exc)
@@ -633,36 +644,41 @@ def api_library_search():
     capped  = False
     CAP     = 200
 
-    for dirpath, _dirs, files in os.walk(root):
-        rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
-        if rel_dir == ".":
-            rel_dir = ""
-        dir_lower  = rel_dir.lower()
-        dir_parts  = [p for p in dir_lower.split("/") if p]
+    def candidates():
+        # The Library Index already holds every audio file's path in memory —
+        # match against that instead of walking the whole library per query.
+        # Before the first index scan finishes, fall back to walking.
+        files = lib_index.all_files()
+        if files is not None:
+            yield from files
+            return
+        for dirpath, _dirs, fnames in os.walk(root):
+            rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
+            for fname in sorted(fnames):
+                yield ("" if rel_dir == "." else rel_dir), fname
 
-        for fname in sorted(files):
-            fname_lower = fname.lower()
-            if track  and track  not in fname_lower:                              continue
-            if artist and not any(artist in p for p in dir_parts):                continue
-            if album  and not any(album  in p for p in dir_parts):                continue
-            if year   and year not in fname_lower and year not in dir_lower:      continue
-            fpath = os.path.join(dirpath, fname)
-            try:
-                st = os.stat(fpath)
-            except OSError:
-                continue
-            results.append({
-                "name":  fname,
-                "type":  "file",
-                "size":  st.st_size,
-                "mtime": st.st_mtime,
-                "path":  _lib_rel(fpath),
-                "dir":   rel_dir,
-            })
-            if len(results) >= CAP:
-                capped = True
-                break
-        if capped:
+    for rel_dir, fname in candidates():
+        dir_lower   = rel_dir.lower()
+        fname_lower = fname.lower()
+        if track  and track  not in fname_lower:                                          continue
+        if artist and not any(artist in p for p in dir_lower.split("/") if p):            continue
+        if album  and not any(album  in p for p in dir_lower.split("/") if p):            continue
+        if year   and year not in fname_lower and year not in dir_lower:                  continue
+        fpath = os.path.join(root, *rel_dir.split("/"), fname) if rel_dir else os.path.join(root, fname)
+        try:
+            st = os.stat(fpath)      # only matches touch the disk (≤ CAP of them)
+        except OSError:
+            continue                 # gone since the last index scan
+        results.append({
+            "name":  fname,
+            "type":  "file",
+            "size":  st.st_size,
+            "mtime": st.st_mtime,
+            "path":  f"{rel_dir}/{fname}" if rel_dir else fname,
+            "dir":   rel_dir,
+        })
+        if len(results) >= CAP:
+            capped = True
             break
 
     return jsonify(results=results, capped=capped)
