@@ -3737,22 +3737,36 @@ const _scanTimers = {};
 
 function _scanUi(kind, ui) {
   // ui: {area, scanBtn, stopBtn, applyBtn, render(result)}
+  let seenRunning = false;
   const stopPoll = () => { clearInterval(_scanTimers[kind]); delete _scanTimers[kind]; };
 
   async function paint() {
     let st;
     try { st = await fetch(`/api/library/scan/${kind}`).then(r => r.json()); }
     catch { return; }
-    if (st.idle) { stopPoll(); return; }
+    if (st.idle) {
+      stopPoll();
+      if (seenRunning) {   // stopped elsewhere (Background Tasks) and already cleared
+        seenRunning = false;
+        ui.stopBtn.style.display = 'none';
+        ui.scanBtn.disabled = false; ui.scanBtn.textContent = 'Scan';
+        ui.area.innerHTML = '<div class="jobs-empty">Scan stopped</div>';
+      }
+      return;
+    }
     if (st.running) {
+      seenRunning = true;
       ui.scanBtn.disabled = true; ui.scanBtn.textContent = 'Scanning…';
-      ui.stopBtn.style.display = ''; ui.stopBtn.disabled = false; ui.stopBtn.textContent = 'Stop scan';
+      ui.stopBtn.style.display = '';
+      ui.stopBtn.disabled = !!st.stopping;
+      ui.stopBtn.textContent = st.stopping ? 'Stopping…' : 'Stop scan';
       ui.applyBtn.style.display = 'none';
       if (!ui.area.querySelector('#org-prog-label')) ui.area.innerHTML = _orgProgressHTML(ui.label);
       if (st.total) _orgSetProgress(st.done, st.total, `${st.done} / ${st.total} files`);
       return;
     }
     stopPoll();
+    seenRunning = false;
     ui.stopBtn.style.display = 'none';
     ui.scanBtn.disabled = false; ui.scanBtn.textContent = 'Rescan';
     if (st.error)          ui.area.innerHTML = `<div class="jobs-empty" style="color:var(--s-error)">${esc(st.error)}</div>`;
@@ -3783,7 +3797,9 @@ function _scanUi(kind, ui) {
 
   async function stop() {
     ui.stopBtn.disabled = true; ui.stopBtn.textContent = 'Stopping…';
-    await fetch(`/api/library/scan/${kind}`, {method: 'DELETE'});
+    try { await fetch(`/api/library/scan/${kind}`, {method: 'DELETE'}); } catch {}
+    stopPoll();
+    if (ui.close) ui.close();      // stopping from the dialog dismisses it
     refreshTasks();
   }
 
@@ -3802,6 +3818,7 @@ function _dupInit() {
     stopBtn: document.getElementById('dup-stop-btn'),
     applyBtn: document.getElementById('dup-apply-btn'),
     label: 'Scanning library…',
+    close: () => _dupClose(),
     render: r => { _dupGroups = r.groups; _dupRender(); },
   });
   return _dupCtl;
@@ -3946,6 +3963,7 @@ function _misInit() {
     stopBtn: document.getElementById('mis-stop-btn'),
     applyBtn: document.getElementById('mis-apply-btn'),
     label: 'Fingerprinting library… (the first scan is slow, later ones reuse the results)',
+    close: () => _misClose(),
     render: r => { _misGroups = r.groups; _misRender(r.fingerprint); },
   });
   return _misCtl;

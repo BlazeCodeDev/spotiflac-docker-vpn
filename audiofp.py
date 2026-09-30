@@ -101,6 +101,8 @@ def fingerprints(paths: list[str], progress=None, workers: int = 4, cancel=None)
     total = len(paths)
     done = 0
     for p in paths:
+        if cancel is not None and cancel.is_set():
+            return result
         try:
             st = os.stat(p)
         except OSError:

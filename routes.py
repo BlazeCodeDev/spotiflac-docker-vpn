@@ -773,7 +773,8 @@ def api_tasks():
         if not st:
             continue
         if st["running"]:
-            detail = (f"{st['done']}/{st['total']} files" if st["total"] else "Starting…")
+            detail = ("Stopping…" if st["stopping"]
+                      else f"{st['done']}/{st['total']} files" if st["total"] else "Starting…")
         elif st["error"]:
             detail = st["error"]
         else:
@@ -785,7 +786,7 @@ def api_tasks():
             "label":       label,
             "running":     st["running"],
             "detail":      detail,
-            "cancellable": st["running"],
+            "cancellable": st["running"] and not st["stopping"],
             "last_error":  st["error"] or "",
         })
 
@@ -1434,7 +1435,7 @@ _SCAN_LABELS = {"dups": "Duplicate Scan", "mistag": "Mistag Scan"}
 
 def _scan_public(st: dict, with_result: bool = True) -> dict:
     out = {k: st.get(k) for k in ("running", "done", "total", "cancelled", "error",
-                                  "started_at", "elapsed", "summary")}
+                                  "started_at", "elapsed", "summary", "stopping")}
     if with_result and st.get("result") is not None:
         out["result"] = st["result"]
     return out
@@ -1448,7 +1449,7 @@ def _scan_start(kind: str) -> bool:
         if cur and cur["running"]:
             return False
         st = {"running": True, "done": 0, "total": 0, "cancelled": False, "error": None,
-              "started_at": time.monotonic(), "elapsed": None, "summary": "",
+              "started_at": time.monotonic(), "elapsed": None, "summary": "", "stopping": False,
               "result": None, "cancel": threading.Event()}
         _scans[kind] = st
 
@@ -1484,6 +1485,12 @@ def _scan_start(kind: str) -> bool:
         finally:
             st["elapsed"] = round(time.monotonic() - st["started_at"], 1)
             st["running"] = False
+            if st["cancelled"]:
+                # A stopped scan has nothing to show — drop it so it also
+                # disappears from Background Tasks instead of lingering.
+                with _scans_lock:
+                    if _scans.get(kind) is st:
+                        del _scans[kind]
 
     threading.Thread(target=work, daemon=True, name=f"scan-{kind}").start()
     return True
@@ -1519,6 +1526,7 @@ def api_scan_status(kind):
 def api_scan_cancel(kind):
     st = _scans.get(kind)
     if st and st["running"]:
+        st["stopping"] = True
         st["cancel"].set()
         return jsonify(ok=True)
     return jsonify(ok=False)
