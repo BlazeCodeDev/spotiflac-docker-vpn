@@ -1086,6 +1086,9 @@ html.theme-transitioning *::after {
 .dup-meta  { font-size: .71rem; color: var(--md-on-surface-variant); margin-top: 1px; }
 .dup-meta .lossless { color: var(--md-primary); font-weight: 500; }
 .dup-best  { font-size: .66rem; color: var(--md-primary); font-weight: 600; margin-left: 6px; text-transform: uppercase; letter-spacing: .04em; }
+.task-progress { height: 4px; border-radius: 2px; overflow: hidden; background: var(--md-surface-container-highest); margin-top: 5px; position: relative; }
+.task-progress-fill { height: 100%; background: var(--md-primary); border-radius: inherit; transition: width .4s ease; }
+.task-progress.indeterminate .task-progress-fill { width: 40% !important; position: absolute; animation: org-slide 1.4s ease-in-out infinite; }
 </style>
 </head>
 <body>
@@ -4319,6 +4322,7 @@ function renderTasks(tasks) {
       <div class="task-info">
         <div class="task-label">${esc(t.label)}</div>
         <div class="task-detail">${esc(t.detail)}</div>
+        ${t.running ? `<div class="task-progress${t.progress_total ? '' : ' indeterminate'}"><div class="task-progress-fill" style="width:${t.progress_total ? Math.min(100, Math.round(t.progress_done / t.progress_total * 100)) : 100}%"></div></div>` : ''}
       </div>
       ${hasLog ? `<span class="material-icons task-expand-btn" title="Show details" style="font-size:18px;color:var(--md-on-surface-variant);cursor:pointer">${isExp ? 'expand_less' : 'expand_more'}</span>` : ''}
       ${t.cancellable ? `<button class="btn-ghost task-cancel-btn" data-id="${esc(t.id)}" style="padding:.2rem .5rem;font-size:.72rem;flex-shrink:0" title="Cancel">✕</button>` : ''}

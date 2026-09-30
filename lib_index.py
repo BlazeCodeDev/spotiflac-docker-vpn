@@ -23,6 +23,7 @@ _ready         = False
 _scanning      = False
 _last_elapsed  = None   # seconds the most recent scan took
 _last_scanned  = None   # time.time() when the most recent scan finished
+_progress      = {"phase": "", "done": 0, "total": 0}
 
 
 def _nfc(s: str) -> str:
@@ -68,6 +69,7 @@ def _build_index(root: str) -> tuple[set[str], dict, dict[str, str], list]:
     by_artist_title:  dict[str, str]  = {}
     paths:            list[str]       = []
     file_list:        list            = []
+    _progress.update(phase="Listing files", done=0, total=0)
     try:
         for dirpath, _, files in os.walk(root):
             audio = [f for f in files if os.path.splitext(f)[1].lower() in _AUDIO_EXTS]
@@ -82,6 +84,7 @@ def _build_index(root: str) -> tuple[set[str], dict, dict[str, str], list]:
                 if base != stem:
                     stems.add(base)  # also index without "(Remastered)" etc.
                 paths.append(os.path.join(dirpath, fname))
+                _progress["done"] = len(paths)
                 file_list.append((rel_dir, fname))
 
             rel   = os.path.relpath(dirpath, root)
@@ -92,7 +95,12 @@ def _build_index(root: str) -> tuple[set[str], dict, dict[str, str], list]:
 
         # Tags come from the persistent cache (tagcache): unchanged files cost a
         # stat, only new/changed ones are opened — in parallel.
-        for full, rec in tagcache.get_many(paths).items():
+        _progress.update(phase="Reading tags", done=0, total=len(paths))
+
+        def prog(d, t):
+            _progress["done"], _progress["total"] = d, t
+
+        for full, rec in tagcache.get_many(paths, progress=prog).items():
             artist, title = rec.get("artist", ""), rec.get("title", "")
             if artist and title:
                 by_artist_title[_artist_title_key(artist, title)] = full
@@ -223,9 +231,13 @@ def check_album(album: str, total: int | None) -> str:
 
 def status() -> dict:
     with _index_lock:
-        count = len(_index)
+        count = len(_files) if _files is not None else len(_index)
     return {
         "scanning":      _scanning,
+        "phase":         _progress["phase"],
+        "done":          _progress["done"],
+        "total":         _progress["total"],
+        "first":         not _ready,
         "count":         count,
         "last_elapsed":  _last_elapsed,
         "last_scanned":  _last_scanned,

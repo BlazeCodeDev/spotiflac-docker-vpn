@@ -721,7 +721,14 @@ def api_tasks():
     import math
     idx = lib_index.status()
     if idx["scanning"]:
-        idx_detail = "Scanning…"
+        if idx["total"]:
+            idx_detail = f"{idx['phase']} {idx['done']:,}/{idx['total']:,}"
+        elif idx["done"]:
+            idx_detail = f"{idx['phase']} · {idx['done']:,} found"
+        else:
+            idx_detail = "Scanning…"
+        if idx["first"]:
+            idx_detail = "First index · " + idx_detail
     elif idx["last_elapsed"] is not None:
         secs = idx["last_elapsed"]
         dur  = f"{secs:.1f}s" if secs < 60 else f"{math.floor(secs/60)}m {secs%60:.0f}s"
@@ -735,6 +742,8 @@ def api_tasks():
             "label":   "Library Index",
             "running": idx["scanning"],
             "detail":  idx_detail,
+            "progress_done":  idx["done"] if idx["scanning"] else 0,
+            "progress_total": idx["total"] if idx["scanning"] else 0,
         },
     ]
 
@@ -777,6 +786,8 @@ def api_tasks():
             "moved_count":    es["moved"],
             "dupes_count":    es.get("dupes", 0),
             "errors_count":   es["errors"],
+            "progress_done":  es["done"] if es["running"] else 0,
+            "progress_total": es["total"] if es["running"] else 0,
             "done_count":     es["done"],
             "total_count":    es["total"],
             "errors_log":     es.get("error_log", []),
@@ -803,6 +814,8 @@ def api_tasks():
             "running":     st["running"],
             "detail":      detail,
             "cancellable": st["running"] and not st["stopping"],
+            "progress_done":  st["done"] if st["running"] else 0,
+            "progress_total": st["total"] if st["running"] else 0,
             "last_error":  st["error"] or "",
         })
 
