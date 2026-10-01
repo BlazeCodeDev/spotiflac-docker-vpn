@@ -1687,6 +1687,114 @@ def _write_enriched_tags(abs_path: str, tags: dict) -> bool:
     return False
 
 
+# ── Album repair ─────────────────────────────────────────────────────────────
+# A download can end up tagged with a compilation the song also appears on ("Fussball Sommerparty
+# 2024") instead of its own single or album. Enrich fixes that: the ISRC identifies the recording,
+# Spotify lists every release carrying it, and the earliest single/album wins over any compilation.
+_VARIOUS_RE = re.compile(r"^(various artists?|various|va|v\.a\.|diverse|verschiedene( interpreten)?)$", re.I)
+
+
+def _looks_compiled(audio) -> bool:
+    """Local signals only (no network): the tags already say this album is a compilation."""
+    get = lambda k: str((audio.get(k) or [""])[0]).strip()
+    return bool(_VARIOUS_RE.match(get("albumartist"))
+                or get("compilation") in ("1", "true", "True")
+                or "compil" in get("releasetype").lower())
+
+
+def _track_total(audio) -> int:
+    for k in ("tracktotal", "totaltracks"):
+        m = re.match(r"\d+", str((audio.get(k) or [""])[0]))
+        if m:
+            return int(m.group())
+    m = re.match(r"\d+\s*/\s*(\d+)", str((audio.get("tracknumber") or [""])[0]))
+    return int(m.group(1)) if m else 0
+
+
+def _isrc_releases(isrc: str) -> list[dict]:
+    """Every Spotify release carrying this ISRC. Which releases a search returns depends on the
+    market, so a few are asked and merged."""
+    client = _search_client()
+    seen: dict[str, dict] = {}
+    for market in (None, "DE", "US", "GB"):
+        params = {"q": f"isrc:{isrc}", "type": "track", "limit": 50}
+        if market:
+            params["market"] = market
+        for t in (client._get("/search", params=params).get("tracks") or {}).get("items") or []:
+            a = (t or {}).get("album") or {}
+            if not a.get("id") or a["id"] in seen:
+                continue
+            imgs = a.get("images") or []
+            seen[a["id"]] = {
+                "name": a.get("name", ""), "type": a.get("album_type", ""), "date": a.get("release_date") or "",
+                "artists": ", ".join(x["name"] for x in a.get("artists") or []),
+                "total": a.get("total_tracks") or 0, "track": t.get("track_number") or 0, "disc": t.get("disc_number") or 1,
+                "cover": imgs[0]["url"] if imgs else "",
+            }
+    return list(seen.values())
+
+
+def _pick_original_release(releases: list[dict]) -> dict | None:
+    """The earliest single or album; compilations never win (a compilation is never the original)."""
+    own = [r for r in releases if r["type"] in ("single", "album") and not _VARIOUS_RE.match(r["artists"])]
+    return min(own, key=lambda r: (r["date"] or "9999", r["type"] != "album")) if own else None
+
+
+def _write_release_tags(abs_path: str, rel: dict) -> bool:
+    """Album, album artist, track/disc number and date of `rel` onto the file."""
+    from mutagen import File as MFile
+    audio = MFile(abs_path, easy=True)
+    if audio is None:
+        return False
+    fields = {"album": rel["name"], "albumartist": rel["artists"], "date": rel["date"],
+              "tracknumber": f"{rel['track']}/{rel['total']}" if rel["total"] and abs_path.lower().endswith(".mp3") else str(rel["track"]),
+              "discnumber": str(rel["disc"])}
+    if abs_path.lower().endswith(".flac"):
+        fields.update(tracktotal=str(rel["total"]))
+    for k, v in fields.items():
+        if not v or v == "0":
+            continue
+        try:
+            audio[k] = [v]
+        except Exception:
+            pass   # a format without that field
+    for stale in ("compilation", "releasetype", "totaltracks"):
+        try:
+            if stale in audio:
+                del audio[stale]
+        except Exception:
+            pass
+    audio.save()
+    return True
+
+
+def _repair_album(abs_path: str, audio, isrc: str, strong: bool) -> tuple[str, dict | None]:
+    """(step text, release written or None). Never raises."""
+    album = str((audio.get("album") or [""])[0]).strip()
+    if not isrc:
+        return "Album may be a compilation, but the file has no ISRC to find its original release", None
+    try:
+        releases = _isrc_releases(isrc)
+        here = next((r for r in releases if _fold_loose(r["name"]) == _fold_loose(album)), None)
+        if here and here["type"] in ("single", "album"):
+            return f"Album “{album}” is already an original release", None
+        if not here and not strong:
+            return f"Album “{album}” isn’t listed for this recording — left alone", None
+        rel = _pick_original_release(releases)
+        if rel is None:
+            return "Album looks like a compilation, but no single or album carries this recording", None
+        if not _write_release_tags(abs_path, rel):
+            return "Couldn’t write the album tags", None
+        return f"Album “{album}” → “{rel['name']}” ({rel['type']}, {rel['date'][:4]})", rel
+    except Exception as exc:
+        log.warning("Album repair failed for %s: %s", abs_path, exc)
+        return f"Album check skipped: {str(exc)[:100]}", None
+
+
+def _fold_loose(s: str) -> str:
+    return re.sub(r"\W+", " ", unicodedata.normalize("NFKD", s or "").casefold()).strip()
+
+
 def _has_mbid(abs_path: str) -> bool:
     """Return True if the file already has a MusicBrainz recording id (mbid) tag."""
     ext = os.path.splitext(abs_path)[1].lower()
@@ -2778,6 +2886,23 @@ def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
                        + (" · missing: " + ", ".join(_missing) if _missing else " · all present"),
                "pending": False}
 
+        album_fixed = False
+        _strong = _looks_compiled(audio)
+        # Very long "albums" are usually compilations too, though not provably: those are only
+        # replaced when Spotify itself lists that album as a compilation.
+        if _strong or _track_total(audio) >= 25:
+            yield {"type": "step", "id": "album", "text": "Album may be a compilation — looking for the original release…", "pending": True}
+            _txt, _rel = _repair_album(abs_path, audio, isrc, _strong)
+            yield {"type": "step", "id": "album", "text": _txt, "pending": False}
+            if _rel:
+                album_fixed = enriched = True
+                # The art that came with the compilation is the wrong art now.
+                _img = _fetch_cover(_rel["cover"]) if _rel["cover"] else None
+                if _img:
+                    _embed_cover(abs_path, *_img)
+                    has_cover = True
+                audio = MFile(abs_path, easy=True)
+
         if not (has_genre and has_bpm and has_mbid):
             yield {"type": "step", "id": "providers",
                    "text": "Querying providers: " + ", ".join(providers) + "…", "pending": True}
@@ -2813,7 +2938,7 @@ def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
                    "pending": False}
 
             cover_url = getattr(result, "cover_url_hd", "")
-            if cover_url and (not has_cover or upgrade_cover):
+            if cover_url and (not has_cover or (upgrade_cover and not album_fixed)):
                 yield {"type": "step", "id": "cover", "text": "Checking cover art…", "pending": True}
                 _changed, _msg = _upgrade_cover(abs_path, cover_url, has_cover)
                 did_save = did_save or _changed
@@ -2829,7 +2954,7 @@ def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
             # provider round-trip if there's no cover at all, or the embedded
             # one is smaller than a typical HD cover and could be upgraded.
             _need_cover = not has_cover
-            if has_cover and upgrade_cover:
+            if has_cover and upgrade_cover and not album_fixed:
                 _od = _img_dimensions(_existing_cover_bytes(abs_path))
                 if _od is None or _od[0] < _COVER_GOOD_WIDTH:
                     _need_cover = True
