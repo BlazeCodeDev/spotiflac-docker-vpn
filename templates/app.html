@@ -35,6 +35,7 @@ window.APP = { commit: {{ git_commit | tojson }}, assets: {{ (url_for('static', 
     <main id="view" tabindex="-1"></main>
   </div>
 </div>
+<div id="bg" aria-live="polite"></div>
 <div id="snack" role="status" aria-live="polite"></div>
 <dialog id="dlg"></dialog>
 <script src="{{ url_for('static', filename='app/app.js') }}?v={{ asset_v }}"></script>

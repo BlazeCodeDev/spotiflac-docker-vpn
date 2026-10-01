@@ -304,14 +304,16 @@ function busyTask() {
   const pct = t.progress_total ? Math.min(100, (t.progress_done / t.progress_total) * 100) : null;
   return { label: t.label, pct, text: pct == null ? `${t.label}…` : `${t.label} · ${Math.round(pct)}%` };
 }
+const runningTasks = () => S.tasks.filter((x) => x.running);
 function scanChip() {
   const b = busyTask();
   if (!b) return '';
+  const n = runningTasks().length;
   const arc = ((b.pct == null ? 25 : b.pct) / 100) * 47.12;
-  return `<a href="#/health" class="chip" style="text-decoration:none" aria-label="Background task running: ${esc(b.label)}">
+  return `<button class="chip" data-act="tasks" aria-haspopup="dialog" aria-label="Background tasks: ${esc(b.text)}${n > 1 ? `, and ${n - 1} more` : ''}. Show details">
     <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true" ${b.pct == null ? 'class="spin"' : ''}><circle cx="10" cy="10" r="7.5" fill="none" stroke="var(--md-secondary-container)" stroke-width="3"/>
     <circle data-scan-arc cx="10" cy="10" r="7.5" fill="none" stroke="var(--md-primary)" stroke-width="3" stroke-linecap="round" stroke-dasharray="${arc} 47.12" transform="rotate(-90 10 10)"/></svg>
-    <span data-scan-text>${esc(b.text)}</span></a>`;
+    <span data-scan-text>${esc(b.text)}</span>${n > 1 ? `<span class="tag primary" style="height:20px;padding:0 8px">+${n - 1}</span>` : ''}</button>`;
 }
 function patchScan() {
   const b = busyTask();
@@ -461,7 +463,6 @@ function viewDownload() {
     <div class="seg" role="radiogroup" aria-label="Quality">
       ${[['high', 'High'], ['lossless', 'Lossless'], ['hires', 'Hi-Res']].map(([k, l]) => `<button role="radio" aria-checked="${S.quality === k}" data-act="quality" data-k="${k}">${S.quality === k ? ic('check') : ''}${l}</button>`).join('')}
     </div>
-    <div class="grow"></div>${scanChip()}
   </header>
   <div class="split">
     <section class="pane" aria-labelledby="h-res" style="padding:20px 12px;display:flex;flex-direction:column;gap:12px">
@@ -522,6 +523,8 @@ async function refreshTasks() {
     else if (t.id === 'scan-mistag') loadScan('mistag');
     else if (t.id === 'lib-index' || t.id === 'lib-enrich') loadTracks(true);
   }
+  const tb = $('#tasks-body');
+  if (tb) tb.innerHTML = tasksBody();
   if (sig !== tasksSig) { tasksSig = sig; render(); } else patchScan();
 }
 
@@ -996,6 +999,7 @@ function render() {
   const caret = fid && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd] : null;
   const y = window.scrollY;
   $('#rail').innerHTML = railHTML();
+  $('#bg').innerHTML = scanChip();
   $('#mtop').innerHTML = `<div class="row" style="gap:10px">${brandHTML()}</div><span class="grow"></span>${vpnPill()}`;
   $('#view').innerHTML = VIEWS[S.route]();
   if (fid) {
@@ -1254,6 +1258,32 @@ A.resetstats = async () => { try { await api('/api/providers', { method: 'DELETE
 A.reindex = A.libreload;
 A.lbsync = async () => {
   try { await api('/api/listenbrainz/sync', { method: 'POST' }); snack('Syncing ListenBrainz recommendations…'); refreshTasks(); } catch (e) { oops('Couldn’t sync')(e); }
+};
+// Background tasks: everything /api/tasks reports, live while the dialog is open.
+const STOPPABLE = { 'scan-dups': ['/api/library/scan/dups', 'Scan'], 'scan-mistag': ['/api/library/scan/mistag', 'Scan'], 'lib-enrich': ['/api/library/enrich', 'Enrichment'] };
+function tasksBody() {
+  const list = S.tasks.slice().sort((x, y) => Number(y.running) - Number(x.running));
+  if (!list.length) return emptyState('task_alt', 'No background tasks');
+  return `<div class="col" style="gap:8px">${list.map((t) => {
+    const pct = t.running && t.progress_total ? Math.min(100, (t.progress_done / t.progress_total) * 100) : null;
+    return `<div class="card ${t.running ? '' : 'idle'}" style="padding:12px 14px">
+      <div class="row" style="gap:12px"><span class="ms ${t.running ? 'spin' : ''}" aria-hidden="true" style="color:${t.running ? 'var(--md-primary)' : 'var(--md-outline)'}">${t.running ? 'progress_activity' : 'check_circle'}</span>
+        <div class="grow col"><span class="t-s ell">${esc(t.label)}</span><span class="b-m v" style="white-space:normal">${esc(t.detail || (t.running ? 'Working…' : 'Idle'))}</span></div>
+        ${t.running && pct != null ? `<span class="mono l-m">${Math.round(pct)}%</span>` : ''}
+        ${t.running && STOPPABLE[t.id] ? `<button class="btn text danger" data-act="taskstop" data-id="${t.id}" style="height:32px">Stop</button>` : ''}</div>
+      ${t.running ? `<div class="lp ${pct == null ? 'ind' : ''}" role="progressbar" aria-label="${esc(t.label)}" ${pct != null ? `aria-valuenow="${Math.round(pct)}" aria-valuemin="0" aria-valuemax="100"` : ''}><span class="a" style="width:${pct == null ? 30 : pct}%"></span><span class="t"></span></div>` : ''}</div>`;
+  }).join('')}</div>`;
+}
+let tasksPoll;
+A.tasks = () => {
+  clearInterval(tasksPoll);
+  tasksPoll = setInterval(refreshTasks, 1000);   // faster than the usual 3 s while someone is watching
+  dialog('Background tasks', `<div id="tasks-body">${tasksBody()}</div>`, [{ key: 'close', label: 'Close', cls: 'tonal' }]).then(() => clearInterval(tasksPoll));
+};
+A.taskstop = async (el) => {
+  const [path, what] = STOPPABLE[el.dataset.id] || [];
+  if (!path) return;
+  try { await api(path, { method: 'DELETE' }); snack(`${what} stopping…`); refreshTasks(); } catch (e) { oops('Couldn’t stop it')(e); }
 };
 // Read-only VPN details: nothing here changes the connection.
 A.vpn = async () => {
