@@ -154,21 +154,20 @@ def get_many(paths: list[str], progress=None, cancel=None, workers: int = 8) -> 
     return out
 
 
-def peek_many(paths: list[str]) -> dict:
-    """Like get_many() but never opens a file: only paths whose cached record is still valid
-    (same size and mtime) are returned. Lets the library table paint immediately while the
-    rest is read in the background."""
-    out: dict = {}
-    for p in paths:
-        try:
-            st = os.stat(p)
-        except OSError:
-            continue
-        with _lock:
-            hit = _cache().get(p)
-        if hit and hit[0] == _stamp(st):
-            out[p] = {**hit[1], "size": st.st_size, "mtime": st.st_mtime}
-    return out
+def cached_many(paths: list[str]) -> dict:
+    """{path: (stamp, record)} for every path with a cached record, without touching the disk: the
+    record is as last read and may be stale (get_many() catches that). Lets the library table paint
+    straight from memory; over network storage a stat per file per request is what made it slow.
+    Records are shared, not copied: callers must not change them."""
+    with _lock:
+        c = _cache()
+        return {p: (hit[0], hit[1]) for p in paths if (hit := c.get(p))}
+
+
+def stamp_size_mtime(stamp: str) -> tuple[int, float]:
+    """(size, mtime) as recorded in a stamp from cached_many()."""
+    size, ns = stamp.split(":")
+    return int(size), int(ns) / 1e9
 
 
 def get(path: str) -> dict | None:

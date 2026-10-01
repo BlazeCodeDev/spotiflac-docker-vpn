@@ -1486,16 +1486,26 @@ let tracksTimer, pageTimer, pageSeq = 0;
 // The library page asks the server for one page of its table; any change of folder, view, filter,
 // search or sort starts again at page 1.
 function libQuery() { S.lib.page = 1; loadPage({ top: true }); }
-async function loadPage({ top = false } = {}) {
+// `fresh` makes the server re-check the files for changes (after we changed some); `poll` is a
+// background re-ask while it reads or checks tags, which neither dims the table nor redraws it unchanged.
+async function loadPage({ top = false, fresh = false, poll = false } = {}) {
   clearTimeout(pageTimer);
   const L = S.lib, seq = ++pageSeq;
   const qs = new URLSearchParams({ page: L.page, per: LIB_PER, path: L.path.join('/'), view: L.view, q: L.q.trim(), chips: [...L.chips].join(',') });
   if (L.sort) { qs.set('sort', L.sort.k); qs.set('dir', L.sort.dir); }
-  const body = $('#lib-body'); if (body && L.pg.loaded) body.style.opacity = '.6';
+  if (fresh) qs.set('fresh', '1');
+  const body = $('#lib-body'); if (body && L.pg.loaded && !poll) body.style.opacity = '.6';
+  const again = () => { if (S.route === 'library') loadPage({ poll: true }); };
   try {
     const d = await api(`/api/library/tracks?${qs}`);
     if (seq !== pageSeq) return;
     if (d.lost) { L.path = []; L.page = 1; render(); return loadPage(); }
+    const sig = JSON.stringify([d.tracks, d.folders, d.total, d.page, d.pages, d.pending, d.scope]);
+    if (poll && sig === L.pgSig && L.pg.loaded && !L.pg.error) {
+      if (!d.ready || d.pending || d.checking) pageTimer = setTimeout(again, 2500);
+      return;
+    }
+    L.pgSig = sig;
     L.page = d.page;
     L.pg = { loaded: true, ready: d.ready, pending: d.pending || 0, error: '', rows: (d.tracks || []).map(adaptTrack), folders: d.folders || [],
       count: d.count || 0, total: d.total || 0, page: d.page || 1, pages: d.pages || 1, scopeN: d.scope ? d.scope.tracks : 0, scopeSize: d.scope ? d.scope.size / MB : 0 };
@@ -1505,25 +1515,25 @@ async function loadPage({ top = false } = {}) {
       const tot = $('#lib-total'); if (tot) tot.textContent = libTotal();
       const tbl = $('#lib-tbl'); if (top && tbl && tbl.getBoundingClientRect().top < 0) tbl.scrollIntoView({ block: 'start' });
     } else if (S.route === 'library') render();
-    if (!d.ready || d.pending) pageTimer = setTimeout(() => { if (S.route === 'library') loadPage(); }, 2500);
+    if (!d.ready || d.pending || d.checking) pageTimer = setTimeout(again, 2500);
   } catch (e) {
     if (seq !== pageSeq) return;
     L.pg.error = e.message; L.pg.loaded = true; if (S.route === 'library') render();
-    pageTimer = setTimeout(() => { if (S.route === 'library') loadPage(); }, 8000);
+    pageTimer = setTimeout(again, 8000);
   } finally {
     const b = $('#lib-body'); if (b && seq === pageSeq) b.style.opacity = '';
   }
 }
 // Library data changed: refresh what's on screen. Library health needs every song; the library page needs one page.
 function loadTracks(quiet) {
-  if (S.route === 'library') loadPage();
-  if (S.route === 'health') loadAllTracks(quiet);
+  if (S.route === 'library') loadPage({ fresh: true });
+  if (S.route === 'health') loadAllTracks(quiet, true);
   else S.lib.loaded = false;   // fetched again on the next visit to health
 }
-async function loadAllTracks(quiet) {
+async function loadAllTracks(quiet, fresh) {
   clearTimeout(tracksTimer);
   try {
-    const d = await api('/api/library/tracks');
+    const d = await api(`/api/library/tracks${fresh ? '?fresh=1' : ''}`);
     const L = S.lib;
     L.ready = d.ready; L.pending = d.pending || 0; L.error = '';
     L.tracks = (d.tracks || []).map(adaptTrack); L.loaded = true;
@@ -1531,7 +1541,7 @@ async function loadAllTracks(quiet) {
     for (const k of Object.keys(S.h.sel)) for (const p of [...S.h.sel[k]]) if (!have.has(p) && k !== 'mis') S.h.sel[k].delete(p);
     rebuildDirCovers();
     if (S.route === 'health') render(); else renderChrome();
-    if (!d.ready || d.pending) tracksTimer = setTimeout(() => { if (S.route === 'health') loadAllTracks(true); else S.lib.loaded = false; }, 2500);
+    if (!d.ready || d.pending || d.checking) tracksTimer = setTimeout(() => { if (S.route === 'health') loadAllTracks(true); else S.lib.loaded = false; }, 2500);
   } catch (e) {
     S.lib.error = e.message; S.lib.loaded = true; if (S.route === 'health') render();
     tracksTimer = setTimeout(() => { if (S.route === 'health') loadAllTracks(true); else S.lib.loaded = false; }, 8000);

@@ -752,12 +752,15 @@ def api_library_rescan():
 
 
 # ── Library table data ───────────────────────────────────────────────────────
-# One row per audio file for the library table. Rows come from the tag cache; files it hasn't
-# read yet are parsed in a background thread and show up on a later poll (`pending` says how many
-# are still missing), so a first visit never blocks on a slow disk.
+# One row per audio file for the library table. Rows come straight from the tag cache in memory, so
+# a request never touches the disk. Files it hasn't read yet are parsed in a background thread and
+# show up on a later poll (`pending` says how many are still missing); files changed since they were
+# read are caught by a background check that stats everything (`checking` while it runs).
 _tracks_fill = {"running": False, "done": 0, "total": 0}
 _tracks_fill_lock = threading.Lock()
 _tracks_tried: set[str] = set()
+_VERIFY_EVERY = 10          # s between background checks the table triggers on its own
+_tracks_verify = {"running": False, "again": False, "at": 0.0}
 
 
 class _TagView:
@@ -792,6 +795,36 @@ def _tracks_fill_start(abs_paths: list[str]) -> None:
     threading.Thread(target=work, daemon=True, name="tracks-fill").start()
 
 
+def _tracks_verify_start(abs_paths: list[str], force: bool = False) -> None:
+    """Re-check every file against its cached record in the background (re-reading changed ones),
+    at most every _VERIFY_EVERY seconds unless forced (the browser asks after it changed files)."""
+    import tagcache
+    with _tracks_fill_lock:
+        v = _tracks_verify
+        if v["running"]:
+            v["again"] = v["again"] or force   # the running pass may have seen a file before it changed
+            return
+        if not force and time.monotonic() - v["at"] < _VERIFY_EVERY:
+            return
+        v.update(running=True, again=False)
+
+    def work():
+        try:
+            while True:
+                tagcache.get_many(abs_paths, workers=16)
+                with _tracks_fill_lock:
+                    if not _tracks_verify["again"]:
+                        break
+                    _tracks_verify["again"] = False
+        except Exception:
+            log.exception("Library tag check failed")
+        finally:
+            with _tracks_fill_lock:
+                _tracks_verify.update(running=False, at=time.monotonic())
+
+    threading.Thread(target=work, daemon=True, name="tracks-verify").start()
+
+
 def _track_row(rel: str, rec: dict, name_fmt: str) -> dict:
     d, _, fname = rel.rpartition("/")
     ext = os.path.splitext(fname)[1].lower()
@@ -822,7 +855,7 @@ def _track_row(rel: str, rec: dict, name_fmt: str) -> dict:
     }
 
 
-# Built rows are kept per file (abs path → (size, mtime, name format, row, search text)) so a page
+# Built rows are kept per file (abs path → (stamp, name format, row, search text)) so a page
 # request only rebuilds rows for files that changed; _org_target() per song is the expensive part.
 _row_cache: dict[str, tuple] = {}
 
@@ -852,9 +885,10 @@ _TRACK_SORTS = {
 }
 
 
-def _library_rows():
+def _library_rows(fresh: bool = False):
     """(rows, search texts, abs paths still unread) for every library file whose tags are cached,
-    or None before the first scan. Unread files are queued for a background tag read."""
+    or None before the first scan. Unread files are queued for a background tag read, and a
+    background check for changed files is started (always when `fresh`)."""
     import tagcache
     files = lib_index.all_files()
     if files is None:
@@ -864,23 +898,27 @@ def _library_rows():
     for d, f in files:
         rel = f"{d}/{f}" if d else f
         abs_by_rel[rel] = os.path.join(root, *rel.split("/"))
-    recs = tagcache.peek_many(list(abs_by_rel.values()))
-    missing = [a for a in abs_by_rel.values() if a not in recs]
+    all_abs = list(abs_by_rel.values())
+    recs = tagcache.cached_many(all_abs)
+    missing = [a for a in all_abs if a not in recs]
     _tracks_fill_start(missing)
+    _tracks_verify_start(all_abs, force=fresh)
     fmt = _settings.load().get("filename_fmt") or "{artist}/{album}/{track} {title}"
     name_fmt = fmt.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or "{title}"
     rows, hays = [], []
     for rel, a in abs_by_rel.items():
-        rec = recs.get(a)
-        if rec is None:
+        got = recs.get(a)
+        if got is None:
             continue
+        stamp, rec = got
         hit = _row_cache.get(a)
-        if not hit or hit[:3] != (rec["size"], rec["mtime"], name_fmt) or hit[3]["path"] != rel:
-            row = _track_row(rel, rec, name_fmt)
+        if not hit or hit[:2] != (stamp, name_fmt) or hit[2]["path"] != rel:
+            size, mtime = tagcache.stamp_size_mtime(stamp)
+            row = _track_row(rel, {**rec, "size": size, "mtime": mtime}, name_fmt)
             hay = f"{row['title']} {row['artist']} {row['album']} {row['year'] or ''}".lower()
-            hit = _row_cache[a] = (rec["size"], rec["mtime"], name_fmt, row, hay)
-        rows.append(hit[3])
-        hays.append(hit[4])
+            hit = _row_cache[a] = (stamp, name_fmt, row, hay)
+        rows.append(hit[2])
+        hays.append(hit[3])
     if len(_row_cache) > len(rows) + 1000:   # drop rows of files that are gone
         live = set(abs_by_rel.values())
         for a in [a for a in _row_cache if a not in live]:
@@ -984,7 +1022,7 @@ def _tracks_page(rows: list[dict], hays: list[str]) -> dict:
 def api_library_tracks():
     """Every library song, or with ?page= one page of the table (see _tracks_page for the other arguments)."""
     paged = "page" in request.args
-    got = _library_rows()
+    got = _library_rows(fresh=request.args.get("fresh") == "1")
     if got is None:
         empty = {"ready": False, "tracks": [], "pending": 0, "filling": None}
         if paged:
@@ -992,7 +1030,7 @@ def api_library_tracks():
         return jsonify(**empty)
     rows, hays, missing = got
     out = _tracks_page(rows, hays) if paged else {"tracks": rows}
-    out.update(ready=True, pending=len(missing) if _tracks_fill["running"] else 0,
+    out.update(ready=True, pending=len(missing) if _tracks_fill["running"] else 0, checking=_tracks_verify["running"],
                filling=dict(_tracks_fill) if _tracks_fill["running"] else None)
     return _json_cached(json.dumps(out, separators=(",", ":")).encode())
 
