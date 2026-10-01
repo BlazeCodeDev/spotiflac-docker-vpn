@@ -180,6 +180,8 @@ const S = {
   route: 'download',
   // download
   q: '', type: 'all', results: [], resultsFor: '', hasMore: false, nextOffset: 0, searching: false, searchError: '', inLib: {},
+  // exact artist matches above the results: their discography, open state and per-artist selection, all keyed by URL
+  artists: [], art: { open: new Set(), rel: {}, albOpen: new Set(), trk: {}, sel: {} },
   quality: store.get('quality', 'lossless'),
   jobs: [], jobsLoaded: false, doneAll: false,
   vpn: { known: false, on: false, since: null, ip: null },
@@ -373,7 +375,7 @@ let searchTimer, searchSeq = 0;
 function scheduleSearch() {
   clearTimeout(searchTimer);
   const q = S.q.trim();
-  if (!q || LINK_RE.test(q)) { searchSeq++; S.results = []; S.resultsFor = ''; S.searching = false; S.searchError = ''; return; }
+  if (!q || LINK_RE.test(q)) { searchSeq++; S.results = []; S.artists = []; S.resultsFor = ''; S.searching = false; S.searchError = ''; return; }
   S.searching = true; S.searchError = '';
   searchTimer = setTimeout(() => runSearch(q, 0), 450);
 }
@@ -385,6 +387,7 @@ async function runSearch(q, offset) {
     const d = await api(`/api/search?q=${encodeURIComponent(q)}&offset=${offset}`);
     if (seq !== searchSeq) return;
     S.results = offset ? S.results.concat(d.results || []) : (d.results || []);
+    if (!offset) S.artists = d.artist_match || [];
     S.resultsFor = q; S.hasMore = !!d.has_more; S.nextOffset = d.next_offset || 0; S.searching = false;
     renderResults();
     checkLibrary(d.results || []);
@@ -410,9 +413,11 @@ function resultsHTML() {
   }
   if (S.searching && !S.results.length) return Array.from({ length: 4 }, () => `<div class="li"><div class="lead skel"></div><div class="grow col" style="gap:8px"><span class="skel" style="height:14px;width:55%;border-radius:4px"></span><span class="skel" style="height:12px;width:35%;border-radius:4px"></span></div></div>`).join('');
   if (S.searchError) return emptyState('cloud_off', 'Search failed', S.searchError);
-  const shown = S.results.map((r, i) => [r, i]).filter(([r]) => S.type === 'all' || r.type === S.type);
-  if (!shown.length) return emptyState('search_off', 'No matches', `Nothing for “${S.q}”. Try fewer words or paste a Spotify link.`);
-  return shown.map(([r, i]) => {
+  const cards = S.type === 'all' || S.type === 'artist' ? S.artists : [];
+  const carded = new Set(S.artists.map((a) => a.url));
+  const shown = S.results.map((r, i) => [r, i]).filter(([r]) => (S.type === 'all' || r.type === S.type) && !carded.has(r.url));
+  if (!shown.length && !cards.length) return emptyState('search_off', 'No matches', `Nothing for “${S.q}”. Try fewer words or paste a Spotify link.`);
+  return cards.map(artistCard).join('') + shown.map(([r, i]) => {
     const st = S.inLib[r.url];
     return `<div class="li">
       <div class="lead">${ic(TYPE_ICON[r.type])}${coverImg(r.cover_url)}</div>
@@ -423,6 +428,97 @@ function resultsHTML() {
   }).join('') + (S.hasMore ? `<div class="row" style="justify-content:center;padding:8px"><button class="btn tonal" data-act="more" ${S.searching ? 'disabled' : ''}>${S.searching ? 'Loading…' : 'Load more'}</button></div>` : '');
 }
 
+// ── Artist card: an exact artist match opens into albums and singles, albums open into tracks ──
+// Selection per artist: rel = whole releases, trk = release URL → the tracks picked from a release that isn't whole.
+const artSel = (a) => (S.art.sel[a] ||= { rel: new Set(), trk: new Map() });
+const relsOf = (a) => (S.art.rel[a] && S.art.rel[a].list) || [];
+const relState = (sel, r) => (sel.rel.has(r) ? 'all' : sel.trk.has(r) ? 'some' : 'none');
+function artState(a) {
+  const sel = artSel(a), rels = relsOf(a);
+  if (rels.length && rels.every((r) => sel.rel.has(r.url))) return 'all';
+  return sel.rel.size || sel.trk.size ? 'some' : 'none';
+}
+function artPicked(a) {
+  const sel = artSel(a), rels = relsOf(a);
+  let songs = 0;
+  for (const r of rels) if (sel.rel.has(r.url)) songs += r.track_count || 0;
+  for (const s of sel.trk.values()) songs += s.size;
+  return { jobs: sel.rel.size + [...sel.trk.values()].reduce((n, s) => n + s.size, 0), songs };
+}
+// One checkbox; data-fk lets a redraw put focus back on it.
+const triBox = (act, st, label, data, wrap = 'label') => `<${wrap} class="cb"><input type="checkbox" data-act="${act}" ${data} data-fk="${esc(act + '|' + data)}" ${st === 'all' ? 'checked' : ''} ${st === 'some' ? 'data-ind="1"' : ''} aria-label="${esc(label)}"></${wrap}>`;
+const libTag = (st, what = 'In library') => (st === 'full' ? `<span class="tag primary" title="${what}">${ic('check')}<span class="hide-sm">${what}</span></span>`
+  : st === 'partial' ? `<span class="tag neutral" title="Partly in library">${ic('incomplete_circle')}<span class="hide-sm">Partly in library</span></span>` : '');
+const chevron = (open) => ic('expand_more', 'art-chev', open ? 'transform:rotate(180deg)' : '');
+
+function artistCard(a) {
+  const open = S.art.open.has(a.url), d = S.art.rel[a.url], rels = relsOf(a.url);
+  const nAlb = rels.filter((r) => r.type === 'album').length, nSgl = rels.length - nAlb;
+  const have = rels.filter((r) => (S.inLib[r.url] || r.in_lib) === 'full').length;
+  const picked = artPicked(a.url), du = `data-a="${esc(a.url)}"`;
+  const sub = ['Artist', a.subtitle, d && d.list ? `${plural(nAlb, 'album')} · ${plural(nSgl, 'single')}` : ''].filter(Boolean).map(esc).join(' · ');
+  let body = '';
+  if (open) {
+    if (!d || d.loading) body = Array.from({ length: 3 }, () => `<div class="li art-row"><span class="cb"></span><span class="skel" style="width:48px;height:48px;border-radius:10px"></span><span class="skel grow" style="height:14px;border-radius:4px"></span></div>`).join('');
+    else if (d.error) body = `<div class="row" style="padding:8px 16px;gap:12px"><span class="b-m v grow">${esc(d.error)}</span><button class="btn text" data-act="artload" ${du}>Try again</button></div>`;
+    else if (!rels.length) body = `<p class="b-m v" style="padding:8px 16px">No albums or singles on Spotify.</p>`;
+    else body = [['album', 'Albums'], ['single', 'Singles & EPs']].map(([k, l]) => {
+      const list = rels.filter((r) => r.type === k);
+      return list.length ? `<h3 class="l-l v art-h">${l}<span class="l-m" style="opacity:.7">${list.length}</span></h3>${list.map((r) => releaseRow(a.url, r)).join('')}` : '';
+    }).join('');
+  }
+  return `<div class="art ${open ? 'open' : ''}">
+    <div class="row art-head">${triBox('artsel', artState(a.url), `Select everything by ${a.title}`, du)}
+      <button class="art-toggle grow" data-act="artopen" ${du} data-fk="${esc('artopen|' + a.url)}" aria-expanded="${open}">
+        <span class="art-ava">${ic('person')}${coverImg(a.cover_url)}</span>
+        <span class="col grow" style="min-width:0"><span class="t-m ell">${esc(a.title)}</span><span class="b-m v ell">${sub}</span></span>
+        ${have ? `<span class="tag primary hide-sm">${ic('check')}${have} in library</span>` : ''}${chevron(open)}</button></div>
+    ${open ? `<div class="art-body">${body}</div>` : ''}
+    ${picked.jobs ? `<div class="row art-bar"><span class="b-m grow">${plural(picked.songs, 'song')} selected</span>
+      <button class="btn text" data-act="artclear" ${du}>Clear</button><button class="btn filled" data-act="artdl" ${du}>${ic('download')}Download</button></div>` : ''}
+  </div>`;
+}
+function releaseRow(a, r) {
+  const sel = artSel(a), open = S.art.albOpen.has(r.url), t = S.art.trk[r.url];
+  const du = `data-a="${esc(a)}" data-r="${esc(r.url)}"`;
+  let tracks = '';
+  if (open) {
+    if (!t || t.loading) tracks = `<div class="art-trk"><span class="skel" style="height:12px;width:50%;border-radius:4px;margin:14px 0"></span></div>`;
+    else if (t.error) tracks = `<div class="row art-trk"><span class="b-m v grow">${esc(t.error)}</span><button class="btn text" data-act="relload" ${du}>Try again</button></div>`;
+    else tracks = t.list.map((x, i) => {
+      const on = sel.rel.has(r.url) || (sel.trk.get(r.url) || new Set()).has(x.url);
+      return `<label class="row art-trk">${triBox('trksel', on ? 'all' : 'none', `Select ${x.title}`, `${du} data-t="${esc(x.url)}"`, 'span')}
+        <span class="mono l-m v" style="width:20px;text-align:right">${x.track_number || i + 1}</span>
+        <span class="col grow" style="min-width:0"><span class="b-l ell">${esc(x.title)}</span><span class="b-m v ell">${esc(x.artists)}</span></span>
+        ${libTag(x.in_lib ? 'full' : '', 'Downloaded')}<span class="mono l-m v hide-sm" style="width:36px;text-align:right">${x.duration_ms ? fmtLen(Math.round(x.duration_ms / 1000)) : ''}</span></label>`;
+    }).join('');
+  }
+  return `<div class="art-rel">
+    <div class="row art-row">${triBox('relsel', relState(sel, r.url), `Select ${r.title}`, du)}
+      <button class="art-toggle grow" data-act="relopen" ${du} data-fk="${esc('relopen|' + r.url)}" aria-expanded="${open}">
+        ${coverTile({ title: r.title, kind: 'album', url: r.cover_url }, 48)}
+        <span class="col grow" style="min-width:0"><span class="b-l ell">${esc(r.title)}</span><span class="b-m v ell">${[r.type === 'album' ? 'Album' : 'Single', r.year, r.track_count ? plural(r.track_count, 'track') : ''].filter(Boolean).join(' · ')}</span></span>
+        ${libTag(S.inLib[r.url] || r.in_lib)}${chevron(open)}</button></div>
+    ${open ? `<div class="art-trks">${tracks}</div>` : ''}
+  </div>`;
+}
+
+async function loadReleases(a) {
+  S.art.rel[a] = { loading: true };
+  renderResults();
+  try { S.art.rel[a] = { list: (await api(`/api/search/artist?url=${encodeURIComponent(a)}`)).releases || [] }; } catch (e) { S.art.rel[a] = { error: e.message }; }
+  renderResults();
+}
+async function loadRelTracks(r) {
+  S.art.trk[r] = { loading: true };
+  renderResults();
+  try {
+    const d = await api(`/api/search/expand?url=${encodeURIComponent(r)}`);
+    S.art.trk[r] = { list: d.tracks || [] };
+    if (d.in_lib) S.inLib[r] = d.in_lib;   // counted per song now, more exact than the folder guess
+  } catch (e) { S.art.trk[r] = { error: e.message }; }
+  renderResults();
+}
 // ── Queue ────────────────────────────────────────────────────────────────
 const jobPct = (j) => (j.status === 'running' && j.total ? Math.min(100, ((j.progress || 0) / j.total) * 100) : null);
 const jobNow = (j) => ((j.track_results || []).find((t) => t.status === 'downloading') || {}).title;
@@ -503,7 +599,10 @@ function renderResults() {
   const pane = $('#res-pane');
   if (S.route !== 'download' || !pane) return render();
   pane.classList.toggle('idle', !S.q.trim());
+  const fk = document.activeElement && pane.contains(document.activeElement) && document.activeElement.dataset.fk;
   pane.innerHTML = resPaneHTML();
+  pane.querySelectorAll('[data-ind]').forEach((cb) => { cb.indeterminate = true; });
+  if (fk) pane.querySelector(`[data-fk="${CSS.escape(fk)}"]`)?.focus();
   const clr = $('[data-act=clearq]'); if (clr) clr.hidden = !S.q;
 }
 function viewDownload() {
@@ -1171,6 +1270,7 @@ function render() {
   renderChrome();
   $('#view').innerHTML = VIEWS[S.route]();
   if (S.route === 'library') tintDetail();
+  $$('#view [data-ind]').forEach((cb) => { cb.indeterminate = true; });
   if (fid) {
     const n = document.getElementById(fid);
     if (n) { n.focus({ preventScroll: true }); if (caret) { try { n.setSelectionRange(caret[0], caret[1]); } catch { /* not a text field */ } } }
@@ -1231,6 +1331,58 @@ A.dl = (el) => {
 };
 A.dllink = (el) => enqueue({ url: S.q.trim(), title: '', type: el.dataset.type });
 A.more = () => runSearch(S.resultsFor || S.q.trim(), S.nextOffset);
+// Artist card (see artistCard)
+A.artopen = (el) => {
+  const a = el.dataset.a, o = S.art.open;
+  if (o.has(a)) o.delete(a); else { o.add(a); if (!S.art.rel[a] || S.art.rel[a].error) return loadReleases(a); }
+  renderResults();
+};
+A.artload = (el) => loadReleases(el.dataset.a);
+A.relopen = (el) => {
+  const r = el.dataset.r, o = S.art.albOpen;
+  if (o.has(r)) o.delete(r); else { o.add(r); if (!S.art.trk[r] || S.art.trk[r].error) return loadRelTracks(r); }
+  renderResults();
+};
+A.relload = (el) => loadRelTracks(el.dataset.r);
+A.artsel = async (el) => {
+  const a = el.dataset.a, sel = artSel(a);
+  if (artState(a) !== 'none') { sel.rel.clear(); sel.trk.clear(); return renderResults(); }
+  // Selecting an artist that hasn't been opened yet: fetch the discography first, and show it.
+  if (!relsOf(a).length) { S.art.open.add(a); await loadReleases(a); }
+  for (const r of relsOf(a)) sel.rel.add(r.url);
+  sel.trk.clear();
+  renderResults();
+};
+A.relsel = (el) => {
+  const sel = artSel(el.dataset.a), r = el.dataset.r;
+  if (relState(sel, r) === 'none') sel.rel.add(r); else sel.rel.delete(r);
+  sel.trk.delete(r);
+  renderResults();
+};
+A.trksel = (el) => {
+  const sel = artSel(el.dataset.a), r = el.dataset.r, t = el.dataset.t;
+  const all = S.art.trk[r].list.map((x) => x.url);
+  // Unticking one song of a whole release turns it into "every other song".
+  const picked = sel.rel.has(r) ? new Set(all) : new Set(sel.trk.get(r) || []);
+  if (picked.has(t)) picked.delete(t); else picked.add(t);
+  sel.rel.delete(r); sel.trk.delete(r);
+  if (picked.size === all.length) sel.rel.add(r); else if (picked.size) sel.trk.set(r, picked);
+  renderResults();
+};
+A.artclear = (el) => { const sel = artSel(el.dataset.a); sel.rel.clear(); sel.trk.clear(); renderResults(); };
+A.artdl = async (el) => {
+  const a = el.dataset.a, sel = artSel(a);
+  const urls = [...sel.rel, ...[...sel.trk.values()].flatMap((s) => [...s])];
+  if (!urls.length) return;
+  const { songs } = artPicked(a);
+  try {
+    await api('/api/download', { method: 'POST', body: { urls: urls.join('\n'), quality: S.quality } });
+    sel.rel.clear(); sel.trk.clear();
+    renderResults();
+    snack(`Queued ${plural(songs, 'song')}${urls.length > 1 ? ` in ${plural(urls.length, 'download')}` : ''} · songs you already have are skipped`);
+    refreshJobs();
+  } catch (e) { oops('Couldn’t queue it')(e); }
+};
 const jobAct = (path, method, fail) => async (el) => { try { await api(path(el.dataset.id), { method }); refreshJobs(); } catch (e) { oops(fail)(e); } };
 A.jcancel = jobAct((id) => `/api/jobs/${encodeURIComponent(id)}/cancel`, 'POST', 'Couldn’t cancel');
 A.jretry = jobAct((id) => `/api/jobs/${encodeURIComponent(id)}/retry`, 'POST', 'Couldn’t retry');

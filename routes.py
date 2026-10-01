@@ -336,10 +336,7 @@ def api_search():
     if not q:
         return jsonify(error="No query provided"), 400
     try:
-        client = _spotify
-        if client is None:
-            from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient
-            client = _patch_spotify_client(SpotifyMetadataClient(timeout_s=15))
+        client = _search_client()
         data   = client._get("/search", params={
             "q": q, "type": "track,album,playlist,artist",
             "limit": limit, "offset": offset,
@@ -419,6 +416,9 @@ def api_search():
                 "track_count": (p.get("tracks") or {}).get("total"),
             })
 
+        # Artists whose name is exactly the query (ignoring case and spacing) get an
+        # expandable discography card above the results; only the first page has them.
+        artist_match = []
         for a in artists_obj.get("items", []):
             if not a:
                 continue
@@ -426,13 +426,16 @@ def api_search():
             genres    = a.get("genres", [])
             followers = (a.get("followers") or {}).get("total", 0)
             subtitle  = genres[0].title() if genres else (f"{followers:,} followers" if followers else "")
-            results.append({
+            item = {
                 "type":      "artist",
                 "title":     a["name"],
                 "subtitle":  subtitle,
                 "cover_url": imgs[-1]["url"] if imgs else None,
                 "url":       f"https://open.spotify.com/artist/{a['id']}",
-            })
+            }
+            results.append(item)
+            if not offset and len(artist_match) < 3 and _name_key(a["name"]) == _name_key(q):
+                artist_match.append({**item, "cover_url": (imgs[0]["url"] if imgs else None)})
 
         total = max(
             tracks_obj.get("total") or 0,
@@ -442,10 +445,110 @@ def api_search():
         )
         has_more = (offset + limit) < total
 
-        return jsonify(results=results, has_more=has_more, next_offset=offset + limit)
+        return jsonify(results=results, has_more=has_more, next_offset=offset + limit, artist_match=artist_match)
     except Exception as exc:
         log.warning("Search failed (%s): %s", type(exc).__name__, exc)
         return jsonify(error="Search failed"), 502
+
+
+def _name_key(s: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", s or "").casefold().split())
+
+
+def _search_client():
+    if _spotify is not None:
+        return _spotify
+    from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient
+    return _patch_spotify_client(SpotifyMetadataClient(timeout_s=15))
+
+
+def _track_in_lib(title: str, artists: str) -> bool:
+    """Same song already downloaded: artist+title from the tags (full credit or first
+    artist), else the title-from-filename index the search badges use."""
+    first = (artists or "").split(",")[0].strip()
+    if lib_index.find_by_artist_title(artists, title) or lib_index.find_by_artist_title(first, title):
+        return True
+    return lib_index.check([title])[0]
+
+
+def _artist_releases_rest(client, artist_id: str) -> list[dict]:
+    out, offset = [], 0
+    while offset < 500:
+        data = client._get(f"/artists/{artist_id}/albums", params={
+            "include_groups": "album,single", "limit": 50, "offset": offset,
+        })
+        for a in data.get("items") or []:
+            if not a:
+                continue
+            imgs = a.get("images") or []
+            out.append({
+                "type":        "album" if (a.get("album_group") or a.get("album_type")) == "album" else "single",
+                "title":       a.get("name", ""),
+                "url":         f"https://open.spotify.com/album/{a['id']}",
+                "date":        a.get("release_date") or "",
+                "track_count": a.get("total_tracks") or 0,
+                "cover_url":   (imgs[1] if len(imgs) > 1 else imgs[0])["url"] if imgs else None,
+            })
+        if not data.get("next"):
+            break
+        offset += 50
+    return out
+
+
+def _artist_releases_graphql(client, artist_id: str) -> list[dict]:
+    out = []
+    for item in client.web_client.get_artist_discography(artist_id):
+        rels = (item.get("releases") or {}).get("items") or []
+        r = rels[0] if rels else (item.get("album") or {})
+        rid = r.get("id") or (r.get("uri") or "").rpartition(":")[2]
+        kind = str(r.get("type") or "").upper()
+        if not rid or kind not in ("ALBUM", "SINGLE", "EP"):
+            continue
+        srcs = ((r.get("coverArt") or {}).get("sources")) or []
+        date = r.get("date") or {}
+        out.append({
+            "type":        "album" if kind == "ALBUM" else "single",
+            "title":       r.get("name", ""),
+            "url":         f"https://open.spotify.com/album/{rid}",
+            "date":        date.get("isoString", "")[:10] or str(date.get("year") or ""),
+            "track_count": (r.get("tracks") or {}).get("totalCount") or 0,
+            "cover_url":   srcs[0]["url"] if srcs else None,
+        })
+    return out
+
+
+@bp.get("/api/search/artist")
+def api_search_artist():
+    """An artist's albums and singles (newest first), each with its in-library status."""
+    m = re.search(r"artist/([A-Za-z0-9]+)", request.args.get("url", ""))
+    if not m:
+        return jsonify(error="Not an artist link"), 400
+    artist_id = m.group(1)
+    try:
+        client = _search_client()
+        try:
+            releases = _artist_releases_rest(client, artist_id)
+        except Exception as exc:
+            if not hasattr(client, "web_client"):
+                raise
+            log.info("Artist albums via Web API failed (%s), trying GraphQL", exc)
+            releases = _artist_releases_graphql(client, artist_id)
+    except Exception as exc:
+        log.warning("Artist discography failed (%s): %s", type(exc).__name__, exc)
+        return jsonify(error="Couldn’t load the discography"), 502
+
+    # Spotify lists the same release under several ids (regions, re-issues); same
+    # rule as search: same name, kind and track count is the same release.
+    seen, out = set(), []
+    for r in sorted(releases, key=lambda r: r["date"], reverse=True):
+        key = (re.sub(r"[^\w]", "", r["title"].lower()), r["type"], r["track_count"])
+        if key in seen:
+            continue
+        seen.add(key)
+        r["year"]   = r.pop("date")[:4] or None
+        r["in_lib"] = lib_index.check_album(r["title"], r["track_count"])
+        out.append(r)
+    return jsonify(releases=out)
 
 
 @bp.get("/api/search/expand")
@@ -454,22 +557,22 @@ def api_search_expand():
     if not url:
         return jsonify(error="No URL provided"), 400
     try:
-        client = _spotify
-        if client is None:
-            from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient
-            client = _patch_spotify_client(SpotifyMetadataClient(timeout_s=15))
-        name, tracks, *_ = client.get_url(url)
+        name, tracks, *_ = _search_client().get_url(url)
+        rows = [{
+            "title":        t.title,
+            "artists":      t.artists,
+            "duration_ms":  t.duration_ms,
+            "track_number": t.track_number,
+            "url":          t.external_url,
+            "cover_url":    t.cover_url,
+            "year":         t.year,
+            "in_lib":       _track_in_lib(t.title, t.artists),
+        } for t in tracks]
+        have = sum(r["in_lib"] for r in rows)
         return jsonify(
             title=name,
-            tracks=[{
-                "title":        t.title,
-                "artists":      t.artists,
-                "duration_ms":  t.duration_ms,
-                "track_number": t.track_number,
-                "url":          t.external_url,
-                "cover_url":    t.cover_url,
-                "year":         t.year,
-            } for t in tracks],
+            tracks=rows,
+            in_lib="full" if rows and have == len(rows) else "partial" if have else "none",
         )
     except Exception as exc:
         log.warning("Expand failed: %s", exc)

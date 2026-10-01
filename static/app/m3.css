@@ -342,3 +342,27 @@ html[data-scheme=neutral][data-mode=light]{--md-primary:#546069;--md-on-primary:
 .card.retry .lead{background:var(--md-tertiary);color:var(--md-sc-lowest)}
 .card.retry .lp .a{background:var(--md-on-tertiary-container);transition:width 1s linear}
 .card.retry .lp .t,.card.retry .lp .t::after{background:color-mix(in srgb,var(--md-on-tertiary-container) 25%,transparent)}
+/* Artist card in search results: discography, opened release, track list */
+.art{background:var(--md-sc-low);border-radius:24px;padding:4px 4px 8px;margin-bottom:8px;display:flex;flex-direction:column}
+.art-head{gap:0;padding:4px 4px 0}
+.art-toggle{display:flex;align-items:center;gap:12px;min-width:0;padding:6px 8px;border:none;background:none;color:inherit;font:inherit;text-align:left;border-radius:16px;cursor:pointer}
+.art-toggle:hover{background:color-mix(in srgb,var(--md-on-surface) 6%,transparent)}
+.art-ava{position:relative;overflow:hidden;width:64px;height:64px;border-radius:50%;flex-shrink:0;background:var(--md-tertiary-container);color:var(--md-on-tertiary-container);display:flex;align-items:center;justify-content:center}
+.art-ava img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.art-chev{color:var(--md-on-surface-variant);transition:transform .2s;flex-shrink:0}
+.art-body{display:flex;flex-direction:column;padding:0 4px}
+.art-h{display:flex;gap:8px;align-items:baseline;padding:12px 12px 4px 52px}
+.art-row{gap:0;min-height:64px}
+.art-row .art-toggle{padding:4px 8px}
+.art-trks{display:flex;flex-direction:column;margin:0 0 6px 40px;padding:4px 0;border-left:2px solid var(--md-outline-variant)}
+.art-trk{gap:8px;min-height:52px;padding:0 8px 0 4px;border-radius:12px;cursor:pointer}
+.art-trk:hover{background:color-mix(in srgb,var(--md-on-surface) 6%,transparent)}
+.art-bar{position:sticky;bottom:8px;margin:8px 4px 0;padding:8px 8px 8px 20px;gap:8px;border-radius:20px;background:var(--md-secondary-container);color:var(--md-on-secondary-container);box-shadow:0 1px 3px rgba(0,0,0,.2),0 4px 8px 3px rgba(0,0,0,.1)}
+.art-bar .btn.text{color:inherit}
+@media (max-width:840px){
+  .art-ava{width:48px;height:48px}
+  .art-h{padding-left:44px}
+  .art-trks{margin-left:16px}
+  .art-bar{bottom:96px}
+}
+@media (prefers-reduced-motion:reduce){.art-chev{transition:none}}
