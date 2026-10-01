@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import unicodedata
+from functools import wraps
 
 import json
 
@@ -25,6 +26,31 @@ from config import Config
 log = logging.getLogger(__name__)
 
 bp = Blueprint("main", __name__)
+
+# The music folder is usually a network share. When it stalls, every request that reads it stalls
+# with it, and if they all sit in the web server's few threads nothing else can be answered, not
+# even the search box. So requests that read the share are capped, and the surplus is turned away
+# at once (the page tries again) instead of queueing up and holding a thread each. Covers have a
+# gate of their own: sorting a long list asks for dozens at once and must not starve the rest.
+_io_gate = threading.BoundedSemaphore(8)
+_cover_gate = threading.BoundedSemaphore(4)
+
+
+def _gated(gate):
+    def deco(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            if not gate.acquire(blocking=False):
+                return jsonify(error="The music folder is busy — try again in a moment"), 503, {"Retry-After": "2"}
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                gate.release()
+        return wrapper
+    return deco
+
+
+_io_limited = _gated(_io_gate)
 
 # ── Background enrichment state ───────────────────────────────────────────────
 _enrich_lock   = threading.Lock()
@@ -627,6 +653,7 @@ def _dir_stamp(items) -> str:
 
 
 @bp.get("/api/library")
+@_io_limited
 def api_library():
     rel = request.args.get("path", "")
     try:
@@ -656,6 +683,7 @@ def api_library():
 
 
 @bp.get("/api/library/stamp")
+@_io_limited
 def api_library_stamp():
     rel = request.args.get("path", "")
     try:
@@ -866,7 +894,7 @@ def api_library_rescan():
 _tracks_fill = {"running": False, "done": 0, "total": 0}
 _tracks_fill_lock = threading.Lock()
 _tracks_tried: set[str] = set()
-_VERIFY_EVERY = 10          # s between background checks the table triggers on its own
+_VERIFY_EVERY = 60          # s between background checks the table triggers on its own (each stats every file on the share)
 _tracks_verify = {"running": False, "again": False, "at": 0.0}
 
 
@@ -1244,6 +1272,7 @@ def _cover_thumb(abs_path: str, size: int) -> tuple[bytes, str] | None:
 
 
 @bp.get("/api/library/cover")
+@_gated(_cover_gate)
 def api_library_cover():
     try:
         abs_path = _safe_lib_path(request.args.get("path", ""))
@@ -1278,6 +1307,10 @@ _WAVE_DIR = os.path.join(os.path.dirname(_COVER_DIR), "wavecache")
 _wave_slots = threading.BoundedSemaphore(2)      # each decode reads a whole file off the share
 
 
+class _WaveBusy(Exception):
+    pass
+
+
 def _waveform(abs_path: str) -> list[int]:
     """Loudness per slice of the song (RMS, 0–100, the loudest slice is 100)."""
     import array
@@ -1289,11 +1322,15 @@ def _waveform(abs_path: str) -> list[int]:
             return json.load(f)
     except (OSError, ValueError):
         pass
-    with _wave_slots:
+    if not _wave_slots.acquire(blocking=False):
+        raise _WaveBusy()
+    try:
         out = subprocess.run(
             ["ffmpeg", "-v", "error", "-nostdin", "-i", abs_path, "-map", "0:a:0", "-ac", "1",
              "-ar", str(_WAVE_RATE), "-f", "s16le", "-"],
-            capture_output=True, timeout=120)
+            capture_output=True, timeout=60)
+    finally:
+        _wave_slots.release()
     if out.returncode != 0 or len(out.stdout) < 2 * _WAVE_BARS:
         raise ValueError((out.stderr.decode(errors="replace").strip().splitlines() or ["Couldn’t decode the audio"])[-1])
     pcm = array.array("h")
@@ -1319,6 +1356,7 @@ def _waveform(abs_path: str) -> list[int]:
 
 
 @bp.get("/api/library/waveform")
+@_io_limited
 def api_library_waveform():
     try:
         abs_path = _safe_lib_path(request.args.get("path", ""))
@@ -1328,6 +1366,8 @@ def api_library_waveform():
         return jsonify(error="Not found"), 404
     try:
         bars = _waveform(abs_path)
+    except _WaveBusy:
+        return jsonify(error="Other waveforms are still being made — try again in a moment"), 503, {"Retry-After": "3"}
     except FileNotFoundError:
         return jsonify(error="ffmpeg isn’t installed"), 500
     except (ValueError, subprocess.TimeoutExpired) as exc:
@@ -1510,6 +1550,7 @@ def api_tasks():
 
 
 @bp.get("/api/library/download")
+@_io_limited
 def api_library_download():
     rel = request.args.get("path", "")
     if not rel:
@@ -2243,6 +2284,7 @@ def _find_duplicate_tracks(rel_paths: list[str], root: str) -> list[dict]:
 # Live duplicates: the same grouping over the tag cache, so the list needs no scan and follows the
 # library as it changes. Cached on a fingerprint of every file's stamp, so polling it is cheap.
 _dups_live_cache: dict = {"sig": None, "groups": []}
+_recently_gone: dict[str, float] = {}     # rel path -> when it was removed or renamed here
 
 
 def _live_duplicates(fresh: bool = False):
@@ -2263,10 +2305,14 @@ def _live_duplicates(fresh: bool = False):
                 if inf:
                     infos.append(inf)
         _dups_live_cache.update(sig=sig, groups=_group_infos(infos))
+    now = time.monotonic()
+    for k in [k for k, t in _recently_gone.items() if now - t > 180]:
+        _recently_gone.pop(k, None)
+    gone = set(_recently_gone)
     groups = []
     for g in _dups_live_cache["groups"]:
         # A copy removed a moment ago stays in the cache until the next index scan: leave it out now.
-        files = [f for f in g["files"] if os.path.isfile(f["abs"])]
+        files = [f for f in g["files"] if f["rel"] not in gone]
         if len(files) > 1:
             groups.append({**g, "files": files, "keep": g["keep"] if any(f["rel"] == g["keep"] for f in files) else files[0]["rel"]})
     return groups, missing
@@ -2415,6 +2461,8 @@ def _scans_files_changed(removed=(), renamed=None) -> None:
     renamed = renamed or {}
     if not gone and not renamed:
         return
+    for rel in [*gone, *renamed]:
+        _recently_gone[rel] = time.monotonic()
     with _scans_lock:
         for kind, st in _scans.items():
             res = st.get("result")

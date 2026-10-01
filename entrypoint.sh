@@ -611,7 +611,7 @@ PY
 start_app() {
     # Single worker to preserve shared in-memory job queue; threads handle
     # concurrent requests. Timeout 300s covers long SSE streams (library organizer).
-    APP_CMD="${APP_CMD:-gunicorn --bind 0.0.0.0:${PORT:-5000} --workers 1 --threads 4 --timeout 300 --log-level warning app:app}"
+    APP_CMD="${APP_CMD:-gunicorn --bind 0.0.0.0:${PORT:-5000} --workers 1 --threads 24 --timeout 300 --log-level warning app:app}"
     WEB_PORT="${PORT:-5000}"
 
     log "Starting app as ${APP_USER} (uid $PUID) — no NET_ADMIN, kill-switch enforcing"

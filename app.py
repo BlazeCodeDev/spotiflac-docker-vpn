@@ -7,6 +7,8 @@ except ImportError:
 import hmac
 import logging
 import os
+import threading
+import time
 from functools import wraps
 
 from flask import Flask, Response, request
@@ -75,6 +77,57 @@ def auth_gate():
 
 
 app.register_blueprint(bp)
+
+
+# ── Slow-request watch ────────────────────────────────────────────────────────
+# When the web interface "hangs", requests are waiting on something (usually the music folder on a
+# network share) and nothing is logged because nothing has failed yet. Name them while it happens.
+# Streams that are meant to stay open are left out.
+_inflight: dict = {}
+_LONG_OK = ("/api/library/enrich-one", "/api/library/organize", "/api/library/download", "/api/jobs/")
+
+
+def _req_label() -> str:
+    q = request.query_string.decode(errors="replace")
+    text = f"{request.method} {request.path}" + (f"?{q}" if q else "")
+    return text if len(text) <= 110 else text[:109] + "…"
+
+
+@app.before_request
+def _track_start():
+    request.environ["spotiflac.t0"] = time.monotonic()
+    _inflight[threading.get_ident()] = (time.monotonic(), _req_label())
+
+
+@app.teardown_request
+def _track_end(_exc):
+    _inflight.pop(threading.get_ident(), None)
+    t0 = request.environ.get("spotiflac.t0")
+    if t0 and not request.path.startswith(_LONG_OK):
+        took = time.monotonic() - t0
+        if took > 5:
+            applog.event("system", f"Slow request · {_req_label()} · {took:.1f}s", logging.WARNING)
+
+
+def _watch_requests() -> None:
+    last = 0.0
+    while True:
+        time.sleep(10)
+        now = time.monotonic()
+        stuck = sorted(((now - t, label) for t, label in list(_inflight.values())), reverse=True)
+        stuck = [(age, label) for age, label in stuck if age > 15 and not label.split(" ", 1)[1].startswith(_LONG_OK)]
+        if stuck and now - last >= 30:
+            last = now
+            kinds = {}
+            for _, label in stuck:
+                path = label.split(" ", 1)[1].split("?", 1)[0]
+                kinds[path] = kinds.get(path, 0) + 1
+            applog.event("system", f"{len(stuck)} request{'s' if len(stuck) != 1 else ''} waiting for over 15s · "
+                         + ", ".join(f"{n}× {p}" for p, n in sorted(kinds.items(), key=lambda kv: -kv[1])[:4])
+                         + f" · oldest {stuck[0][0]:.0f}s: {stuck[0][1]}", logging.WARNING)
+
+
+threading.Thread(target=_watch_requests, daemon=True, name="request-watch").start()
 
 if __name__ == "__main__":
     if Config.UI_PASSWORD:

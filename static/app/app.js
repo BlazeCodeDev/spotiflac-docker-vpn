@@ -110,12 +110,18 @@ function applyTheme() {
 }
 
 // ── API ──────────────────────────────────────────────────────────────────
-async function api(path, { method = 'GET', body } = {}) {
-  const res = await fetch(path, {
-    method, credentials: 'same-origin',
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+async function api(path, { method = 'GET', body, timeout = method === 'GET' ? 60000 : 300000 } = {}) {
+  let res;
+  try {
+    res = await fetch(path, {
+      method, credentials: 'same-origin',
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(timeout),
+    });
+  } catch (e) {
+    throw new Error(e && e.name === 'TimeoutError' ? 'The server didn’t answer in time' : 'Couldn’t reach the server');
+  }
   let data = null;
   try { data = await res.json(); } catch { /* empty or non-JSON body */ }
   if (!res.ok) {
@@ -356,7 +362,34 @@ function coverGradient(seed) {
   let h = 0; for (const ch of String(seed)) h = (h * 31 + ch.charCodeAt(0)) % 360;
   return `linear-gradient(135deg,hsl(${h} 45% 40%),hsl(${(h + 45) % 360} 50% 26%))`;
 }
-const coverImg = (url) => (url ? `<img src="${esc(url)}" alt="" loading="lazy" onerror="this.remove()">` : '');
+// Library covers are read off the music folder, and a page sorted by artist asks for one per row. Fetched all at once they
+// fill the browser's few connections and every other request (search, song details) waits behind them, so they load
+// through a small queue: a few at a time, top rows first, one retry if the server says it is busy.
+const coverImg = (url) => (!url ? '' : url.startsWith('/api/library/cover') ? `<img data-csrc="${esc(url)}" alt="">` : `<img src="${esc(url)}" alt="" loading="lazy" onerror="this.remove()">`);
+const coverQ = [], coverLoading = new Set(); let coverBusy = 0;
+function pumpCovers() {
+  while (coverBusy < 3 && coverQ.length) {
+    const img = coverQ.shift();
+    if (!img.isConnected || img.getAttribute('src')) continue;
+    coverBusy++;
+    let freed = false;
+    const free = () => { if (freed) return; freed = true; clearTimeout(guard); coverLoading.delete(img); coverBusy--; pumpCovers(); };
+    img._free = free; coverLoading.add(img);
+    const guard = setTimeout(free, 20000);      // a stalled request must not hold its slot for good
+    img.addEventListener('load', free, { once: true });
+    img.addEventListener('error', () => {
+      if (!img.dataset.retried && img.isConnected) { img.dataset.retried = '1'; img.removeAttribute('src'); setTimeout(() => { coverQ.push(img); pumpCovers(); }, 1500); } else img.remove();
+      free();
+    }, { once: true });
+    img.src = img.dataset.csrc;
+  }
+}
+function queueCovers() {
+  for (const img of coverLoading) if (!img.isConnected) img._free();      // the table was redrawn: those rows are gone
+  document.querySelectorAll('img[data-csrc]:not([src]):not([data-queued])').forEach((img) => { img.dataset.queued = '1'; coverQ.push(img); });
+  pumpCovers();
+}
+new MutationObserver(() => requestAnimationFrame(queueCovers)).observe(document.documentElement, { childList: true, subtree: true });
 function coverTile(d, size = 48) {
   return `<span class="coverthumb" style="width:${size}px;height:${size}px;background:${coverGradient(d.title)}" aria-hidden="true">${ic(TYPE_ICON[d.kind] || 'album', '', `font-size:${Math.round(size / 2.2)}px`)}${coverImg(d.url)}</span>`;
 }
@@ -655,9 +688,12 @@ function dlSideHTML() {
 
 // ── Jobs: polled from the server ─────────────────────────────────────────
 let jobsSig = '', prevStatus = null;
+let jobsBusy = false;
 async function refreshJobs() {
+  if (jobsBusy) return;
+  jobsBusy = true;
   let d;
-  try { d = await api('/api/jobs'); } catch { return; }
+  try { d = await api('/api/jobs', { timeout: 15000 }); } catch { return; } finally { jobsBusy = false; }
   const sig = JSON.stringify(d.map((j) => [j.id, j.status, j.title, j.total, j.success_count, j.fail_count, j.error, j.next_retry_at, j.last_error, j.cover_url, j.retry_count, j.finished_at]));
   const first = !S.jobsLoaded;
   S.jobs = d; S.jobsLoaded = true;
@@ -680,9 +716,12 @@ function patchJobs() {
   }
 }
 let tasksSig = '';
+let tasksBusy = false;
 async function refreshTasks() {
+  if (tasksBusy) return;
+  tasksBusy = true;
   let d;
-  try { d = await api('/api/tasks'); } catch { return; }
+  try { d = await api('/api/tasks', { timeout: 15000 }); } catch { return; } finally { tasksBusy = false; }
   const tasks = Array.isArray(d) ? d : d.tasks || [];
   const prev = S.tasks; S.tasks = tasks;
   const sig = JSON.stringify(tasks.map((t) => [t.id, t.running, t.label]));
@@ -1813,14 +1852,17 @@ async function loadExt() {
   try { S.providers = (await api('/api/providers')).providers || []; } catch { /* no stats yet */ }
   if (S.route === 'settings') render();
 }
+let vpnBusy = false;
 async function loadVpn() {
+  if (vpnBusy) return;
+  vpnBusy = true;
   try {
-    const d = await api('/api/vpn');
+    const d = await api('/api/vpn', { timeout: 15000 });
     const next = { known: true, on: !!d.connected, since: d.connected_since || null };
     const changed = !S.vpn.known || S.vpn.on !== next.on;
     S.vpn = next;
     if (changed) renderChrome();
-  } catch { /* keep the last known state */ }
+  } catch { /* keep the last known state */ } finally { vpnBusy = false; }
 }
 async function loadVersion() {
   try { S.ver = await api('/api/spotiflac/version'); S.verError = false; } catch { S.verError = true; }
