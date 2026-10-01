@@ -519,7 +519,7 @@ def _artist_releases_graphql(client, artist_id: str) -> list[dict]:
 
 @bp.get("/api/search/artist")
 def api_search_artist():
-    """An artist's albums and singles (newest first), each with its in-library status."""
+    """An artist's albums and singles, newest first. In-library status comes from /api/search/expand."""
     m = re.search(r"artist/([A-Za-z0-9]+)", request.args.get("url", ""))
     if not m:
         return jsonify(error="Not an artist link"), 400
@@ -546,7 +546,6 @@ def api_search_artist():
             continue
         seen.add(key)
         r["year"]   = r.pop("date")[:4] or None
-        r["in_lib"] = lib_index.check_album(r["title"], r["track_count"])
         out.append(r)
     return jsonify(releases=out)
 

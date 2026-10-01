@@ -454,7 +454,7 @@ const chevron = (open) => ic('expand_more', 'art-chev', open ? 'transform:rotate
 function artistCard(a) {
   const open = S.art.open.has(a.url), d = S.art.rel[a.url], rels = relsOf(a.url);
   const nAlb = rels.filter((r) => r.type === 'album').length, nSgl = rels.length - nAlb;
-  const have = rels.filter((r) => (S.inLib[r.url] || r.in_lib) === 'full').length;
+  const have = rels.filter((r) => S.inLib[r.url] === 'full').length;
   const picked = artPicked(a.url), du = `data-a="${esc(a.url)}"`;
   const sub = ['Artist', a.subtitle, d && d.list ? `${plural(nAlb, 'album')} · ${plural(nSgl, 'single')}` : ''].filter(Boolean).map(esc).join(' · ');
   let body = '';
@@ -498,7 +498,7 @@ function releaseRow(a, r) {
       <button class="art-toggle grow" data-act="relopen" ${du} data-fk="${esc('relopen|' + r.url)}" aria-expanded="${open}">
         ${coverTile({ title: r.title, kind: 'album', url: r.cover_url }, 48)}
         <span class="col grow" style="min-width:0"><span class="b-l ell">${esc(r.title)}</span><span class="b-m v ell">${[r.type === 'album' ? 'Album' : 'Single', r.year, r.track_count ? plural(r.track_count, 'track') : ''].filter(Boolean).join(' · ')}</span></span>
-        ${libTag(S.inLib[r.url] || r.in_lib)}${chevron(open)}</button></div>
+        ${libTag(S.inLib[r.url])}${chevron(open)}</button></div>
     ${open ? `<div class="art-trks">${tracks}</div>` : ''}
   </div>`;
 }
@@ -508,6 +508,19 @@ async function loadReleases(a) {
   renderResults();
   try { S.art.rel[a] = { list: (await api(`/api/search/artist?url=${encodeURIComponent(a)}`)).releases || [] }; } catch (e) { S.art.rel[a] = { error: e.message }; }
   renderResults();
+  verifyReleases(a);
+}
+// The folder-name guess for an album can be wrong either way, so no badge is shown until its songs have been
+// checked one by one (what opening it does). Do that for every release in the background, three at a time.
+async function verifyReleases(a) {
+  const todo = relsOf(a).map((r) => r.url).filter((u) => !S.art.trk[u]);
+  const worker = async () => {
+    while (todo.length && S.artists.some((x) => x.url === a)) {
+      const u = todo.shift();
+      if (!S.art.trk[u]) await loadRelTracks(u);
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
 }
 async function loadRelTracks(r) {
   S.art.trk[r] = { loading: true };
