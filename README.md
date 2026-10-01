@@ -192,7 +192,8 @@ Then set `VPN_CONFIG_BASE64` in the compose environment and remove the `VPN_CONF
 | `WG_ALLOWED_IPS` | `0.0.0.0/0,::/0` | Allowed IPs (routes tunnelled through WireGuard) |
 | `WG_KEEPALIVE` | `25` | PersistentKeepalive in seconds |
 | `ALLOW_SUBNETS` | — | Comma-separated extra subnets to allow through the kill-switch (e.g. local NAS) |
-| `LOG_LEVEL` | `info` | `info` or `debug`. Debug logs iptables rules, network state, and env vars at startup |
+| `LOG_LEVEL` | `info` | `info` or `debug`. `debug` turns every log category on and also prints iptables rules, network state and env vars at startup |
+| `LOG_CATEGORIES` | `vpn,downloads,enrich,system` | Which information lines the log prints on a first start; afterwards choose them in Settings → Logging. Also available: `library`, `requests`, `detail`. Errors and warnings always print |
 | `APP_CMD` | `gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 300 app:app` | Command used to start the Flask app (run as the `PUID`/`PGID` user) |
 
 ---

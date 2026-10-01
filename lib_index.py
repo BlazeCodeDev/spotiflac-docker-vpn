@@ -5,6 +5,8 @@ import threading
 import time
 import unicodedata
 
+import applog
+
 _log = logging.getLogger(__name__)
 
 _AUDIO_EXTS   = frozenset({".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".aac", ".wma"})
@@ -135,8 +137,7 @@ def _worker():
         _ready        = True
         _last_elapsed = elapsed
         _last_scanned = time.time()
-        _log.info("lib_index: full scan — %d tracks, %d albums in %.2fs",
-                  len(stems), len(ac), elapsed)
+        applog.event("library", f"Indexed      {len(fl):,} songs in {applog.short(elapsed) if elapsed >= 1 else f'{elapsed:.1f}s'}")
 
 
 def start(root_fn) -> None:

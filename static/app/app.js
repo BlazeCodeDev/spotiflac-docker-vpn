@@ -150,6 +150,7 @@ const DEFAULT_SET = {
   sources: ALL_SERVICES.map(([id, name]) => ({ id, name, on: false })), qobuz: '', registry: '',
   meta: { on: true, deezer: true, apple: true, qobuz: false, tidal: false, mb: true },
   lb: { on: false, user: '', days: [0, 1, 2, 3, 4, 5, 6], time: '06:00' },
+  log: ['vpn', 'downloads', 'enrich', 'system'],
 };
 function fromServer(c) {
   const on = c.services || [];
@@ -162,6 +163,7 @@ function fromServer(c) {
     qobuz: c.qobuz_token || '', registry: (c.extension_registries || []).join('\n'),
     meta: { on: !!c.enrich_metadata, deezer: prov.includes('deezer'), apple: prov.includes('apple'), qobuz: prov.includes('qobuz'), tidal: prov.includes('tidal'), mb: !!c.enrich_musicbrainz },
     lb: { on: !!c.listenbrainz_enabled, user: c.listenbrainz_username || '', days: c.listenbrainz_days || [], time: c.listenbrainz_time || '06:00' },
+    log: c.log_categories || DEFAULT_SET.log,
   };
 }
 function toServer() {
@@ -172,7 +174,7 @@ function toServer() {
     services: s.sources.filter((x) => x.on).map((x) => x.id), qobuz_token: s.qobuz,
     extension_registries: s.registry.split(/[\s,]+/).filter(Boolean),
     enrich_metadata: s.meta.on, enrich_providers: ['deezer', 'apple', 'tidal', 'qobuz'].filter((k) => s.meta[k]), enrich_musicbrainz: s.meta.mb,
-    listenbrainz_enabled: s.lb.on, listenbrainz_username: s.lb.user, listenbrainz_days: s.lb.days, listenbrainz_time: s.lb.time,
+    listenbrainz_enabled: s.lb.on, listenbrainz_username: s.lb.user, listenbrainz_days: s.lb.days, listenbrainz_time: s.lb.time, log_categories: s.log,
     quality: S.quality,
   };
 }
@@ -1161,7 +1163,14 @@ function viewHealth() {
 // Settings
 // ═════════════════════════════════════════════════════════════════════════
 const SECTIONS = [['appearance', 'palette', 'Appearance'], ['naming', 'text_fields', 'File naming'], ['downloads', 'download', 'Downloads'], ['sources', 'hub', 'Sources'],
-  ['extensions', 'extension', 'Extensions'], ['metadata', 'sell', 'Metadata'], ['lb', 'queue_music', 'ListenBrainz'], ['network', 'vpn_lock', 'Network & VPN'], ['info', 'info', 'Info']];
+  ['extensions', 'extension', 'Extensions'], ['metadata', 'sell', 'Metadata'], ['lb', 'queue_music', 'ListenBrainz'], ['network', 'vpn_lock', 'Network & VPN'], ['logging', 'receipt_long', 'Logging'], ['info', 'info', 'Info']];
+// What the container log can show; keys match applog.py. Errors and warnings always print.
+const LOG_CATS = [['vpn', 'VPN', 'Connecting, connected, reconnecting, and the exit IP'], ['downloads', 'Downloads', 'Each song as it starts, finishes or fails'],
+  ['enrich', 'Enrichment', 'Batch enrichment, repaired albums and per-song errors'], ['system', 'Startup', 'Start-up summary and settings changes'],
+  ['library', 'Library', 'Index scans and health scans'], ['requests', 'Web requests', 'Every request the web interface makes (very chatty)'],
+  ['detail', 'Diagnostic detail', 'Everything else: pre-scans, provider chatter, internals']];
+const LOG_PRESETS = [['Minimal', ['vpn', 'downloads', 'enrich', 'system']], ['Standard', ['vpn', 'downloads', 'enrich', 'system', 'library']], ['Everything', LOG_CATS.map((c) => c[0])]];
+const logPreset = () => { const on = [...S.set.log].sort().join(); const p = LOG_PRESETS.find(([, k]) => [...k].sort().join() === on); return p ? p[0] : ''; };
 const TOKENS = ['{artist}', '{album}', '{title}', '{track}', '{year}'];
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -1262,6 +1271,14 @@ const SETTINGS = {
   network: () => `<section class="section" aria-labelledby="h-set"><h2 id="h-set" class="t-l">Network &amp; VPN</h2>
     <div class="li vpn-card ${S.vpn.known ? (S.vpn.on ? 'on' : 'off') : ''}" style="border-radius:20px">${ic(S.vpn.on ? 'vpn_lock' : 'vpn_key_off', 'f')}<span class="grow col"><span class="b-l">${!S.vpn.known ? 'Checking VPN…' : S.vpn.on ? 'VPN connected' : 'VPN not connected'}</span><span class="b-m">${S.vpn.on && S.vpn.since ? 'Up for ' + span(Date.now() / 1000 - S.vpn.since) : S.vpn.known && !S.vpn.on ? 'Using your normal connection' : ''}</span></span><button class="btn tonal" data-act="vpn">Details</button></div>
     ${field('Reconnect the VPN after', 'reconnect', { type: 'number', min: 0, suffix: 'failures', help: 'Consecutive downloads where every source failed. 0 = never.' })}</section>`,
+  logging: () => `<section class="section" aria-labelledby="h-set"><h2 id="h-set" class="t-l">Logging</h2>
+    <p class="b-m v">What the container prints to <span class="mono">docker logs</span>. Errors and warnings are always shown. Changes apply immediately.</p>
+    <div class="seg" role="radiogroup" aria-label="Preset" style="align-self:flex-start">${LOG_PRESETS.map(([l]) => `<button role="radio" aria-checked="${logPreset() === l}" data-act="logpreset" data-k="${l}">${logPreset() === l ? ic('check') : ''}${l}</button>`).join('')}</div>
+    <div class="col">${LOG_CATS.map(([k, l, h]) => `<div class="row" style="min-height:56px;gap:16px"><span class="grow col"><span class="b-l">${l}</span><span class="b-m v">${h}</span></span>
+      <button class="sw" role="switch" aria-checked="${S.set.log.includes(k)}" aria-label="Log ${l}" data-act="logcat" data-k="${k}"><span class="th">${S.set.log.includes(k) ? ic('check') : ''}</span></button></div>`).join('')}</div>
+    <pre class="mono" style="background:var(--md-sc-low);border-radius:16px;padding:14px 16px;margin:0;overflow:auto;font-size:12px;line-height:18px;color:var(--md-on-surface-variant)">21:35:09  INFO   VPN       Connected · tun0
+21:36:10  INFO   DOWNLOAD  Downloading  Bob Sinclar – World, Hold On
+21:36:48  ERROR  ENRICH    Failed       World, Hold On: Unrecognised audio format</pre></section>`,
   info: () => {
     const v = S.ver;
     const installed = v ? (v.installed === 'unknown' ? 'Unknown' : v.installed) : (S.verError ? '—' : 'Checking…');
@@ -1625,6 +1642,8 @@ A.section = (el) => { S.section = el.dataset.k; render(); };
 A.scheme = (el) => { store.set('scheme', el.dataset.k); applyTheme(); render(); };
 A.mode = (el) => { store.set('mode', el.dataset.k); applyTheme(); render(); };
 A.theme = () => { store.set('mode', document.documentElement.dataset.mode === 'dark' ? 'light' : 'dark'); applyTheme(); render(); };
+A.logpreset = (el) => { S.set.log = [...LOG_PRESETS.find(([l]) => l === el.dataset.k)[1]]; saved(); render(); };
+A.logcat = (el) => { const l = S.set.log, k = el.dataset.k; S.set.log = l.includes(k) ? l.filter((x) => x !== k) : [...l, k]; saved(); render(); };
 A.tog = (el) => { const p = el.dataset.path; setPath(S.set, p, !getPath(S.set, p)); saved(); render(); };
 A.m3u = (el) => { S.set.m3u = el.dataset.k; saved(); render(); };
 A.token = (el) => { S.set.fmt += el.dataset.t; const i = $('#f-fmt'); if (i) i.value = S.set.fmt; const pv = $('#fmt-preview'); if (pv) pv.textContent = fmtPreview(); saved(); };

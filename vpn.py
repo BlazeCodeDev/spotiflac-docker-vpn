@@ -2,8 +2,11 @@ import json
 import logging
 import os
 import subprocess
+import threading
 import time
 import urllib.request
+
+import applog
 
 log               = logging.getLogger(__name__)
 _ip_cache:  dict  = {}
@@ -58,5 +61,40 @@ def ip_info() -> dict:
         _ip_cache["ts"]   = now
         return data
     except Exception as exc:
-        log.warning("ip-api fetch failed: %s", exc)
+        log.debug("ip-api fetch failed: %s", exc)
         return {"error": str(exc)}
+
+
+def _exit_place() -> str:
+    """"203.0.113.4 · Frankfurt, Germany" for the tunnel's exit, or "" if the lookup fails."""
+    for attempt in range(3):
+        _ip_cache.clear()
+        d = ip_info()
+        if d.get("query"):
+            where = ", ".join(x for x in (d.get("city"), d.get("country")) if x)
+            return d["query"] + (f" · {where}" if where else "")
+        time.sleep(2 * (attempt + 1))
+    return ""
+
+
+def start_watch(interval: float = 10.0) -> None:
+    """Log the tunnel coming up (with its exit IP) and going down. The entrypoint logs the
+    connecting/reconnecting side; this is what it can't see, the address the world gets."""
+    def run():
+        was_up, since = None, None
+        while True:
+            try:
+                st = tunnel_status()
+                now_since = _read_tunnel_start()
+                if st["connected"]:
+                    if was_up is not True or now_since != since:
+                        place = _exit_place()
+                        applog.event("vpn", "Connected · " + st["interface"] + (" · " + place if place else ""))
+                    since = now_since
+                elif was_up:
+                    applog.event("vpn", "Tunnel down · traffic is blocked until it reconnects", 30)
+                was_up = st["connected"]
+            except Exception as exc:
+                log.debug("VPN watch: %s", exc)
+            time.sleep(interval)
+    threading.Thread(target=run, daemon=True, name="vpn-watch").start()

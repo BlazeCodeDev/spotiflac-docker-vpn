@@ -52,6 +52,8 @@ def _defaults() -> dict:
         "listenbrainz_username":      os.environ.get("LB_USERNAME",  ""),
         "listenbrainz_days":          [int(x) for x in os.environ.get("LB_DAYS", "0,1,2,3,4,5,6").split(",") if x.strip().isdigit()],
         "listenbrainz_time":          os.environ.get("LB_TIME", "06:00"),
+        # Which information lines the container log prints (see applog.py); errors always print.
+        "log_categories": [s.strip() for s in os.environ.get("LOG_CATEGORIES", "vpn,downloads,enrich,system").split(",") if s.strip()],
     }
 
 
@@ -76,6 +78,11 @@ def save(updates: dict) -> None:
             if k in allowed:
                 current[k] = v
         _persist(current)
+    try:
+        import applog
+        applog.apply(current.get("log_categories"))
+    except Exception:
+        pass
 
 
 def _persist(data: dict) -> None:

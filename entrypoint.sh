@@ -33,12 +33,31 @@ LOG_LEVEL="${LOG_LEVEL:-info}"
 # broke Patch F's old 3-line anchor (now a single-line anchor).
 SPOTIFLAC_PINNED="5.0.1"
 
-log()   { echo "[vpn] $(date '+%H:%M:%S') INFO  $*"; }
-err()   { echo "[vpn] $(date '+%H:%M:%S') ERROR $*" >&2; }
+# Log lines share the app's layout (see applog.py):
+#   21:35:09  INFO   VPN       Connecting · OpenVPN
+# Which information lines print is chosen in Settings → Logging; this reads the same settings
+# file on every call, so a change applies at once. Errors and warnings always print.
+_line() { printf '%s  %-5s  %-8s  %s\n' "$(date '+%H:%M:%S')" "$1" "$2" "$3"; }
+_on() {
+    [ "$LOG_LEVEL" = "debug" ] && return 0
+    _l=$(tr -d ' \t\r\n' 2>/dev/null < "${SETTINGS_FILE:-/vpn/settings.json}" | sed -n 's/.*"log_categories":\[\([^]]*\)\].*/L\1/p')
+    [ -n "$_l" ] || _l='L"vpn","downloads","enrich","system"'     # not saved yet: the defaults
+    _l="${_l#L}"
+    case ",$_l," in *",\"$1\","*) return 0 ;; esac
+    return 1
+}
+log()   { if _on detail; then _line INFO SYSTEM "$*"; fi; }   # setup chatter: Diagnostic detail
+vlog()  { if _on vpn;    then _line INFO VPN "$*"; fi; }
+slog()  { if _on system; then _line INFO SYSTEM "$*"; fi; }
+warn()  { _line WARN SYSTEM "$*"; }
+err()   { _line ERROR SYSTEM "$*" >&2; }
+verr()  { _line ERROR VPN "$*" >&2; }
 die()   { err "$*"; exit 1; }
 debug() {
-    [ "$LOG_LEVEL" = "debug" ] && echo "[vpn] $(date '+%H:%M:%S') DEBUG $*" || true
+    if [ "$LOG_LEVEL" = "debug" ]; then _line DEBUG SYSTEM "$*"; fi
 }
+# Output of other tools (wg-quick, the patcher): shown only as Diagnostic detail.
+_quiet() { if _on detail; then sed 's/^/                              /'; else cat > /dev/null; fi; }
 
 # ─────────────────────────────────────────────────────────────────────────────
 CREDS_DIR=/vpn
@@ -48,7 +67,7 @@ mkdir -p "$CREDS_DIR"
 # read the VPN credentials living directly in /vpn. Every secret file in here is
 # additionally locked to 0600 (see lock_down_creds), so 0711 exposes nothing.
 if ! chmod 711 "$CREDS_DIR" 2>/dev/null; then
-    log "WARN: chmod 711 on $CREDS_DIR failed — volume may be read-only"
+    warn "chmod 711 on $CREDS_DIR failed — volume may be read-only"
 fi
 
 # ── Unprivileged app user + writable app-state dir ─────────────────────────────
@@ -126,7 +145,7 @@ case "$VPN_PROTOCOL" in
     openvpn|wireguard) ;;
     *) die "VPN_PROTOCOL must be 'openvpn' or 'wireguard', got: $VPN_PROTOCOL" ;;
 esac
-log "Protocol: $VPN_PROTOCOL"
+slog "Starting · $VPN_PROTOCOL VPN"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OpenVPN setup
@@ -168,7 +187,7 @@ _rotate_vpn_config() {
     echo "$_i" > "$_VPN_CFG_IDX"
     _next=$(sed -n "$((_i + 1))p" "$_VPN_CFGS")
     cp "$_next" "$CREDS_DIR/config.ovpn"
-    log "Rotated to VPN config $_i: $(basename "$_next")"
+    vlog "Server · $(basename "$_next")"
 }
 
 setup_openvpn() {
@@ -294,7 +313,7 @@ resolve_servers() {
             log "VPN server resolved: $server → $ip"
             RESOLVED="$RESOLVED $ip"
         else
-            log "WARN: Could not resolve $server — using hostname directly"
+            warn "Could not resolve $server — using hostname directly"
             RESOLVED="$RESOLVED $server"
         fi
     done
@@ -326,7 +345,7 @@ set_vpn_dns() {
     fi
     printf 'nameserver %s\n' $VPN_DNS > /etc/resolv.conf 2>/dev/null \
         && log "DNS: lookups now routed through tunnel via: $VPN_DNS" \
-        || log "WARN: could not rewrite /etc/resolv.conf — DNS may leak"
+        || warn "could not rewrite /etc/resolv.conf — DNS may leak"
 }
 
 restore_docker_dns() {
@@ -340,7 +359,7 @@ restore_docker_dns() {
 # Kill-switch
 # ─────────────────────────────────────────────────────────────────────────────
 apply_killswitch() {
-    log "Activating kill-switch (IPv4 + IPv6)..."
+    slog "Kill-switch on · IPv4 + IPv6"
     IFACE_PATTERN="${VPN_IFACE%%[0-9]*}+"
 
     DOCKER_IFACE=$(ip route show default 2>/dev/null | awk '{print $5}' | head -1)
@@ -378,7 +397,7 @@ apply_killswitch() {
         log "Web UI port $WEB_PORT: INPUT ACCEPT + OUTPUT ESTABLISHED-only on $DOCKER_IFACE"
     else
         iptables -A OUTPUT -o "$DOCKER_IFACE" -p tcp --sport "$WEB_PORT" -j ACCEPT
-        log "WARN: conntrack unavailable — Web UI port $WEB_PORT egress is stateless on $DOCKER_IFACE"
+        warn "conntrack unavailable — Web UI port $WEB_PORT egress is stateless on $DOCKER_IFACE"
     fi
 
     for target in $VPN_SERVERS; do
@@ -408,7 +427,7 @@ apply_killswitch() {
         ip6tables -A OUTPUT -o "$IFACE_PATTERN" -j ACCEPT
         log "IPv6 kill-switch active"
     else
-        log "WARN: ip6tables not available — IPv6 not blocked"
+        warn "ip6tables not available — IPv6 not blocked"
     fi
 
     # ── Debug: dump full iptables rules ──────────────────────────────────────
@@ -429,7 +448,7 @@ setup_return_routing() {
         | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
 
     if [ -z "$DOCKER_GW" ] || [ -z "$ETH0_IP" ]; then
-        log "WARN: Return routing not configured (GW='$DOCKER_GW', IP='$ETH0_IP')"
+        warn "Return routing not configured (GW='$DOCKER_GW', IP='$ETH0_IP')"
         return
     fi
 
@@ -444,7 +463,7 @@ setup_return_routing() {
 start_vpn() {
     case "$VPN_PROTOCOL" in
         openvpn)
-            log "Starting OpenVPN..."
+            vlog "Connecting · OpenVPN"
             openvpn \
                 --config "$CREDS_DIR/config.ovpn" \
                 --auth-nocache \
@@ -453,11 +472,11 @@ start_vpn() {
                 --daemon
             ;;
         wireguard)
-            log "Starting WireGuard..."
+            vlog "Connecting · WireGuard"
             mkdir -p /etc/wireguard
             cp "$CREDS_DIR/wg0.conf" /etc/wireguard/wg0.conf
             chmod 600 /etc/wireguard/wg0.conf
-            wg-quick up wg0 2>&1 | sed 's/^/[wg]   /'
+            wg-quick up wg0 2>&1 | _quiet
             ;;
     esac
 }
@@ -466,7 +485,7 @@ start_vpn() {
 # Wait for tunnel
 # ─────────────────────────────────────────────────────────────────────────────
 wait_for_tunnel() {
-    log "Waiting for interface $VPN_IFACE (max ${VPN_CONNECT_TIMEOUT:-30}s)..."
+    vlog "Waiting for the tunnel · up to ${VPN_CONNECT_TIMEOUT:-30}s"
     max="${VPN_CONNECT_TIMEOUT:-30}"
     i=0
     while [ "$i" -lt "$max" ]; do
@@ -486,7 +505,7 @@ wait_for_tunnel() {
         # Detect OpenVPN errors early
         if [ "$VPN_PROTOCOL" = "openvpn" ] && [ -f /vpn/openvpn.log ]; then
             if grep -q "AUTH_FAILED\|TLS Error\|Connection refused\|SIGTERM" /vpn/openvpn.log 2>/dev/null; then
-                err "OpenVPN reported an error — logs:"
+                verr "OpenVPN reported an error"
                 cat /vpn/openvpn.log >&2
                 die "OpenVPN connection failed"
             fi
@@ -495,7 +514,7 @@ wait_for_tunnel() {
         sleep 1
     done
 
-    err "Tunnel did not come up within ${max}s"
+    verr "Tunnel did not come up within ${max}s"
     [ -f /vpn/openvpn.log ] && cat /vpn/openvpn.log >&2
     die "Timeout"
 }
@@ -539,7 +558,7 @@ PY
 
     if [ -n "$_have" ] && [ "$_have" = "$SPOTIFLAC_VERSION" ]; then
         log "SpotiFLAC already at pinned version $SPOTIFLAC_VERSION — re-patching only"
-        python3 /app/patch_spotiflac.py 2>&1 | sed 's/^/[vpn] /' || true
+        python3 /app/patch_spotiflac.py 2>&1 | _quiet || true
         chmod -R a+rX /spotiflac 2>/dev/null || true
         return
     fi
@@ -551,9 +570,9 @@ PY
     # reinstalls every dependency on every boot. So instead: wipe the dir and
     # do one clean install of the pinned version.
     if [ -n "$_have" ]; then
-        log "SpotiFLAC $_have installed, pinned is $SPOTIFLAC_VERSION — purging and reinstalling"
+        slog "SpotiFLAC $_have is installed, $SPOTIFLAC_VERSION is pinned · reinstalling"
     else
-        log "Installing SpotiFLAC (pinned) $SPOTIFLAC_VERSION..."
+        slog "Installing SpotiFLAC $SPOTIFLAC_VERSION"
     fi
     find /spotiflac -mindepth 1 -delete 2>/dev/null || true
 
@@ -579,8 +598,8 @@ for di in glob.glob("/spotiflac/SpotiFLAC-*.dist-info") + glob.glob("/spotiflac/
         pass
 PY
 )
-    log "SpotiFLAC installed ${_ver:-$SPOTIFLAC_VERSION} — re-patching"
-    python3 /app/patch_spotiflac.py 2>&1 | sed 's/^/[vpn] /' || true
+    slog "SpotiFLAC ${_ver:-$SPOTIFLAC_VERSION} installed"
+    python3 /app/patch_spotiflac.py 2>&1 | _quiet || true
 
     # /spotiflac is written as root; make sure the app user can import it.
     chmod -R a+rX /spotiflac 2>/dev/null || true
@@ -592,7 +611,7 @@ PY
 start_app() {
     # Single worker to preserve shared in-memory job queue; threads handle
     # concurrent requests. Timeout 300s covers long SSE streams (library organizer).
-    APP_CMD="${APP_CMD:-gunicorn --bind 0.0.0.0:${PORT:-5000} --workers 1 --threads 4 --timeout 300 app:app}"
+    APP_CMD="${APP_CMD:-gunicorn --bind 0.0.0.0:${PORT:-5000} --workers 1 --threads 4 --timeout 300 --log-level warning app:app}"
     WEB_PORT="${PORT:-5000}"
 
     log "Starting app as ${APP_USER} (uid $PUID) — no NET_ADMIN, kill-switch enforcing"
@@ -626,7 +645,7 @@ start_app() {
 
     # Process is running but port not open yet — continue anyway
     if kill -0 "$APP_PID" 2>/dev/null; then
-        log "WARN: App (PID $APP_PID) is running but port $WEB_PORT not open after 15s"
+        warn "App is running but port $WEB_PORT is not open after 15s"
     fi
 }
 
@@ -637,13 +656,13 @@ start_app() {
 # ─────────────────────────────────────────────────────────────────────────────
 reconnect_vpn() {
     _max="${VPN_RECONNECT_TRIES:-3}"
-    log "Reconnecting VPN (kill-switch stays active, up to $_max attempts)..."
+    vlog "Reconnecting · kill-switch stays on, up to $_max attempts"
     # Tunnel is down: put Docker's resolver back so OpenVPN can re-resolve its
     # (IP-whitelisted) server hostname. set_vpn_dns runs again once tunnel is up.
     restore_docker_dns
     _try=1
     while [ "$_try" -le "$_max" ]; do
-        log "Reconnect attempt $_try/$_max..."
+        vlog "Reconnect attempt $_try of $_max"
         case "$VPN_PROTOCOL" in
             openvpn)
                 if [ -f /vpn/openvpn.pid ]; then
@@ -664,7 +683,7 @@ reconnect_vpn() {
             wireguard)
                 wg-quick down wg0 2>/dev/null || true
                 sleep 1
-                wg-quick up wg0 2>&1 | sed 's/^/[wg]   /'
+                wg-quick up wg0 2>&1 | _quiet
                 ;;
         esac
         _max_wait="${VPN_CONNECT_TIMEOUT:-30}"
@@ -679,14 +698,14 @@ reconnect_vpn() {
             fi
             if [ "$VPN_PROTOCOL" = "openvpn" ] && [ -f /vpn/openvpn.log ]; then
                 if grep -q "AUTH_FAILED\|TLS Error\|Connection refused" /vpn/openvpn.log 2>/dev/null; then
-                    err "OpenVPN fatal error on attempt $_try"
+                    verr "OpenVPN fatal error on attempt $_try"
                     break
                 fi
             fi
             _w=$((_w + 1))
             sleep 1
         done
-        err "Reconnect attempt $_try/$_max failed"
+        verr "Reconnect attempt $_try of $_max failed"
         _try=$((_try + 1))
     done
     return 1
@@ -703,20 +722,20 @@ monitor_tunnel() {
         # App-requested VPN reconnect (triggered when downloads are all failing)
         if [ -f /tmp/vpn_reconnect ]; then
             rm -f /tmp/vpn_reconnect
-            log "Download worker requested VPN reconnect (IP block detected)"
+            vlog "Reconnecting · downloads were being blocked"
             if reconnect_vpn; then
-                log "VPN reconnected to new server after IP block"
+                vlog "Reconnected · new server"
             else
-                err "VPN reconnect after IP block failed — will retry next cycle"
+                verr "Reconnect failed · will try again"
             fi
             continue
         fi
 
         # Tunnel check
         if ! ip link show "$VPN_IFACE" > /dev/null 2>&1; then
-            err "Tunnel $VPN_IFACE is no longer active — attempting reconnect (kill-switch remains active)"
+            verr "Tunnel lost · reconnecting, kill-switch stays on"
             if ! reconnect_vpn; then
-                err "All reconnect attempts failed — shutting down container"
+                verr "All reconnect attempts failed · shutting down"
                 [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null || true
                 exit 1
             fi
@@ -727,9 +746,9 @@ monitor_tunnel() {
         if [ "$VPN_PROTOCOL" = "openvpn" ] && [ -f /vpn/openvpn.pid ]; then
             OVPN_PID=$(cat /vpn/openvpn.pid)
             if ! kill -0 "$OVPN_PID" 2>/dev/null; then
-                err "OpenVPN process (PID $OVPN_PID) died — attempting reconnect (kill-switch remains active)"
+                verr "OpenVPN stopped · reconnecting, kill-switch stays on"
                 if ! reconnect_vpn; then
-                    err "All reconnect attempts failed — shutting down container"
+                    verr "All reconnect attempts failed · shutting down"
                     [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null || true
                     exit 1
                 fi
@@ -747,9 +766,9 @@ monitor_tunnel() {
         # Optional ping check through the tunnel
         if [ -n "$VPN_PING_HOST" ]; then
             if ! ping -c 1 -W 5 -I "$VPN_IFACE" "$VPN_PING_HOST" > /dev/null 2>&1; then
-                err "Ping $VPN_PING_HOST via $VPN_IFACE failed — attempting reconnect (kill-switch remains active)"
+                verr "Ping to $VPN_PING_HOST failed · reconnecting, kill-switch stays on"
                 if ! reconnect_vpn; then
-                    err "All reconnect attempts failed — shutting down container"
+                    verr "All reconnect attempts failed · shutting down"
                     [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null || true
                     exit 1
                 fi
@@ -765,7 +784,7 @@ monitor_tunnel() {
 # Re-apply SpotiFLAC patches on every startup so in-place pip upgrades via the
 # UI are automatically patched before the app starts.
 log "Applying SpotiFLAC patches..."
-python3 /app/patch_spotiflac.py 2>&1 | sed 's/^/[vpn] /' || true
+python3 /app/patch_spotiflac.py 2>&1 | _quiet || true
 
 # Snapshot Docker's embedded resolver BEFORE we start swapping DNS, so it can
 # be restored during reconnects (see restore_docker_dns).

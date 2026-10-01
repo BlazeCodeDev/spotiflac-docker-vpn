@@ -19,6 +19,7 @@ import settings as _settings
 import worker
 import vpn
 import lib_index
+import applog
 from config import Config
 
 log = logging.getLogger(__name__)
@@ -109,6 +110,10 @@ def _patch_spotify_client(client):
 
 if _spotify is not None:
     _patch_spotify_client(_spotify)
+
+
+def plural_n(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
 
 
 def _safe_int(value, default: int) -> int:
@@ -1768,6 +1773,11 @@ def _write_release_tags(abs_path: str, rel: dict) -> bool:
     return True
 
 
+def _enrich_name(rel: str) -> str:
+    """The file name without folders or extension, for log lines."""
+    return os.path.splitext(rel.rsplit("/", 1)[-1])[0]
+
+
 def _repair_album(abs_path: str, audio, isrc: str, strong: bool) -> tuple[str, dict | None]:
     """(step text, release written or None). Never raises."""
     album = str((audio.get("album") or [""])[0]).strip()
@@ -2307,6 +2317,7 @@ def _scan_start(kind: str) -> bool:
         st["phase"], st["done"] = name, 0
 
     def work():
+        applog.event("library", f"Started      {_SCAN_LABELS[kind].lower()}")
         try:
             rels = [os.path.relpath(a, root).replace(os.sep, "/") for a, _ in _org_collect(root)]
             st["total"] = len(rels)
@@ -2339,11 +2350,15 @@ def _scan_start(kind: str) -> bool:
             st["cancelled"] = True
             st["summary"] = "Cancelled"
         except Exception as exc:
-            log.exception("%s failed", _SCAN_LABELS[kind])
+            applog.event("library", f"{_SCAN_LABELS[kind]} failed: {str(exc)[:200]}", logging.ERROR)
+            log.debug("scan traceback", exc_info=True)
             st["error"] = str(exc)[:200]
         finally:
             st["elapsed"] = round(time.monotonic() - st["started_at"], 1)
             st["running"] = False
+            if not st["error"]:
+                applog.event("library", f"{'Stopped      ' if st['cancelled'] else 'Finished     '}{_SCAN_LABELS[kind].lower()}"
+                             + ("" if st["cancelled"] else f" · {st['summary']}") + f" · {applog.short(st['elapsed'])}")
             if st["cancelled"]:
                 # A stopped scan has nothing to show — drop it so it also
                 # disappears from Background Tasks instead of lingering.
@@ -2894,6 +2909,9 @@ def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
             yield {"type": "step", "id": "album", "text": "Album may be a compilation — looking for the original release…", "pending": True}
             _txt, _rel = _repair_album(abs_path, audio, isrc, _strong)
             yield {"type": "step", "id": "album", "text": _txt, "pending": False}
+            if _rel or _txt.startswith("Album check skipped"):
+                applog.event("enrich", f"Album        {_enrich_name(rel)} · {_txt}",
+                             logging.INFO if _rel else logging.WARNING)
             if _rel:
                 album_fixed = enriched = True
                 # The art that came with the compilation is the wrong art now.
@@ -3007,7 +3025,7 @@ def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
         yield {"type": "result", "enriched": enriched, "moved": moved,
                "error": None, "elapsed": round(time.monotonic() - _t0, 1)}
     except Exception as exc:
-        log.warning("Enrich failed for %s: %s", rel, exc)
+        applog.event("enrich", f"Failed       {_enrich_name(rel)}: {str(exc)[:200]}", logging.ERROR)
         yield {"type": "result", "enriched": enriched, "moved": moved,
                "error": str(exc)[:200], "elapsed": round(time.monotonic() - _t0, 1)}
 
@@ -3073,6 +3091,7 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
         _enrich_state.update(total=total, done=0, enriched=0, moved=0,
                              dupes=dupes, dupes_log=list(dupes_log),
                              errors=0, error_log=[], moved_log=[], started_at=t0)
+    applog.event("enrich", f"Enriching    {plural_n(total, 'song')}")
 
     for i, rel in enumerate(rel_paths):
         if _enrich_cancel.is_set():
@@ -3082,6 +3101,7 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
             abs_path = _safe_lib_path(rel)
         except ValueError:
             errors += 1
+            applog.event("enrich", f"Failed       {_enrich_name(rel)}: path is outside the library", logging.ERROR)
             if len(error_log) < 50:
                 error_log.append({"path": rel, "error": "Path outside library"})
             with _enrich_lock:
@@ -3090,6 +3110,7 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
 
         if not os.path.isfile(abs_path):
             errors += 1
+            applog.event("enrich", f"Failed       {_enrich_name(rel)}: file not found", logging.ERROR)
             if len(error_log) < 50:
                 error_log.append({"path": rel, "error": "File not found"})
             with _enrich_lock:
@@ -3124,8 +3145,9 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
                              dupes=dupes, dupes_log=list(dupes_log),
                              errors=errors,
                              error_log=list(error_log), moved_log=list(moved_log))
-    log.info("Enrich done — %d enriched, %d moved, %d dupes removed, %d errors in %.1fs",
-             enriched, moved, dupes, errors, elapsed)
+    applog.event("enrich", f"Finished     {plural_n(total, 'song')} · {enriched} updated · {moved} moved"
+                 + (f" · {dupes} duplicates removed" if dupes else "") + (f" · {errors} failed" if errors else "")
+                 + f" · {applog.short(elapsed)}", logging.WARNING if errors else logging.INFO)
 
 
 @bp.post("/api/library/enrich")
@@ -3512,6 +3534,13 @@ def api_settings_patch():
             updates["quality"] = raw
         else:
             errors["quality"] = "must be 'high', 'lossless', or 'hires'"
+
+    if "log_categories" in body:
+        raw = body["log_categories"]
+        if not isinstance(raw, list):
+            errors["log_categories"] = "must be a list"
+        else:
+            updates["log_categories"] = [k for k in applog.KEYS if k in raw]
 
     if "extension_registries" in body:
         raw = body["extension_registries"]

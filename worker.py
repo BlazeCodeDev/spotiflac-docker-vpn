@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import asyncio as _asyncio
 
+import applog
 import lib_index
 
 from SpotiFLAC.downloader import SpotiflacDownloader, DownloadWorker, DownloadOptions
@@ -518,6 +519,32 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
     return jid
 
 
+def _jobname(job_id: str) -> str:
+    with _lock:
+        j = _jobs.get(job_id) or {}
+    return j.get("title") or j.get("url") or job_id
+
+
+def _who(artists, title) -> str:
+    """"Artist – Title" for a log line (first credited artist only, long values cut)."""
+    first = str(artists or "").split(",")[0].strip()
+    text = f"{first} – {title}" if first else str(title or "Unknown")
+    return text if len(text) <= 90 else text[:89] + "…"
+
+
+def _track_event(r: dict) -> None:
+    """One line per song as it starts and ends, for the container log."""
+    who, status = _who(r.get("artists"), r.get("title")), r.get("status")
+    if status == "downloading":
+        applog.event("downloads", f"Downloading  {who}")
+    elif status == "done":
+        applog.event("downloads", f"Downloaded   {who} · {applog.short(r.get('elapsed_s') or 0)}")
+    elif status == "found":
+        applog.event("downloads", f"Skipped      {who} · already in library")
+    elif r.get("success") is False:
+        applog.event("downloads", f"Failed       {who}: {r.get('error') or 'unknown error'}", logging.ERROR)
+
+
 def _update_fail_streak(success: bool) -> None:
     global _fail_streak
     import settings as _s
@@ -533,7 +560,7 @@ def _update_fail_streak(success: bool) -> None:
             _fail_streak = 0
             try:
                 open(_VPN_RECONNECT, "w").close()
-                log.warning("All-provider failure streak hit %d — requesting VPN reconnect", threshold)
+                applog.event("vpn", f"Reconnect requested · {threshold} downloads in a row failed on every source", logging.WARNING)
             except Exception:
                 pass
 
@@ -1318,11 +1345,13 @@ def _run(job_id: str) -> None:
             _track_index: dict[str, int] = {}
 
             def _on_track_start(r):
+                _track_event(r)
                 _track_index[r["track_id"]] = len(track_results)
                 track_results.append(r)
                 _update(job_id, track_results=list(track_results))
 
             def _on_track_result(r):
+                _track_event(r)
                 idx = _track_index.get(r["track_id"])
                 if idx is not None:
                     track_results[idx] = r
@@ -1389,9 +1418,13 @@ def _run(job_id: str) -> None:
             # Treat complete failure (all tracks failed) same as an exception so
             # auto-retry kicks in.  Partial success (at least one track OK) is done.
             succeeded = (new_success > 0) or not track_results
+            if total_count > 1:
+                applog.event("downloads", f"Finished     {_jobname(job_id)} · {success_count} of {total_count} downloaded"
+                             + (f" · {fail_count} failed" if fail_count else ""),
+                             logging.INFO if new_success else logging.ERROR)
             _update_fail_streak(succeeded and bool(track_results))
         except Exception as exc:
-            log.error("Job %s failed: %s", job_id, exc)
+            applog.event("downloads", f"Failed       {_jobname(job_id)}: {exc}", logging.ERROR)
             _update(job_id, status="error", error=str(exc), finished_at=_now(),
                     track_results=track_results if track_results else None,
                     success_count=sum(1 for r in track_results if r["success"]) if track_results else None,
@@ -1421,6 +1454,7 @@ def _run(job_id: str) -> None:
         retry_count = (j.get("retry_count") or 0) + 1
 
         if max_retries > 0 and retry_count > max_retries:
+            applog.event("downloads", f"Gave up      {_jobname(job_id)} after {max_retries} retr{'y' if max_retries == 1 else 'ies'}", logging.ERROR)
             _update(job_id, status="error", finished_at=_now(),
                     error=f"Failed after {max_retries} auto-retr{'y' if max_retries == 1 else 'ies'}")
             _cancel.pop(job_id, None)
@@ -1435,6 +1469,8 @@ def _run(job_id: str) -> None:
         last_error = cur.get("error") or next(
             (r.get("error") for r in (cur.get("track_results") or []) if not r.get("success") and r.get("error")),
             "All tracks failed")
+        applog.event("downloads", f"Retrying     {_jobname(job_id)} in {interval_min} min · attempt {retry_count}"
+                     + (f" of {max_retries}" if max_retries else "") + f" · {str(last_error)[:120]}", logging.WARNING)
         _update(job_id, status="queued", finished_at=None, error=None,
                 retry_count=retry_count, retry_max=max_retries,
                 next_retry_at=next_retry_at, last_error=str(last_error)[:300])

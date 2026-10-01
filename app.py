@@ -18,45 +18,27 @@ import listenbrainz as _lb
 from config import Config
 from routes import bp
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="[app] %(asctime)s %(message)s",
-    datefmt="%H:%M:%S",
-)
-logging.getLogger("urllib3").setLevel(logging.WARNING)
-# pydoll (Chromium automation for Cloudflare Turnstile solving, core/solver.py)
-# logs every low-level browser interaction at INFO — "EventsManager
-# initialized", "Clicking element via JS", "Scrolling element into view", etc.
-# (100+ logger.info() call sites across the package, not a handful) — floods
-# the log during every Turnstile solve. Setting the parent "pydoll" logger's
-# level suppresses all of its child-module loggers (logging.getLogger(__name__)
-# in each file), same pattern as urllib3 above.
-logging.getLogger("pydoll").setLevel(logging.WARNING)
+import applog
+import vpn
+
+_cfg = _settings.load()
+applog.setup(_cfg.get("log_categories"))
 
 os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
-_cfg = _settings.load()
 worker.init(_cfg["max_workers"])
 lib_index.start(lambda: Config.OUTPUT_DIR)
 _lb.start()
-
-_log = logging.getLogger("startup")
+vpn.start_watch()
 
 import audiofp as _afp
+_log = logging.getLogger("startup")
 if _afp.unavailable_reason():
-    _log.warning("Audio fingerprinting disabled: %s", _afp.unavailable_reason())
-else:
-    _log.info("Audio fingerprinting available (fpcalc: %s)", _afp.shutil.which("fpcalc"))
-_log.info("OUTPUT_DIR  = %s", os.path.abspath(Config.OUTPUT_DIR))
-_log.info("PORT        = %s", Config.PORT)
-_log.info("SERVICES    = %s", _cfg["services"])
-_log.info("MAX_WORKERS = %s", _cfg["max_workers"])
-_log.info("VPN_PROTOCOL= %s", Config.VPN_PROTOCOL)
-_log.info("UI_PASSWORD = %s", "set" if Config.UI_PASSWORD else "not set (no protection)")
-if os.environ.get("LOG_LEVEL", "").lower() == "debug":
-    import socket
-    _log.debug("Hostname    = %s", socket.gethostname())
-    _log.debug("Working dir = %s", os.getcwd())
-    _log.debug("Python path = %s", os.sys.executable)
+    _log.warning("Audio fingerprinting is off: %s", _afp.unavailable_reason())
+applog.event("system", "Ready · port %s · %s workers · output %s%s" % (
+    Config.PORT, _cfg["max_workers"], os.path.abspath(Config.OUTPUT_DIR),
+    "" if Config.UI_PASSWORD else " · no UI password"))
+_log.debug("services=%s vpn=%s fingerprinting=%s", _cfg["services"], Config.VPN_PROTOCOL,
+           _afp.shutil.which("fpcalc") or "unavailable")
 
 app = Flask(__name__, template_folder="templates")
 
