@@ -431,6 +431,21 @@ def reorder_jobs(ids: list) -> None:
     _save()
 
 
+_skip_wait: dict[str, threading.Event] = {}
+
+
+def retry_now(job_id: str) -> bool:
+    """A failed job counting down to its automatic retry: start that retry immediately."""
+    with _lock:
+        j = _jobs.get(job_id)
+        waiting = bool(j and j["status"] == "queued" and j.get("next_retry_at"))
+    ev = _skip_wait.get(job_id)
+    if not waiting or ev is None:
+        return False
+    ev.set()
+    return True
+
+
 def retry_job(job_id: str) -> bool:
     with _lock:
         j = _jobs.get(job_id)
@@ -1414,9 +1429,15 @@ def _run(job_id: str) -> None:
         next_retry_at = (
             datetime.now(timezone.utc) + timedelta(seconds=interval_min * 60)
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Keep why it failed, so the queue can say what it's retrying (error is cleared while queued).
+        with _lock:
+            cur = dict(_jobs.get(job_id) or {})
+        last_error = cur.get("error") or next(
+            (r.get("error") for r in (cur.get("track_results") or []) if not r.get("success") and r.get("error")),
+            "All tracks failed")
         _update(job_id, status="queued", finished_at=None, error=None,
                 retry_count=retry_count, retry_max=max_retries,
-                next_retry_at=next_retry_at)
+                next_retry_at=next_retry_at, last_error=str(last_error)[:300])
 
         # Release slot before sleeping so other jobs can run.
         _semaphore.release()
@@ -1424,10 +1445,13 @@ def _run(job_id: str) -> None:
         with _pq_cv:
             _pq_cv.notify_all()
 
+        skip = _skip_wait.setdefault(job_id, threading.Event())
+        skip.clear()
         for _ in range(interval_min * 60):
-            if ev.is_set():
+            if ev.is_set() or skip.is_set():
                 break
             time.sleep(1)
+        _skip_wait.pop(job_id, None)
 
         if ev.is_set():
             _update(job_id, status="cancelled", finished_at=_now())

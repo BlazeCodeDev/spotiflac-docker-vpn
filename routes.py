@@ -258,7 +258,7 @@ def api_reorder_jobs():
 
 @bp.post("/api/jobs/<job_id>/retry")
 def api_retry_job(job_id: str):
-    ok = worker.retry_job(job_id)
+    ok = worker.retry_job(job_id) or worker.retry_now(job_id)
     return (jsonify(ok=True), 200) if ok else (jsonify(error="Not found or not retryable"), 400)
 
 

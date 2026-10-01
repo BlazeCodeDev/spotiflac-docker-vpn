@@ -329,3 +329,9 @@ html[data-scheme=neutral][data-mode=light]{--md-primary:#546069;--md-on-primary:
   .show-sm{display:inline-flex}
   .lib-layout:not(.fopen) .lib-extra{display:none !important}
 }
+
+/* Job waiting to be retried after a failure */
+.card.retry{background:var(--md-tertiary-container);color:var(--md-on-tertiary-container)}
+.card.retry .lead{background:var(--md-tertiary);color:var(--md-sc-lowest)}
+.card.retry .lp .a{background:var(--md-on-tertiary-container);transition:width 1s linear}
+.card.retry .lp .t,.card.retry .lp .t::after{background:color-mix(in srgb,var(--md-on-tertiary-container) 25%,transparent)}

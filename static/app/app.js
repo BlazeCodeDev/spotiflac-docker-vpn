@@ -425,10 +425,21 @@ function resultsHTML() {
 // ── Queue ────────────────────────────────────────────────────────────────
 const jobPct = (j) => (j.status === 'running' && j.total ? Math.min(100, ((j.progress || 0) / j.total) * 100) : null);
 const jobNow = (j) => ((j.track_results || []).find((t) => t.status === 'downloading') || {}).title;
+// A failed job waiting out the retry interval is "queued" with next_retry_at set (and the reason in last_error).
+const retryAt = (j) => (j.status === 'queued' && j.next_retry_at ? parseTime(j.next_retry_at) : 0);
+const attemptText = (j) => (j.retry_count ? `Retry ${j.retry_count}${j.retry_max ? ' of ' + j.retry_max : ''}` : 'Retry');
+function countdown(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s <= 0) return 'now';
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}` : `${m}:${String(sec).padStart(2, '0')}`;
+}
+const retryLine = (j) => { const left = retryAt(j) - Date.now(); return left > 0 ? `${attemptText(j)} in ${countdown(left)}` : `${attemptText(j)} starting…`; };
 function jobNote(j) {
   const total = j.total || 0, prog = j.progress || 0, cur = jobNow(j);
   if (j.status === 'running') return total > 1 ? `${cur ? cur + ' · ' : ''}${prog} of ${total} tracks` : (cur || 'Downloading');
-  if (j.status === 'queued') return 'Waiting for a free worker';
+  if (retryAt(j)) return j.last_error ? `Failed: ${j.last_error}` : 'Failed, will retry';
+  if (j.status === 'queued') return j.retry_count ? `${attemptText(j)} · waiting for a free worker` : 'Waiting for a free worker';
   if (j.status === 'cancelled') return 'Cancelled';
   const mins = j.next_retry_at ? Math.max(0, Math.round((parseTime(j.next_retry_at) - Date.now()) / 60000)) : null;
   return (j.error || 'Failed') + (mins != null && !Number.isNaN(mins) ? ` · retrying in ${mins} min` : '');
@@ -437,10 +448,20 @@ function jobCard(j) {
   const st = j.status, pct = jobPct(j);
   const meta = st === 'running' ? (pct != null ? `${Math.round(pct)}%` : '') : st === 'queued' ? (j.total ? plural(j.total, 'track') : '')
     : st === 'error' && j.retry_count ? `try ${j.retry_count}${j.retry_max ? '/' + j.retry_max : ''}` : '';
-  const icon = st === 'error' ? 'error' : TYPE_ICON[jobKind(j)] || 'music_note';
+  const ra = retryAt(j);
+  const icon = st === 'error' ? 'error' : ra ? 'schedule' : TYPE_ICON[jobKind(j)] || 'music_note';
   const btn = (act, icn, label) => `<button class="ib" data-act="${act}" data-id="${j.id}" aria-label="${label} ${esc(jobTitle(j))}" style="color:inherit">${ic(icn)}</button>`;
   const actions = st === 'error' || st === 'cancelled' ? btn('jretry', 'refresh', 'Retry') + btn('jremove', 'close', 'Remove')
     : btn('jcancel', 'close', st === 'queued' ? 'Remove' : 'Cancel');
+  if (ra) {
+    const span = Math.max(1, ra - parseTime(j.finished_at || j.started_at) || 300000);
+    return `<div class="card retry" data-retry-job="${j.id}">
+    <div class="row" style="gap:14px"><div class="lead">${ic('schedule')}</div>
+      <div class="grow col"><span class="t-m ell">${esc(jobTitle(j))}</span><span class="b-m ell" style="opacity:.85" title="${esc(j.last_error || '')}">${esc(jobNote(j))}</span></div>
+      <span class="mono l-m" data-retry-at="${ra}" aria-live="off">${esc(retryLine(j))}</span>${btn('jretry', 'refresh', 'Retry now')}${btn('jcancel', 'close', 'Cancel')}</div>
+    <div class="lp" aria-hidden="true"><span class="a" data-retry-bar="${ra}" data-retry-span="${span}" style="width:${Math.min(100, Math.max(0, 100 - ((ra - Date.now()) / span) * 100))}%"></span><span class="t"></span></div>
+  </div>`;
+  }
   return `<div class="card ${st === 'error' ? 'err' : st === 'running' ? '' : 'idle'}">
     <div class="row" style="gap:14px"><div class="lead" style="background:${st === 'error' ? 'var(--md-error)' : ''}">${ic(icon)}${st === 'error' ? '' : coverImg(j.cover_url)}</div>
       <div class="grow col"><span class="t-m ell">${esc(jobTitle(j))}</span><span class="b-m ell" style="opacity:.85" data-job-note="${j.id}">${esc(jobNote(j))}</span></div>
@@ -519,7 +540,7 @@ let jobsSig = '', prevStatus = null;
 async function refreshJobs() {
   let d;
   try { d = await api('/api/jobs'); } catch { return; }
-  const sig = JSON.stringify(d.map((j) => [j.id, j.status, j.title, j.total, j.success_count, j.fail_count, j.error, j.next_retry_at, j.cover_url, j.retry_count, j.finished_at]));
+  const sig = JSON.stringify(d.map((j) => [j.id, j.status, j.title, j.total, j.success_count, j.fail_count, j.error, j.next_retry_at, j.last_error, j.cover_url, j.retry_count, j.finished_at]));
   const first = !S.jobsLoaded;
   S.jobs = d; S.jobsLoaded = true;
   if (prevStatus) for (const j of d) { const was = prevStatus[j.id]; if (was && was !== j.status) { if (j.status === 'done') snack(`Done: ${jobTitle(j)}`); else if (j.status === 'error') snack(`Failed: ${jobTitle(j)}`); } }
@@ -1563,9 +1584,22 @@ function enterRoute() {
   }
   if (S.route === 'settings') { loadExt(); loadVersion(); }
 }
+// Retry countdowns tick every second without redrawing the queue.
+function tickRetries() {
+  const now = Date.now();
+  $$('[data-retry-at]').forEach((el) => {
+    const j = S.jobs.find((x) => x.id === el.closest('[data-retry-job]').dataset.retryJob);
+    if (j) el.textContent = retryLine(j);
+  });
+  $$('[data-retry-bar]').forEach((el) => {
+    const at = +el.dataset.retryBar, span = +el.dataset.retrySpan;
+    el.style.width = Math.min(100, Math.max(0, 100 - ((at - now) / span) * 100)) + '%';
+  });
+}
 function boot() {
   loadSettings(); refreshJobs(); refreshTasks(); loadVpn();
   setInterval(() => { if (!document.hidden) refreshJobs(); }, 2500);
+  setInterval(() => { if (!document.hidden && S.route === 'download') tickRetries(); }, 1000);
   setInterval(() => { if (!document.hidden) refreshTasks(); }, 3000);
   setInterval(() => { if (!document.hidden) loadVpn(); }, 10000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { refreshJobs(); refreshTasks(); loadVpn(); } });
