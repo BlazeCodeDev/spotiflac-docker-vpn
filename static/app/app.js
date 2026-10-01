@@ -969,6 +969,7 @@ function viewLibrary() {
             ? `<span>${esc(c)}</span>` : `<button class="btn text" style="height:28px;padding:0 6px" data-act="crumb" data-i="${i}">${esc(c)}</button><span>/</span>`).join('')}
             <span id="lib-total">${libTotal()}</span></nav></div>
         <label class="searchbar sm" style="width:300px;max-width:100%">${ic('search', 'v')}<input id="lq" type="search" enterkeyhint="search" value="${esc(L.q)}" placeholder="Search library" aria-label="Search library" data-input="lq" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          <button class="ib" data-act="clearlq" aria-label="Clear search" ${L.q ? '' : 'hidden'}>${ic('close')}</button>
           <button class="ib show-sm ${libFiltersActive() ? 'dotted' : ''}" data-act="libfilters" aria-expanded="${!!L.filtersOpen}" aria-label="Filters and view" title="Filters and view">${ic('tune')}</button></label>
         <div class="seg lib-extra" role="radiogroup" aria-label="View">
           <button role="radio" aria-checked="${L.view === 'folders'}" data-act="view" data-k="folders">${L.view === 'folders' ? ic('check') : ''}Folders</button>
@@ -1334,6 +1335,7 @@ A.paste = () => {
   }, 0);
 };
 A.pasteq = () => { navigator.clipboard?.readText().then((t) => { if (t) { S.q = t.trim(); scheduleSearch(); render(); $('#q')?.focus(); } }).catch(() => snack('Clipboard is blocked by the browser — paste with Ctrl+V')); };
+A.clearlq = () => { const i = $('#lq'); if (i) { i.value = ''; i.focus(); INPUT.lq(i); } };
 A.clearq = () => { S.q = ''; scheduleSearch(); render(); $('#q')?.focus(); };
 A.type = (el) => { S.type = el.dataset.k; renderResults(); };
 A.quality = (el) => { S.quality = el.dataset.k; store.set('quality', S.quality); render(); saved(); };
@@ -1801,7 +1803,7 @@ let lqTimer;
 const INPUT = {
   seed: (el) => { store.set('seed', el.value); store.set('scheme', 'custom'); applyTheme(); },
   q: (el) => { S.q = el.value; scheduleSearch(); renderResults(); },
-  lq: (el) => { S.lib.q = el.value; clearTimeout(lqTimer); lqTimer = setTimeout(libQuery, 200); },
+  lq: (el) => { S.lib.q = el.value; const c = $('[data-act=clearlq]'); if (c) c.hidden = !el.value; clearTimeout(lqTimer); lqTimer = setTimeout(libQuery, 200); },
   text: (el) => { setPath(S.set, el.dataset.key, el.value); if (el.dataset.key === 'fmt') { const pv = $('#fmt-preview'); if (pv) pv.textContent = fmtPreview(); } saved(); },
   num: (el) => { setPath(S.set, el.dataset.key, Math.max(0, Number(el.value) || 0)); saved(); },
   slider: (el) => {
