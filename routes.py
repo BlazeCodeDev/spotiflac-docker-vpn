@@ -180,19 +180,6 @@ def index():
     return render_template("app.html", git_commit=_GIT_COMMIT, asset_v=_asset_version())
 
 
-@bp.get("/classic")
-def classic():
-    """The previous interface, kept as a fallback (and for Organize, which the new one doesn't have yet)."""
-    cfg = _settings.load()
-    return render_template(
-        "index.html",
-        services=cfg["services"],
-        filename_fmt=cfg["filename_fmt"],
-        git_commit=_GIT_COMMIT,
-        quality=cfg.get("quality", "lossless"),
-    )
-
-
 @bp.post("/api/download")
 def api_download():
     body = request.get_json(silent=True) or {}

@@ -191,7 +191,7 @@ const S = {
   // exact artist matches above the results: their discography, open state and per-artist selection, all keyed by URL
   artists: [], art: { open: new Set(), rel: {}, albOpen: new Set(), trk: {}, sel: {} },
   quality: store.get('quality', 'lossless'),
-  jobs: [], jobsLoaded: false, doneAll: false,
+  jobs: [], jobsLoaded: false, doneAll: false, qsel: null, // qsel: Set of picked job ids while selecting, else null
   vpn: { known: false, on: false, since: null, ip: null },
   tasks: [],
   // library
@@ -202,6 +202,7 @@ const S = {
     tab: 'dups', filters: new Set(['id', 'tags']),
     dups: null, dupsInfo: null, keep: {}, mis: null, misInfo: null,
     sel: { mis: new Set(), name: new Set(), miss: new Set(), bad: new Set() },
+    org: { fmt: '{artist}/{album}/{track} {title}', phase: 'idle', done: 0, total: 0, moved: 0, errors: 0, ops: [], msg: '' },
   },
   section: 'appearance',
   set: clone(DEFAULT_SET), setLoaded: false, setError: '',
@@ -592,6 +593,7 @@ function jobNote(j) {
   const mins = j.next_retry_at ? Math.max(0, Math.round((parseTime(j.next_retry_at) - Date.now()) / 60000)) : null;
   return (j.error || 'Failed') + (mins != null && !Number.isNaN(mins) ? ` · retrying in ${mins} min` : '');
 }
+const jobPick = (j) => (S.qsel ? `<label class="cb"><input type="checkbox" data-act="qpick" data-id="${j.id}" ${S.qsel.has(j.id) ? 'checked' : ''} aria-label="Select ${esc(jobTitle(j))}"></label>` : '');
 function jobCard(j) {
   const st = j.status, pct = jobPct(j);
   const meta = st === 'running' ? (pct != null ? `${Math.round(pct)}%` : '') : st === 'queued' ? (j.total ? plural(j.total, 'track') : '')
@@ -599,19 +601,19 @@ function jobCard(j) {
   const ra = retryAt(j);
   const icon = st === 'error' ? 'error' : ra ? 'schedule' : TYPE_ICON[jobKind(j)] || 'music_note';
   const btn = (act, icn, label) => `<button class="ib" data-act="${act}" data-id="${j.id}" aria-label="${label} ${esc(jobTitle(j))}" style="color:inherit">${ic(icn)}</button>`;
-  const actions = st === 'error' || st === 'cancelled' ? btn('jretry', 'refresh', 'Retry') + btn('jremove', 'close', 'Remove')
+  const actions = S.qsel ? '' : st === 'error' || st === 'cancelled' ? btn('jretry', 'refresh', 'Retry') + btn('jremove', 'close', 'Remove')
     : btn('jcancel', 'close', st === 'queued' ? 'Remove' : 'Cancel');
   if (ra) {
     const span = Math.max(1, ra - parseTime(j.finished_at || j.started_at) || 300000);
     return `<div class="card retry" data-retry-job="${j.id}">
-    <div class="row" style="gap:14px"><div class="lead">${ic('schedule')}</div>
+    <div class="row" style="gap:14px">${jobPick(j)}<div class="lead">${ic('schedule')}</div>
       <div class="grow col"><span class="t-m ell">${esc(jobTitle(j))}</span><span class="b-m ell" style="opacity:.85" title="${esc(j.last_error || '')}">${esc(jobNote(j))}</span></div>
       <span class="mono l-m" data-retry-at="${ra}" aria-live="off">${esc(retryLine(j))}</span>${btn('jretry', 'refresh', 'Retry now')}${btn('jcancel', 'close', 'Cancel')}</div>
     <div class="lp" aria-hidden="true"><span class="a" data-retry-bar="${ra}" data-retry-span="${span}" style="width:${Math.min(100, Math.max(0, 100 - ((ra - Date.now()) / span) * 100))}%"></span><span class="t"></span></div>
   </div>`;
   }
   return `<div class="card ${st === 'error' ? 'err' : st === 'running' ? '' : 'idle'}">
-    <div class="row" style="gap:14px"><div class="lead" style="background:${st === 'error' ? 'var(--md-error)' : ''}">${ic(icon)}${st === 'error' ? '' : coverImg(j.cover_url)}</div>
+    <div class="row" style="gap:14px">${jobPick(j)}<div class="lead" style="background:${st === 'error' ? 'var(--md-error)' : ''}">${ic(icon)}${st === 'error' ? '' : coverImg(j.cover_url)}</div>
       <div class="grow col"><span class="t-m ell">${esc(jobTitle(j))}</span><span class="b-m ell" style="opacity:.85" data-job-note="${j.id}">${esc(jobNote(j))}</span></div>
       <span class="mono l-m" style="opacity:.85" data-job-pct="${j.id}">${meta}</span>${actions}</div>
     ${st === 'running' ? `<div class="lp ${pct == null ? 'ind' : ''}" role="progressbar" aria-label="Progress" aria-valuemin="0" aria-valuemax="100" ${pct != null ? `aria-valuenow="${Math.round(pct)}"` : ''} data-job-bar="${j.id}"><span class="a" style="width:${pct == null ? 30 : pct}%"></span><span class="t"></span></div>` : ''}
@@ -672,16 +674,26 @@ function viewDownload() {
     <div class="col" id="dl-side" style="gap:16px;min-width:0">${dlSideHTML()}</div>
   </div>`;
 }
+function queueBar(q) {
+  const n = S.qsel.size, picked = q.filter((j) => S.qsel.has(j.id));
+  const live = picked.some((j) => j.status === 'queued' || j.status === 'running'), dead = picked.some((j) => j.status === 'error' || j.status === 'cancelled');
+  return `<div class="dock"><span class="b-l grow">${n ? `${n} selected` : 'Select downloads'}</span>
+    <button class="btn text" data-act="qall">${n === q.length ? 'None' : 'All'}</button>
+    <button class="btn tonal" data-act="qbulk" data-k="retry" ${dead ? '' : 'disabled'}>${ic('refresh')}Retry</button>
+    <button class="btn tonal" data-act="qbulk" data-k="cancel" ${live ? '' : 'disabled'}>${ic('stop_circle')}Cancel</button>
+    <button class="btn outlined danger" data-act="qbulk" data-k="remove" ${n ? '' : 'disabled'}>${ic('delete')}Remove</button></div>`;
+}
 function dlSideHTML() {
   const n = (s) => S.jobs.filter((j) => j.status === s).length;
   const failed = n('error');
   const q = queueJobs();
   return `<section class="pane" aria-labelledby="h-q" style="padding:20px;display:flex;flex-direction:column;gap:12px">
       <div class="row"><h2 id="h-q" class="t-l grow">Queue</h2>
-        ${failed ? `<button class="btn text" data-act="retryall">Retry failed</button>` : ''}
-</div>
+        ${failed && !S.qsel ? `<button class="btn text" data-act="retryall">Retry failed</button>` : ''}
+        ${q.length ? `<button class="btn text" data-act="qselect">${S.qsel ? 'Done' : 'Select'}</button>` : ''}</div>
       <div class="row" style="gap:8px"><span class="tag tertiary">${n('running')} running</span><span class="tag neutral">${n('queued')} queued</span>${failed ? `<span class="tag error">${failed} failed</span>` : ''}</div>
       ${!S.jobsLoaded ? '<div class="card idle"><span class="skel" style="height:16px;width:60%;border-radius:4px"></span></div>' : q.length ? q.map(jobCard).join('') : emptyState('done_all', 'Queue is empty', 'Search for something to download.')}
+      ${S.qsel && q.length ? queueBar(q) : ''}
     </section>
     ${finishedCard()}`;
 }
@@ -697,6 +709,7 @@ async function refreshJobs() {
   const sig = JSON.stringify(d.map((j) => [j.id, j.status, j.title, j.total, j.success_count, j.fail_count, j.error, j.next_retry_at, j.last_error, j.cover_url, j.retry_count, j.finished_at]));
   const first = !S.jobsLoaded;
   S.jobs = d; S.jobsLoaded = true;
+  if (S.qsel) for (const id of [...S.qsel]) if (!d.some((j) => j.id === id && j.status in { running: 1, queued: 1, error: 1, cancelled: 1 })) S.qsel.delete(id);
   if (prevStatus) for (const j of d) { const was = prevStatus[j.id]; if (was && was !== j.status) { if (j.status === 'done') snack(`Done: ${jobTitle(j)}`); else if (j.status === 'error') snack(`Failed: ${jobTitle(j)}`); } }
   prevStatus = Object.fromEntries(d.map((j) => [j.id, j.status]));
   if (sig !== jobsSig || first) {
@@ -1163,7 +1176,7 @@ function libGate(body) {
 function healthNames() {
   return libGate(() => {
     const list = misnamed(); const sel = S.h.sel.name;
-    return `<span class="b-m v">These file names don’t match what your naming format makes of their tags. Renaming fixes the file, not the tags. To move files into new folders, use Organize in the <a href="/classic">classic interface</a>.</span>
+    return `<span class="b-m v">These file names don’t match what your naming format makes of their tags. Renaming fixes the file, not the tags. To move files into new folders, use the Folders tab.</span>
     ${list.length ? listRows('name', list, (t) => `<span class="col grow" style="min-width:0"><span class="b-l ell">${esc(t.expected)}</span><span class="mono v ell" style="font-size:12px">now: ${esc(t.file)}</span></span><span class="b-s v hide-sm ell" style="max-width:220px">${esc(t.dir)}</span>`)
       : emptyState('task_alt', 'All file names match their tags')}
     ${list.length ? `<div class="dock"><span class="b-l grow">${sel.size ? plural(sel.size, 'file') + ' selected' : plural(list.length, 'file') + ' to rename'}</span>
@@ -1194,11 +1207,44 @@ function healthBroken() {
   });
 }
 
+// Folders: re-file the whole library by a path format (preview, then apply)
+const orgMoves = () => S.h.org.ops.filter((o) => o.changed);
+function healthOrganize() {
+  const o = S.h.org; const run = o.phase === 'scanning' || o.phase === 'applying';
+  const moves = orgMoves(); const errs = o.ops.filter((x) => x.error);
+  const cap = 300;
+  return `<span class="b-m v">Moves files into folders built from their tags. <b>{artist}</b> is the main artist only, so featured artists stay out of folder names. Preview first, then apply.</span>
+    <div class="field"><div class="box"><label for="org-fmt">Path format</label><input id="org-fmt" value="${esc(o.fmt)}" data-input="orgfmt" autocomplete="off" ${run ? 'disabled' : ''}></div>
+      <span class="help">Tokens: {artist} {album} {track} {title}</span></div>
+    <div class="row wrap" style="gap:8px"><button class="btn tonal" data-act="orgpreview" ${run ? 'disabled' : ''}>${ic('preview')}Preview</button>
+      ${o.phase === 'preview' && moves.length ? `<button class="btn filled" data-act="orgapply">${ic('drive_file_move')}Apply ${plural(moves.length, 'move')}</button>` : ''}</div>
+    ${run ? `<div class="lp ${o.total ? '' : 'ind'}" role="progressbar" aria-label="Progress"><span class="a" style="width:${o.total ? Math.round(o.done / o.total * 100) : 30}%"></span><span class="t"></span></div>
+      <span class="b-m v">${o.phase === 'scanning' ? 'Scanning' : 'Moving'} · ${o.done} / ${o.total} files${o.phase === 'applying' ? ` · ${o.moved} moved${o.errors ? ` · ${plural(o.errors, 'error')}` : ''}` : ''}</span>` : ''}
+    ${o.msg ? `<span class="b-m v">${esc(o.msg)}</span>` : ''}
+    ${o.phase === 'preview' ? `<div class="row wrap" style="gap:8px"><span class="tag primary">${plural(moves.length, 'file')} to move</span><span class="tag neutral">${o.ops.length - moves.length - errs.length} already correct</span>${errs.length ? `<span class="tag error">${plural(errs.length, 'error')}</span>` : ''}</div>
+      ${moves.length ? `<div class="col" style="gap:8px">${moves.slice(0, cap).map((m) => `<div class="col" style="min-width:0"><span class="mono v ell" style="font-size:12px">${esc(m.src)}</span><span class="b-l ell">${esc(m.dst)}</span></div>`).join('')}${moves.length > cap ? `<span class="b-m v">… and ${moves.length - cap} more</span>` : ''}</div>`
+        : !errs.length ? emptyState('task_alt', 'Everything is already where it belongs') : ''}
+      ${errs.length ? `<div class="col" style="gap:4px"><span class="b-l">Errors</span>${errs.slice(0, 25).map((e) => `<span class="b-m v ell">${esc(e.src)}: ${esc(e.error)}</span>`).join('')}${errs.length > 25 ? `<span class="b-m v">… and ${errs.length - 25} more</span>` : ''}</div>` : ''}` : ''}`;
+}
+async function orgStream(kind, onEvent) {
+  const res = await fetch(`/api/library/organize/${kind}`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ format: S.h.org.fmt.trim() }) });
+  if (!res.ok) { let m = ''; try { m = (await res.json()).error; } catch { /* not JSON */ } throw new Error(m || `${res.status} ${res.statusText}`); }
+  const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read(); if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const parts = buf.split('\n\n'); buf = parts.pop();
+    for (const part of parts) for (const line of part.split('\n')) if (line.startsWith('data: ')) { try { onEvent(JSON.parse(line.slice(6))); } catch { /* partial event */ } }
+  }
+}
+let orgTick = 0;
+const orgRender = () => { const t = Date.now(); if (t - orgTick > 250 && S.route === 'health') { orgTick = t; render(); } };
+
 function viewHealth() {
   const tabs = [['dups', 'content_copy', 'Duplicates', S.h.dups ? S.h.dups.length : '–'], ['mis', 'graphic_eq', 'Mistagged', S.h.mis ? S.h.mis.length : '–'],
     ['name', 'text_fields', 'Misnamed', S.lib.loaded && S.lib.ready ? misnamed().length : '–'], ['miss', 'label_off', 'Missing tags', S.lib.loaded && S.lib.ready ? missingList().length : '–'],
-    ['bad', 'broken_image', 'Broken', S.lib.loaded && S.lib.ready ? brokenList().length : '–']];
-  const body = { dups: healthDups, mis: healthMis, name: healthNames, miss: healthMissing, bad: healthBroken }[S.h.tab]();
+    ['bad', 'broken_image', 'Broken', S.lib.loaded && S.lib.ready ? brokenList().length : '–'], ['org', 'folder_managed', 'Folders', '']];
+  const body = { dups: healthDups, mis: healthMis, name: healthNames, miss: healthMissing, bad: healthBroken, org: healthOrganize }[S.h.tab]();
   const b = scanInfo();
   const busy = !!b;
   return `<section class="pane" style="padding:24px 28px 20px;display:flex;flex-direction:column;gap:16px" aria-labelledby="h-health">
@@ -1206,7 +1252,7 @@ function viewHealth() {
       <span class="b-m v">Duplicates, misnamed files, missing tags and broken files are read live from your library. Mistagged songs need a scan, because the audio has to be fingerprinted.</span></div>
       <button class="btn tonal" data-act="scan" ${busy ? 'disabled' : ''}>${busy ? `<span class="ms spin" aria-hidden="true">progress_activity</span><span data-scan-health>${esc(b ? b.text : 'Scanning…')}</span>` : `${ic('radar')}Scan audio`}</button></header>
     ${busy ? `<div class="lp ${b && b.pct != null ? '' : 'ind'}" role="progressbar" aria-label="Scan progress" data-scan-bar><span class="a" style="width:${b && b.pct != null ? b.pct : 30}%"></span><span class="t"></span></div>` : ''}
-    <div class="tabs" role="tablist" aria-label="Issue type">${tabs.map(([k, i, l, n]) => `<button class="tab" role="tab" aria-selected="${S.h.tab === k}" data-act="htab" data-k="${k}">${ic(i, S.h.tab === k ? 'f' : '')}<span class="t-s">${l}</span><span class="tag ${S.h.tab === k ? 'primary' : 'neutral'}" style="height:20px;padding:0 8px">${n}</span></button>`).join('')}</div>
+    <div class="tabs" role="tablist" aria-label="Issue type">${tabs.map(([k, i, l, n]) => `<button class="tab" role="tab" aria-selected="${S.h.tab === k}" data-act="htab" data-k="${k}">${ic(i, S.h.tab === k ? 'f' : '')}<span class="t-s">${l}</span>${n === '' ? '' : `<span class="tag ${S.h.tab === k ? 'primary' : 'neutral'}" style="height:20px;padding:0 8px">${n}</span>`}</button>`).join('')}</div>
     ${body}</section>`;
 }
 
@@ -1521,6 +1567,28 @@ const jobAct = (path, method, fail) => async (el) => { try { await api(path(el.d
 A.jcancel = jobAct((id) => `/api/jobs/${encodeURIComponent(id)}/cancel`, 'POST', 'Couldn’t cancel');
 A.jretry = jobAct((id) => `/api/jobs/${encodeURIComponent(id)}/retry`, 'POST', 'Couldn’t retry');
 A.jremove = jobAct((id) => `/api/jobs/${encodeURIComponent(id)}`, 'DELETE', 'Couldn’t remove');
+const redrawQueue = (focusId) => {
+  const side = $('#dl-side'); if (S.route !== 'download' || !side) return;
+  side.innerHTML = dlSideHTML();
+  if (focusId) side.querySelector(`[data-act=qpick][data-id="${CSS.escape(focusId)}"]`)?.focus();
+};
+A.qselect = () => { S.qsel = S.qsel ? null : new Set(); redrawQueue(); };
+A.qpick = (el) => { const id = el.dataset.id; if (S.qsel.has(id)) S.qsel.delete(id); else S.qsel.add(id); redrawQueue(id); };
+A.qall = () => { const q = queueJobs(); if (S.qsel.size === q.length) S.qsel.clear(); else q.forEach((j) => S.qsel.add(j.id)); redrawQueue(); };
+A.qbulk = async (el) => {
+  const k = el.dataset.k, picked = queueJobs().filter((j) => S.qsel.has(j.id));
+  const live = (j) => j.status === 'queued' || j.status === 'running', dead = (j) => j.status === 'error' || j.status === 'cancelled';
+  const id = (j) => encodeURIComponent(j.id);
+  const todo = k === 'retry' ? picked.filter(dead).map((j) => [`/api/jobs/${id(j)}/retry`, 'POST'])
+    : k === 'cancel' ? picked.filter(live).map((j) => [`/api/jobs/${id(j)}/cancel`, 'POST'])
+    : picked.map((j) => (live(j) ? [`/api/jobs/${id(j)}/cancel`, 'POST'] : [`/api/jobs/${id(j)}`, 'DELETE']));
+  if (k === 'remove' && picked.some((j) => j.status === 'running') && !await confirmDlg('Remove downloads', `${plural(picked.filter((j) => j.status === 'running').length, 'download')} still running will be stopped.`, 'Remove')) return;
+  const res = await Promise.all(todo.map(([path, method]) => api(path, { method }).then(() => true, () => false)));
+  const ok = res.filter(Boolean).length, bad = res.length - ok;
+  S.qsel.clear();
+  snack(`${{ retry: 'Retrying', cancel: 'Cancelled', remove: 'Removed' }[k]} ${plural(ok, 'download')}${bad ? ` · ${bad} failed` : ''}`);
+  await refreshJobs(); redrawQueue();
+};
 A.retryall = async () => {
   const failed = S.jobs.filter((j) => j.status === 'error');
   await Promise.all(failed.map((j) => api(`/api/jobs/${encodeURIComponent(j.id)}/retry`, { method: 'POST' }).catch(() => null)));
@@ -1722,6 +1790,35 @@ A.renamenames = () => {
   sel.clear(); renamePaths(paths);
 };
 A.enrichmiss = () => { const sel = S.h.sel.miss; const paths = sel.size ? [...sel] : missingList().map((t) => t.id); sel.clear(); enrichPaths(paths); };
+
+A.orgpreview = async () => {
+  const o = S.h.org; if (!o.fmt.trim()) return;
+  Object.assign(o, { phase: 'scanning', done: 0, total: 0, ops: [], msg: '' }); render();
+  try {
+    await orgStream('preview', (ev) => {
+      if (ev.type === 'total' || ev.type === 'progress') { o.total = ev.total; o.done = ev.done || 0; orgRender(); }
+      else if (ev.type === 'done') o.ops = ev.ops;
+    });
+    o.phase = 'preview';
+  } catch (e) { o.phase = 'idle'; o.msg = `Preview failed: ${e.message}`; }
+  render();
+};
+A.orgapply = async () => {
+  const o = S.h.org; const n = orgMoves().length;
+  if (!await confirmDlg('Move files', `This moves ${plural(n, 'file')} into new folders and removes empty folders. It can’t be undone from here.`, 'Move', false)) return;
+  Object.assign(o, { phase: 'applying', done: 0, total: 0, moved: 0, errors: 0, msg: '' }); render();
+  let res = null;
+  try {
+    await orgStream('apply', (ev) => {
+      if (ev.type === 'total') o.total = ev.total;
+      else if (ev.type === 'progress') { Object.assign(o, { total: ev.total, done: ev.done, moved: ev.moved, errors: ev.errors }); orgRender(); }
+      else if (ev.type === 'done') res = ev;
+    });
+  } catch (e) { o.phase = 'idle'; o.msg = `Move failed: ${e.message}`; render(); return; }
+  o.phase = 'idle'; o.ops = [];
+  if (res) { o.msg = `Moved ${plural(res.moved, 'file')}${res.errors ? ` · ${plural(res.errors, 'error')}` : ''}`; snack(o.msg); }
+  render(); refreshScans(); loadTracks(true);
+};
 
 // Settings
 A.section = (el) => { S.section = el.dataset.k; render(); };
@@ -1937,6 +2034,7 @@ function boot() {
 // ── Inputs (typing never re-renders settings fields, so focus and caret stay put) ──
 let lqTimer;
 const INPUT = {
+  orgfmt: (el) => { S.h.org.fmt = el.value; if (S.h.org.phase === 'preview') { S.h.org.phase = 'idle'; render(); } },
   seed: (el) => { store.set('seed', el.value); store.set('scheme', 'custom'); applyTheme(); },
   q: (el) => { S.q = el.value; scheduleSearch(); renderResults(); },
   lq: (el) => { S.lib.q = el.value; const c = $('[data-act=clearlq]'); if (c) c.hidden = !el.value; clearTimeout(lqTimer); lqTimer = setTimeout(libQuery, 200); },
