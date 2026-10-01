@@ -218,6 +218,7 @@ class Songs:
         self.client, self.per_artist, self.genres = client, per_artist, genres
         self.known, self.track_owned = set(known), track_owned
         self.similar_ok = True
+        self.shown: set[str] = set()   # artists already offered under any flavour, so a new flavour is never the old list again
         self.related: dict[str, list] = {}
         self.st: dict[str, dict] = {}
         self.lock = threading.Lock()
@@ -230,7 +231,9 @@ class Songs:
                 mine = {_norm(g) for g, _ in self.genres}
                 pool = [g for g in _SURPRISE if _norm(g) not in mine] or list(_SURPRISE)
                 picked = random.sample(pool, min(3, len(pool)))
-            s = {"seen": set(), "taken": set(self.known), "cursor": {}, "picked": picked, "sim": 0}
+            # A fresh start begins at a random depth, since the top of a genre is what Mixed already showed.
+            s = {"seen": set(), "taken": set(self.known) | self.shown, "cursor": {g: random.choice((0, 6, 12, 18, 24)) for g in (picked or [])},
+                 "picked": picked, "sim": random.randrange(4) if flavour == "" and reset else 0, "fresh": True}
             self.st[flavour] = s
         return s
 
@@ -252,6 +255,7 @@ class Songs:
             def take(a, reason, source):
                 if a and a.get("id") and _norm(a.get("name")) not in s["taken"]:
                     s["taken"].add(_norm(a["name"]))
+                    self.shown.add(_norm(a["name"]))
                     cands.append((a, reason, source))
 
             if flavour == "":
@@ -268,16 +272,24 @@ class Songs:
             else:
                 gl = [flavour]
             for g in gl:
-                off = s["cursor"].get(g, 0)
-                try:
-                    found = self.client._get("/search", params={"q": f'genre:"{g}"', "type": "artist", "limit": 6,
-                                                                "offset": off}).get("artists", {}).get("items") or []
-                except Exception as exc:
-                    log.info("Discover: genre %s search failed (%s)", g, exc)
-                    continue
-                s["cursor"][g] = off + 6 if len(found) == 6 else 0
-                for a in found:
-                    take(a, g.title() if g.islower() else g, "genres")
+                if g not in s["cursor"]:
+                    s["cursor"][g] = random.choice((0, 6, 12, 18, 24))
+                added = 0
+                for _page in range(4):   # skip pages whose artists were all offered already
+                    off = s["cursor"][g]
+                    try:
+                        found = self.client._get("/search", params={"q": f'genre:"{g}"', "type": "artist", "limit": 6,
+                                                                    "offset": off}).get("artists", {}).get("items") or []
+                    except Exception as exc:
+                        log.info("Discover: genre %s search failed (%s)", g, exc)
+                        break
+                    s["cursor"][g] = off + 6 if len(found) == 6 else 0
+                    before = len(cands)
+                    for a in found:
+                        take(a, g.title() if g.islower() else g, "genres")
+                    added += len(cands) - before
+                    if added >= 3 or len(found) < 6:
+                        break
 
             def tracks(c):
                 try:
@@ -297,6 +309,7 @@ class Songs:
                     s["seen"].add(key)
                     (sim if source == "similar" else gen).append(_song(t, reason, source))
             mixed = [x for pair in zip(sim, gen) for x in pair] + sim[len(gen):] + gen[len(sim):]
+            log.info("Discover: flavour %r gave %d artists, %d songs", flavour, len(cands), len(mixed))
             artists = [_artist_card(a, reason, source) for (a, reason, source), _ in got if a.get("images")]
             return mixed[:want], ", ".join(s["picked"] or []), artists[:12]
 
