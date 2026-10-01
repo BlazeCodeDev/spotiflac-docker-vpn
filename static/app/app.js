@@ -104,6 +104,7 @@ function applyTheme() {
     for (const [k, val] of Object.entries(v[mode])) root.style.setProperty('--md-' + k, val);
     store.set('themevars', v); // lets the next page load paint in these colours before any script runs
   }
+  if ($('#lib-aside')) tintDetail();
   const meta = $('meta[name=theme-color]');
   if (meta) meta.content = getComputedStyle(root).getPropertyValue('--md-sc').trim() || '#0E1513';
 }
@@ -754,6 +755,70 @@ function libBodyHTML() {
       </div>${libMoreHTML()}</div>
       <div id="lib-tools">${libToolbar()}</div>`;
 }
+// ── Cover-tinted details card ────────────────────────────────────────────
+// The dominant colour of the cover becomes a Material scheme (same generator as the app theme) that is
+// applied only inside the details card. Material's tone pairs keep the text readable, and the actual
+// contrast is checked against the whole gradient before the tint is used; if it falls short the card
+// keeps the normal theme.
+const coverSeeds = new Map();
+function coverSeed(url) {
+  if (!MCU) return Promise.resolve(null);   // generator not loaded yet; retried once it is
+  if (!coverSeeds.has(url)) coverSeeds.set(url, new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const c = document.createElement('canvas'); c.width = c.height = 48;
+        const x = c.getContext('2d', { willReadFrequently: true });
+        x.drawImage(img, 0, 0, 48, 48);
+        const d = x.getImageData(0, 0, 48, 48).data, px = [];
+        for (let i = 0; i < d.length; i += 4) if (d[i + 3] >= 200) px.push(((255 << 24) | (d[i] << 16) | (d[i + 1] << 8) | d[i + 2]) >>> 0);
+        if (px.length < 20) return resolve(null);
+        const ranked = MCU.Score.score(MCU.QuantizerCelebi.quantize(px, 64));   // most "colourful and common" first
+        // With no real colour in the picture (greys, black, white) Score answers with its stock blue; use a neutral
+        // scheme from the picture's average colour instead of tinting everything blue.
+        if (!ranked.length || ranked[0] === 0xff4285f4) {
+          let r = 0, g = 0, b = 0;
+          for (const p of px) { r += (p >> 16) & 255; g += (p >> 8) & 255; b += p & 255; }
+          const h = (n) => Math.round(n / px.length).toString(16).padStart(2, '0');
+          return resolve({ hex: `#${h(r)}${h(g)}${h(b)}`, neutral: true });
+        }
+        resolve({ hex: MCU.hexFromArgb(ranked[0]), neutral: false });
+      } catch { resolve(null); }
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+  }));
+  return coverSeeds.get(url);
+}
+const lum = (hex) => { const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+const contrast = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+const TINT_VARS = Object.keys(ROLES);
+function clearTint(el) {
+  if (!el) return;
+  TINT_VARS.forEach((k) => el.style.removeProperty('--md-' + k));
+  el.style.removeProperty('background'); el.style.removeProperty('color'); delete el.dataset.tint;
+}
+async function tintEl(el, t) {
+  if (!el) return;
+  const seed = t && t.cover ? await coverSeed(coverUrl(t)) : null;
+  const v = seed && schemeVars(seed.hex, seed.neutral);
+  if (!v || (el.id === 'lib-aside' && (!t || S.lib.focus !== t.id))) return clearTint(el);
+  const c = v[document.documentElement.dataset.mode];
+  // Text sits on a gradient from primary-container (top) to surface (bottom): it must pass on both ends.
+  const worst = Math.min(
+    ...['on-surface', 'on-surface-variant'].flatMap((k) => [c['primary-container'], c.surface].map((bg) => contrast(c[k], bg))),
+    contrast(c['on-primary-container'], c['primary-container']));
+  if (worst < 4.5) return clearTint(el);
+  TINT_VARS.forEach((k) => el.style.setProperty('--md-' + k, c[k]));
+  el.style.background = `linear-gradient(165deg, ${c['primary-container']} 0%, ${c.surface} 62%)`;
+  el.style.color = c['on-surface'];
+  el.dataset.tint = worst.toFixed(1);
+}
+function tintDetail() {
+  const el = $('#lib-aside'); if (!el) return;
+  tintEl(el, S.lib.focus != null ? trackOf(S.lib.focus) : null);
+}
+
 function libAsideHTML() {
   const L = S.lib;
   const focus = L.focus != null ? trackOf(L.focus) : null;
@@ -788,7 +853,7 @@ function renderLib({ aside = false } = {}) {
   const body = $('#lib-body');
   if (S.route !== 'library' || !body) return render();
   body.innerHTML = libBodyHTML();
-  if (aside) $('#lib-aside').innerHTML = libAsideHTML();
+  if (aside) { $('#lib-aside').innerHTML = libAsideHTML(); tintDetail(); }
   watchLibMore();
 }
 function libAppend() {
@@ -1094,7 +1159,7 @@ function render() {
   const y = window.scrollY;
   renderChrome();
   $('#view').innerHTML = VIEWS[S.route]();
-  if (S.route === 'library') watchLibMore();
+  if (S.route === 'library') { watchLibMore(); tintDetail(); }
   if (fid) {
     const n = document.getElementById(fid);
     if (n) { n.focus({ preventScroll: true }); if (caret) { try { n.setSelectionRange(caret[0], caret[1]); } catch { /* not a text field */ } } }
@@ -1223,13 +1288,13 @@ A.focus = (el) => {
   const prev = S.lib.focus; S.lib.focus = el.dataset.id;
   if (window.innerWidth < 1100) {
     const t = trackOf(S.lib.focus);
-    if (t) dialog('Song details', `<div class="col" style="gap:16px">${detailHTML(t, true)}</div>`, [{ key: 'close', label: 'Close' }]);
+    if (t) { dialog('Song details', `<div class="col" style="gap:16px">${detailHTML(t, true)}</div>`, [{ key: 'close', label: 'Close' }]).then(() => clearTint($('#dlg'))); tintEl($('#dlg'), t); }
     return;
   }
   if (S.route !== 'library' || !$('#lib-aside')) return render();
   $$('#lib-tbl .trow.focus').forEach((r) => r.classList.remove('focus'));
   const row = el.closest('.trow'); if (row) row.classList.add('focus');
-  if (prev !== S.lib.focus) $('#lib-aside').innerHTML = libAsideHTML();
+  if (prev !== S.lib.focus) { $('#lib-aside').innerHTML = libAsideHTML(); tintDetail(); }
 };
 A.libreload = async () => {
   try { await api('/api/library/rescan', { method: 'POST' }); snack('Rescanning your library…'); refreshTasks(); } catch (e) { oops('Couldn’t start a rescan')(e); }
