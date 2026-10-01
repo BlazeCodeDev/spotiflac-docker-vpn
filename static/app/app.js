@@ -204,6 +204,7 @@ const S = {
     sel: { mis: new Set(), name: new Set(), miss: new Set(), bad: new Set() },
     org: { fmt: '{artist}/{album}/{track} {title}', phase: 'idle', done: 0, total: 0, moved: 0, errors: 0, ops: [], msg: '' },
   },
+  disc: { data: null, error: '', basis: new Set(['artists', 'genres', 'similar']), recent: false, hiddenOpen: false, busy: false },
   section: 'appearance',
   set: clone(DEFAULT_SET), setLoaded: false, setError: '',
   ext: null, providers: [], ver: null,
@@ -287,6 +288,7 @@ const vpnPill = () => {
 const NAV = [
   ['download', 'Download', 'download'],
   ['library', 'Library', 'library_music'],
+  ['discover', 'Discover', 'explore'],
   ['health', 'Health', 'health_and_safety'],
   ['settings', 'Settings', 'settings'],
 ];
@@ -308,7 +310,7 @@ function railHTML() {
     <button class="ib rail-extra" data-act="theme" aria-label="Switch to ${dark ? 'light' : 'dark'} mode">${ic(dark ? 'light_mode' : 'dark_mode')}</button>
     ${settings}
     <span class="rail-extra">${vpnPill()}</span>
-    ${S.route === 'download' || S.route === 'health' || (S.route === 'library' && S.lib.sel.size) ? '' : `<button class="fab ext mfab" data-act="paste">${ic('add_link')}<span class="l-l">Paste link</span></button>`}`;
+    ${S.route === 'download' || S.route === 'discover' || S.route === 'health' || (S.route === 'library' && S.lib.sel.size) ? '' : `<button class="fab ext mfab" data-act="paste">${ic('add_link')}<span class="l-l">Paste link</span></button>`}`;
 }
 
 // ── Shared bits ──────────────────────────────────────────────────────────
@@ -1258,6 +1260,95 @@ async function orgStream(kind, onEvent) {
 let orgTick = 0;
 const orgRender = () => { const t = Date.now(); if (t - orgTick > 250 && S.route === 'health') { orgTick = t; render(); } };
 
+// ═════════════════════════════════════════════════════════════════════════
+// Discover
+// ═════════════════════════════════════════════════════════════════════════
+let discTimer;
+async function loadDiscover(refresh = false) {
+  const D = S.disc; clearTimeout(discTimer);
+  try {
+    const d = await api(`/api/discover?recent=${D.recent ? 1 : 0}${refresh ? '&refresh=1' : ''}`);
+    D.data = d; D.error = d.error || '';
+    if (d.building && S.route === 'discover') discTimer = setTimeout(() => loadDiscover(), 2500);
+  } catch (e) { D.error = e.message; }
+  if (S.route === 'discover') render();
+}
+const discShown = () => {
+  const d = S.disc.data, b = S.disc.basis;
+  if (!d) return { releases: [], gaps: [], songs: [] };
+  return { releases: b.has('artists') ? d.releases : [], gaps: b.has('artists') ? d.gaps : [], songs: d.songs.filter((x) => b.has(x.source)) };
+};
+function relCard(r, i) {
+  const have = r.have ? `<span class="tag tertiary">${r.have} of ${r.track_count} in library</span>` : `<span class="tag neutral">${r.year || ''}${r.year ? ' · ' : ''}${r.type === 'album' ? 'Album' : 'Single'}</span>`;
+  return `<div class="rel"><div class="cv">${coverTile({ title: r.title, kind: 'album', url: r.cover_url }, 184)}
+      <button class="ib" data-act="dhide" data-k="releases" data-i="${i}" aria-label="Not interested in ${esc(r.title)}" title="Not interested">${ic('close')}</button></div>
+    <div class="col" style="gap:2px;min-width:0"><span class="t-m ell">${esc(r.title)}</span><span class="b-m v ell">${esc(r.artist)}</span></div>
+    <div class="row" style="justify-content:space-between;gap:8px">${have}<button class="ib tonal" data-act="ddl" data-k="releases" data-i="${i}" aria-label="Download ${esc(r.title)}">${ic('download')}</button></div></div>`;
+}
+function gapRow(g, i) {
+  const miss = g.track_count - g.have;
+  return `<div class="card" style="flex-direction:row;align-items:center;gap:14px">${coverTile({ title: g.title, kind: 'album', url: g.cover_url }, 56)}
+    <div class="grow col" style="gap:8px;min-width:0"><div class="col"><span class="t-m ell">${esc(g.title)}</span><span class="b-m v ell">${esc(g.artist)} · ${g.have} of ${g.track_count} songs</span></div>
+      <div class="lp" role="progressbar" aria-label="${g.have} of ${g.track_count} songs in library"><span class="a" style="width:${Math.round(g.have / g.track_count * 100)}%"></span><span class="t"></span></div></div>
+    <button class="btn tonal" data-act="ddl" data-k="gaps" data-i="${i}">${ic('download')}<span>Get ${miss} <span class="hide-sm">missing</span></span></button>
+    <button class="ib" data-act="dhide" data-k="gaps" data-i="${i}" aria-label="Not interested in ${esc(g.title)}" title="Not interested">${ic('visibility_off')}</button></div>`;
+}
+function songRow(t, i) {
+  return `<div class="li" style="min-height:64px;padding:6px 8px 6px 12px">${coverTile({ title: t.title, kind: 'track', url: t.cover_url })}
+    <div class="grow col" style="min-width:0"><span class="b-l ell">${esc(t.title)}</span><span class="b-m v ell">${esc(t.artists)}${t.album ? ' · ' + esc(t.album) : ''}</span></div>
+    <span class="tag neutral hide-sm">${ic('auto_awesome')}${esc(t.reason)}</span>
+    <span class="mono l-m v hide-sm" style="width:40px;text-align:right">${t.duration_ms ? fmtLen(Math.round(t.duration_ms / 1000)) : ''}</span>
+    <button class="ib filled" data-act="ddl" data-k="songs" data-i="${i}" aria-label="Download ${esc(t.title)}">${ic('download')}</button>
+    <button class="ib" data-act="dhide" data-k="songs" data-i="${i}" aria-label="Not interested in ${esc(t.title)}" title="Not interested">${ic('visibility_off')}</button></div>`;
+}
+const discSec = (title, sub, action = '') => `<div class="row" style="align-items:flex-end;gap:12px"><div class="grow col" style="gap:2px"><h2 class="t-l">${title}</h2><span class="b-m v">${sub}</span></div>${action}</div>`;
+function discSide(d) {
+  const hid = d.hidden || [];
+  return `<aside class="disc-side">
+    ${d.taste && d.taste.length ? `<div class="box"><h2 class="t-m">Your taste</h2><span class="b-m v" style="margin-top:-6px">Genres by number of songs</span>
+      ${d.taste.map((g) => `<div class="col" style="gap:6px"><span class="b-m">${esc(g.name)}</span><div class="taste-bar"><span style="width:${g.weight}%"></span></div></div>`).join('')}</div>` : ''}
+    <div class="box"><h2 class="t-m">Hidden suggestions</h2><span class="b-m v">Anything you mark “not interested” stays out of Discover. You can bring it back.</span>
+      <button class="btn tonal" style="align-self:flex-start" data-act="dhidden" aria-expanded="${S.disc.hiddenOpen}" ${hid.length ? '' : 'disabled'}>${ic(S.disc.hiddenOpen ? 'visibility_off' : 'visibility')}${hid.length ? `Manage hidden (${hid.length})` : 'Nothing hidden'}</button>
+      ${S.disc.hiddenOpen ? hid.map((h) => `<div class="row" style="gap:8px"><span class="grow col" style="min-width:0"><span class="b-m ell">${esc(h.title || h.url)}</span><span class="b-s v ell">${esc(h.sub || '')}</span></span><button class="btn text" data-act="dunhide" data-url="${esc(h.url)}">Restore</button></div>`).join('') : ''}</div>
+    <div class="box"><h2 class="t-m">How this works</h2><span class="b-m v">Songs already in your library are never suggested. Downloads use your current quality and sources and are added to the queue at once.</span></div>
+  </aside>`;
+}
+function viewDiscover() {
+  const D = S.disc, d = D.data;
+  const chip = (k, l) => `<button class="chip ${D.basis.has(k) ? 'on' : ''}" aria-pressed="${D.basis.has(k)}" data-act="dbasis" data-k="${k}">${D.basis.has(k) ? ic('check') : ''}${l}</button>`;
+  const head = `<header class="row wrap" style="align-items:flex-end;gap:16px"><div class="grow col" style="gap:4px"><h1 id="h-disc" class="hl-m">Discover</h1>
+      <span class="b-m v">Releases and songs you don’t have yet, picked from what’s in your library.</span></div>
+      <button class="btn tonal" data-act="drefresh" ${d && d.building ? 'disabled' : ''}>${d && d.building ? '<span class="ms spin" aria-hidden="true">progress_activity</span>Working…' : `${ic('refresh')}Refresh`}</button></header>
+    <div class="row wrap" style="gap:8px" role="group" aria-label="Based on"><span class="b-m v" style="margin-right:4px">Based on</span>${chip('artists', 'Artists you collect')}${chip('genres', 'Genres')}${chip('similar', 'Similar artists')}
+      <button class="chip ${D.recent ? 'on' : ''}" aria-pressed="${D.recent}" data-act="drecent">${D.recent ? ic('check') : ''}Added this month</button></div>`;
+  let body;
+  const skel = Array.from({ length: 3 }, () => `<div class="li"><div class="lead skel"></div><div class="grow col" style="gap:8px"><span class="skel" style="height:14px;width:55%;border-radius:4px"></span><span class="skel" style="height:12px;width:35%;border-radius:4px"></span></div></div>`).join('');
+  if (D.error && !(d && d.releases && (d.releases.length || d.songs.length))) body = emptyState('cloud_off', 'Couldn’t build suggestions', D.error);
+  else if (!d || d.building && !d.releases.length && !d.songs.length) {
+    body = `<div class="row" style="gap:10px"><span class="ms spin" aria-hidden="true">hourglass_top</span><span class="b-m v">${d && d.why === 'library' ? 'Waiting for the library scan to finish…' : 'Finding suggestions from your top artists…'}</span></div>${skel}`;
+  } else if (d.state === 'empty') {
+    body = emptyState('library_music', D.recent ? 'Nothing added this month' : 'Nothing to base suggestions on yet', D.recent ? 'Turn off “Added this month” to use your whole library.' : 'Discover learns from your library. Download a few songs, or wait for the library scan to finish.');
+  } else {
+    const sh = discShown();
+    const any = sh.releases.length || sh.gaps.length || sh.songs.length;
+    body = `<div class="disc"><div class="disc-main">
+      ${sh.releases.length ? `<div class="col" style="gap:14px">${discSec('New from artists you collect', 'Releases by artists in your library that you don’t own yet')}<div class="rel-row">${sh.releases.map(relCard).join('')}</div></div>` : ''}
+      ${sh.songs.length ? `<div class="col" style="gap:8px">${discSec('Songs you might like', d.similar === false ? 'Artists in your top genres' : 'Similar artists and genres from your library', `<button class="btn tonal" data-act="ddlall">${ic('download')}Download all ${sh.songs.length}</button>`)}<div class="col" style="gap:2px;margin-top:6px">${sh.songs.map(songRow).join('')}</div></div>` : ''}
+      ${sh.gaps.length ? `<div class="col" style="gap:14px">${discSec('Complete your albums', 'You own most of these. Download what’s missing.')}<div class="col" style="gap:10px">${sh.gaps.map(gapRow).join('')}</div></div>` : ''}
+      ${any ? '' : emptyState('explore_off', 'No suggestions for this selection', 'Try turning on another “Based on” option, or refresh.')}
+    </div>${discSide(d)}</div>`;
+  }
+  return `<section class="pane" style="padding:28px;display:flex;flex-direction:column;gap:24px" aria-labelledby="h-disc">${head}${body}</section>`;
+}
+async function discQueue(urls, title, done) {
+  try {
+    await api('/api/download', { method: 'POST', body: { urls: urls.join('\n'), quality: S.quality, pre_title: urls.length === 1 ? title : '' } });
+    done(); render(); snack(urls.length === 1 ? `Added “${title}” to the queue` : `Added ${plural(urls.length, 'item')} to the queue`); refreshJobs();
+  } catch (e) { oops('Couldn’t queue it')(e); }
+}
+const discItem = (el) => { const k = el.dataset.k, i = +el.dataset.i; const it = discShown()[k][i]; return it && { k, it }; };
+const discDrop = (k, urls) => { const d = S.disc.data; d[k] = d[k].filter((x) => !urls.includes(x.url)); };
+
 function viewHealth() {
   const tabs = [['dups', 'content_copy', 'Duplicates', S.h.dups ? S.h.dups.length : '–'], ['mis', 'graphic_eq', 'Mistagged', S.h.mis ? S.h.mis.length : '–'],
     ['name', 'text_fields', 'Misnamed', S.lib.loaded && S.lib.ready ? misnamed().length : '–'], ['miss', 'label_off', 'Missing tags', S.lib.loaded && S.lib.ready ? missingList().length : '–'],
@@ -1415,7 +1506,7 @@ function viewSettings() {
 // ═════════════════════════════════════════════════════════════════════════
 // Router + render
 // ═════════════════════════════════════════════════════════════════════════
-const VIEWS = { download: viewDownload, library: viewLibrary, health: viewHealth, settings: viewSettings };
+const VIEWS = { download: viewDownload, library: viewLibrary, discover: viewDiscover, health: viewHealth, settings: viewSettings };
 const TITLES = { download: 'Download', library: 'Library', health: 'Library health', settings: 'Settings' };
 
 // Sidebar, task chip and phone top bar: cheap, and safe to redraw while someone is typing in the page.
@@ -1627,6 +1718,22 @@ A.jretrypart = async (el) => {
     snack(`Retrying ${plural(urls.length, 'failed track')}`); refreshJobs();
   } catch (e) { oops('Couldn’t retry')(e); }
 };
+
+// Discover
+A.ddl = (el) => { const x = discItem(el); if (x) discQueue([x.it.url], x.it.title, () => discDrop(x.k, [x.it.url])); };
+A.ddlall = () => { const l = discShown().songs; if (l.length) discQueue(l.map((t) => t.url), '', () => discDrop('songs', l.map((t) => t.url))); };
+A.dhide = async (el) => {
+  const x = discItem(el); if (!x) return; const { k, it } = x;
+  try { await api('/api/discover/hide', { method: 'POST', body: { url: it.url, title: it.title, sub: it.artist || it.artists || '' } }); } catch (e) { return oops('Couldn’t hide it')(e); }
+  discDrop(k, [it.url]); S.disc.data.hidden = [{ url: it.url, title: it.title, sub: it.artist || it.artists || '' }, ...(S.disc.data.hidden || [])];
+  render();
+  snack(`Hidden “${it.title}”`, { label: 'Undo', fn: () => api('/api/discover/unhide', { method: 'POST', body: { url: it.url } }).then(() => loadDiscover()).catch(oops('Couldn’t undo')) });
+};
+A.dunhide = (el) => api('/api/discover/unhide', { method: 'POST', body: { url: el.dataset.url } }).then(() => loadDiscover()).catch(oops('Couldn’t restore'));
+A.dhidden = () => { S.disc.hiddenOpen = !S.disc.hiddenOpen; render(); };
+A.dbasis = (el) => { const b = S.disc.basis, k = el.dataset.k; if (b.has(k)) b.delete(k); else b.add(k); render(); };
+A.drecent = () => { S.disc.recent = !S.disc.recent; S.disc.data = null; render(); loadDiscover(); };
+A.drefresh = () => { if (S.disc.data) S.disc.data.building = true; render(); loadDiscover(true); };
 
 // Library
 A.cd = (el) => { S.lib.path = el.dataset.path.split('/'); S.lib.focus = null; render(); libQuery(); };
@@ -2020,6 +2127,7 @@ async function loadVersion() {
   if (S.route === 'settings' && S.section === 'info') render();
 }
 function enterRoute() {
+  if (S.route === 'discover') loadDiscover();
   if (S.route === 'library') loadPage();
   if (S.route === 'health' && !S.lib.loaded) loadAllTracks();
   if (S.route === 'health') {

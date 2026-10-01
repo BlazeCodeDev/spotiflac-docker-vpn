@@ -599,37 +599,77 @@ def _artist_releases_graphql(client, artist_id: str) -> list[dict]:
     return out
 
 
-@bp.get("/api/search/artist")
-def api_search_artist():
-    """An artist's albums and singles, newest first. In-library status comes from /api/search/expand."""
-    m = re.search(r"artist/([A-Za-z0-9]+)", request.args.get("url", ""))
-    if not m:
-        return jsonify(error="Not an artist link"), 400
-    artist_id = m.group(1)
+def _artist_releases(client, artist_id: str) -> list[dict]:
+    """An artist's albums and singles, newest first, with the same release under several ids (regions,
+    re-issues) collapsed: same name, kind and track count is the same release. Raises when Spotify can't be asked."""
     try:
-        client = _search_client()
-        try:
-            releases = _artist_releases_rest(client, artist_id)
-        except Exception as exc:
-            if not hasattr(client, "web_client"):
-                raise
-            log.info("Artist albums via Web API failed (%s), trying GraphQL", exc)
-            releases = _artist_releases_graphql(client, artist_id)
+        releases = _artist_releases_rest(client, artist_id)
     except Exception as exc:
-        log.warning("Artist discography failed (%s): %s", type(exc).__name__, exc)
-        return jsonify(error="Couldn’t load the discography"), 502
-
-    # Spotify lists the same release under several ids (regions, re-issues); same
-    # rule as search: same name, kind and track count is the same release.
+        if not hasattr(client, "web_client"):
+            raise
+        log.info("Artist albums via Web API failed (%s), trying GraphQL", exc)
+        releases = _artist_releases_graphql(client, artist_id)
     seen, out = set(), []
     for r in sorted(releases, key=lambda r: r["date"], reverse=True):
         key = (re.sub(r"[^\w]", "", r["title"].lower()), r["type"], r["track_count"])
         if key in seen:
             continue
         seen.add(key)
-        r["year"]   = r.pop("date")[:4] or None
+        r["year"] = r["date"][:4] or None
         out.append(r)
+    return out
+
+
+@bp.get("/api/search/artist")
+def api_search_artist():
+    """An artist's albums and singles, newest first. In-library status comes from /api/search/expand."""
+    m = re.search(r"artist/([A-Za-z0-9]+)", request.args.get("url", ""))
+    if not m:
+        return jsonify(error="Not an artist link"), 400
+    try:
+        out = _artist_releases(_search_client(), m.group(1))
+    except Exception as exc:
+        log.warning("Artist discography failed (%s): %s", type(exc).__name__, exc)
+        return jsonify(error="Couldn’t load the discography"), 502
+    for r in out:
+        r.pop("date", None)
     return jsonify(releases=out)
+
+
+# ── Discover ──────────────────────────────────────────────────────────────────
+@bp.get("/api/discover")
+def api_discover():
+    import discover
+
+    def records():
+        got = _cached_records()
+        return None if got is None else [rec for _stamp, rec in got[1].values()]
+
+    try:
+        return jsonify(discover.snapshot(
+            records, _search_client, _artist_releases, _track_in_lib, lib_index.album_count, lib_index.check_album,
+            recent=request.args.get("recent") == "1", refresh=request.args.get("refresh") == "1"))
+    except Exception as exc:
+        log.warning("Discover failed: %s", exc)
+        return jsonify(error="Couldn’t build suggestions"), 500
+
+
+@bp.post("/api/discover/hide")
+def api_discover_hide():
+    import discover
+    body = request.get_json(silent=True) or {}
+    url = str(body.get("url") or "")
+    if not url.startswith("https://open.spotify.com/"):
+        return jsonify(error="Not a Spotify link"), 400
+    discover.hide(url, str(body.get("title") or ""), str(body.get("sub") or ""))
+    return jsonify(ok=True)
+
+
+@bp.post("/api/discover/unhide")
+def api_discover_unhide():
+    import discover
+    discover.unhide(str((request.get_json(silent=True) or {}).get("url") or ""))
+    return jsonify(ok=True)
 
 
 @bp.get("/api/search/expand")

@@ -217,6 +217,13 @@ def add_track(artist: str, title: str, path: str) -> None:
                 _files.append((d, f))
 
 
+def album_count(album: str) -> int:
+    """How many songs of this album are in the library."""
+    norm = _normalise_title(album)
+    with _index_lock:
+        return _album_counts.get(norm) or _album_counts.get(_base(norm)) or 0
+
+
 def check_album(album: str, total: int | None) -> str:
     """Returns 'full', 'partial', or 'none'."""
     norm = _normalise_title(album)
