@@ -320,3 +320,12 @@ html[data-scheme=neutral][data-mode=light]{--md-primary:#546069;--md-on-primary:
   .mtop .vpn .l-m,.mtop .vpn .vpn-s{display:none}
   .mtop .vpn .ms{font-size:20px}
 }
+
+/* Phone library: the filter button opens/closes the view switch and chips (hidden by default). Desktop shows them always. */
+.show-sm{display:none}
+.dotted{position:relative}
+.dotted::after{content:'';position:absolute;top:8px;right:8px;width:8px;height:8px;border-radius:4px;background:var(--md-primary);box-shadow:0 0 0 2px var(--md-sc-high)}
+@media (max-width:840px){
+  .show-sm{display:inline-flex}
+  .lib-layout:not(.fopen) .lib-extra{display:none !important}
+}

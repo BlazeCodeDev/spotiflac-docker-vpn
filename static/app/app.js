@@ -185,7 +185,7 @@ const S = {
   vpn: { known: false, on: false, since: null, ip: null },
   tasks: [],
   // library
-  lib: { path: [], view: 'tracks', chips: new Set(), q: '', sel: new Set(), focus: null, tracks: [], loaded: false, ready: true, pending: 0, error: '' },
+  lib: { filtersOpen: false, path: [], view: 'tracks', chips: new Set(), q: '', sel: new Set(), focus: null, tracks: [], loaded: false, ready: true, pending: 0, error: '' },
   // health: null = no scan result yet
   h: {
     tab: 'dups', filters: new Set(['id', 'tags']),
@@ -723,6 +723,7 @@ function libRows() {
   if (L.sort && L.sort.k === 'title' && L.sort.dir === 'desc') folders.reverse();
   return { p, scope, rows, folders };
 }
+const libFiltersActive = () => S.lib.chips.size > 0 || S.lib.view !== 'tracks';
 function libToolbar() {
   const L = S.lib;
   return L.sel.size ? `<div class="toolbar" role="toolbar" aria-label="Selected tracks"><span class="l-l" style="margin-right:12px">${L.sel.size} selected</span>
@@ -743,7 +744,7 @@ function libBodyHTML() {
   const d = libRows();
   libCur = { ...d, cols, shown: Math.min(d.rows.length, LIB_PAGE) };
   const allSel = d.rows.length > 0 && d.rows.every((t) => L.sel.has(t.id));
-  return `<div class="row wrap" style="gap:8px" role="group" aria-label="Filters">${CHIPS.map(([k, l]) => `<button class="chip ${L.chips.has(k) ? 'on' : ''}" aria-pressed="${L.chips.has(k)}" data-act="chip" data-k="${k}">${L.chips.has(k) ? ic('check') : ''}${l}</button>`).join('')}
+  return `<div class="row wrap" style="gap:8px"><div class="row wrap lib-extra" style="gap:8px" role="group" aria-label="Filters">${CHIPS.map(([k, l]) => `<button class="chip ${L.chips.has(k) ? 'on' : ''}" aria-pressed="${L.chips.has(k)}" data-act="chip" data-k="${k}">${L.chips.has(k) ? ic('check') : ''}${l}</button>`).join('')}</div>
         <span class="b-m v" style="margin-left:auto">${plural(d.rows.length, 'track')}</span>
         <button class="ib" data-act="libreload" title="Rescan library" aria-label="Rescan library">${ic('refresh')}</button>
         <button class="ib hide-sm" data-act="cols" title="Choose columns" aria-label="Choose columns">${ic('settings')}</button></div>
@@ -829,7 +830,7 @@ function viewLibrary() {
   const scope = libScope();
   const totalSize = scope.reduce((a, t) => a + t.size, 0);
   const crumbs = ['Library', ...L.path];
-  return `<div class="lib-layout">
+  return `<div class="lib-layout ${L.filtersOpen ? 'fopen' : ''}">
     <section class="pane grow" aria-labelledby="h-lib" style="padding:16px 16px 20px;display:flex;flex-direction:column;gap:14px;min-width:0">
       <div class="row wrap" style="gap:12px">
         ${L.path.length ? `<button class="ib" data-act="up" aria-label="Up one folder">${ic('arrow_back')}</button>` : ''}
@@ -837,8 +838,9 @@ function viewLibrary() {
           <nav class="row wrap b-m v crumbs" aria-label="Breadcrumb">${crumbs.map((c, i) => i === crumbs.length - 1
             ? `<span>${esc(c)}</span>` : `<button class="btn text" style="height:28px;padding:0 6px" data-act="crumb" data-i="${i}">${esc(c)}</button><span>/</span>`).join('')}
             <span id="lib-total">· ${plural(scope.length, 'track')} · ${fmtMB(totalSize)}</span></nav></div>
-        <label class="searchbar sm" style="width:300px;max-width:100%">${ic('search', 'v')}<input id="lq" type="search" enterkeyhint="search" value="${esc(L.q)}" placeholder="Search library" aria-label="Search library" data-input="lq" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></label>
-        <div class="seg" role="radiogroup" aria-label="View">
+        <label class="searchbar sm" style="width:300px;max-width:100%">${ic('search', 'v')}<input id="lq" type="search" enterkeyhint="search" value="${esc(L.q)}" placeholder="Search library" aria-label="Search library" data-input="lq" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          <button class="ib show-sm ${libFiltersActive() ? 'dotted' : ''}" data-act="libfilters" aria-expanded="${!!L.filtersOpen}" aria-label="Filters and view" title="Filters and view">${ic('tune')}</button></label>
+        <div class="seg lib-extra" role="radiogroup" aria-label="View">
           <button role="radio" aria-checked="${L.view === 'folders'}" data-act="view" data-k="folders">${L.view === 'folders' ? ic('check') : ''}Folders</button>
           <button role="radio" aria-checked="${L.view === 'tracks'}" data-act="view" data-k="tracks">${L.view === 'tracks' ? ic('check') : ''}Tracks</button></div>
       </div>
@@ -853,6 +855,7 @@ function renderLib({ aside = false } = {}) {
   const body = $('#lib-body');
   if (S.route !== 'library' || !body) return render();
   body.innerHTML = libBodyHTML();
+  const tg = $('[data-act=libfilters]'); if (tg) tg.classList.toggle('dotted', libFiltersActive());
   if (aside) { $('#lib-aside').innerHTML = libAsideHTML(); tintDetail(); }
   watchLibMore();
 }
@@ -1252,6 +1255,12 @@ A.crumb = (el) => { S.lib.path = S.lib.path.slice(0, +el.dataset.i); render(); }
 A.view = (el) => { S.lib.view = el.dataset.k; render(); };
 A.chip = (el) => { const c = S.lib.chips; c.has(el.dataset.k) ? c.delete(el.dataset.k) : c.add(el.dataset.k); renderLib(); };
 A.libmore = () => libAppend();
+// Phone only: the view switch and filter chips are folded away until asked for.
+A.libfilters = (el) => {
+  S.lib.filtersOpen = !S.lib.filtersOpen;
+  const lay = $('.lib-layout'); if (lay) lay.classList.toggle('fopen', S.lib.filtersOpen);
+  el.setAttribute('aria-expanded', String(S.lib.filtersOpen));
+};
 // Ticking a song only touches its row, the toolbar and the select-all box.
 function libSelPatch() {
   const tools = $('#lib-tools'); if (tools) tools.innerHTML = libToolbar();
