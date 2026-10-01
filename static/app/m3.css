@@ -382,3 +382,7 @@ html[data-scheme=neutral][data-mode=light]{--md-primary:#546069;--md-on-primary:
 .taste-bar span{display:block;height:8px;border-radius:4px;background:var(--md-primary)}
 @media (max-width:1100px){.disc{flex-direction:column;align-items:stretch}.disc-side{width:auto}}
 @media (max-width:840px){.rel{width:150px}.rel .cv,.rel .cv .coverthumb{width:150px !important;height:150px !important}}
+.flav-in{height:32px;width:150px;border-radius:8px;border:1px solid var(--md-outline-variant);background:none;color:var(--md-on-surface);padding:0 12px;font-size:14px}
+.flav-in:focus{outline:none;border-color:var(--md-primary)}
+.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.rel .cv .coverthumb[style*="50%"]{width:140px !important;height:140px !important;border-radius:50% !important}

@@ -654,6 +654,19 @@ def api_discover():
         return jsonify(error="Couldn’t build suggestions"), 500
 
 
+@bp.get("/api/discover/songs")
+def api_discover_songs():
+    """More songs for the same suggestions (`more=1`), or a fresh batch for another flavour."""
+    import discover
+    flavour = request.args.get("flavour", "").strip()[:60]
+    try:
+        out = discover.more_songs(request.args.get("recent") == "1", flavour, request.args.get("more") == "1")
+    except Exception as exc:
+        log.warning("Discover songs failed: %s", exc)
+        return jsonify(error="Couldn’t find more songs"), 502
+    return jsonify(out) if out is not None else (jsonify(error="Suggestions aren’t ready yet"), 409)
+
+
 @bp.post("/api/discover/hide")
 def api_discover_hide():
     import discover

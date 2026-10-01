@@ -204,7 +204,7 @@ const S = {
     sel: { mis: new Set(), name: new Set(), miss: new Set(), bad: new Set() },
     org: { fmt: '{artist}/{album}/{track} {title}', phase: 'idle', done: 0, total: 0, moved: 0, errors: 0, ops: [], msg: '' },
   },
-  disc: { data: null, error: '', basis: new Set(['artists', 'genres', 'similar']), recent: false, hiddenOpen: false, busy: false },
+  disc: { data: null, error: '', basis: new Set(['artists', 'genres', 'similar']), recent: false, hiddenOpen: false, flavour: '', label: '', busy: false, more: false, relShown: 10 },
   section: 'appearance',
   set: clone(DEFAULT_SET), setLoaded: false, setError: '',
   ext: null, providers: [], ver: null,
@@ -1275,8 +1275,9 @@ async function loadDiscover(refresh = false) {
 }
 const discShown = () => {
   const d = S.disc.data, b = S.disc.basis;
-  if (!d) return { releases: [], gaps: [], songs: [] };
-  return { releases: b.has('artists') ? d.releases : [], gaps: b.has('artists') ? d.gaps : [], songs: d.songs.filter((x) => b.has(x.source)) };
+  if (!d) return { releases: [], gaps: [], songs: [], artists: [] };
+  return { releases: b.has('artists') ? d.releases : [], gaps: b.has('artists') ? d.gaps : [], songs: d.songs.filter((x) => b.has(x.source) || S.disc.flavour),
+    artists: (d.artists || []).filter((x) => b.has(x.source) || S.disc.flavour) };
 };
 function relCard(r, i) {
   const have = r.have ? `<span class="tag tertiary">${r.have} of ${r.track_count} in library</span>` : `<span class="tag neutral">${r.year || ''}${r.year ? ' · ' : ''}${r.type === 'album' ? 'Album' : 'Single'}</span>`;
@@ -1284,6 +1285,21 @@ function relCard(r, i) {
       <button class="ib" data-act="dhide" data-k="releases" data-i="${i}" aria-label="Not interested in ${esc(r.title)}" title="Not interested">${ic('close')}</button></div>
     <div class="col" style="gap:2px;min-width:0"><span class="t-m ell">${esc(r.title)}</span><span class="b-m v ell">${esc(r.artist)}</span></div>
     <div class="row" style="justify-content:space-between;gap:8px">${have}<button class="ib tonal" data-act="ddl" data-k="releases" data-i="${i}" aria-label="Download ${esc(r.title)}">${ic('download')}</button></div></div>`;
+}
+function artistCard(a, i) {
+  return `<div class="rel" style="width:140px"><div class="cv" style="width:140px;height:140px"><span class="coverthumb" style="width:140px;height:140px;border-radius:50%;background:${coverGradient(a.name)}" aria-hidden="true">${ic('person', '', 'font-size:56px')}${coverImg(a.cover_url)}</span>
+      <button class="ib" style="top:0;right:0" data-act="dhide" data-k="artists" data-i="${i}" aria-label="Not interested in ${esc(a.name)}" title="Not interested">${ic('close')}</button></div>
+    <div class="col" style="gap:2px;min-width:0;text-align:center"><span class="t-m ell">${esc(a.name)}</span><span class="b-s v ell">${esc(a.genres.length ? a.genres.join(', ') : a.reason)}</span></div>
+    <button class="btn tonal" style="height:32px;padding:0 14px;justify-content:center" data-act="dartist" data-i="${i}">${ic('search')}Browse</button></div>`;
+}
+function flavourRow(d) {
+  const D = S.disc, cur = D.flavour;
+  const chip = (k, label, icon) => `<button class="chip ${cur === k ? 'on' : ''}" aria-pressed="${cur === k}" data-act="dflav" data-k="${esc(k)}">${cur === k ? ic('check') : icon ? ic(icon) : ''}${esc(label)}</button>`;
+  const known = (d.taste || []).map((g) => g.name);
+  const custom = cur && cur !== '~surprise' && !known.includes(cur);
+  return `<div class="row wrap" style="gap:8px" role="group" aria-label="Flavour"><span class="b-m v" style="margin-right:4px">Flavour</span>
+    ${chip('', 'Mixed')}${known.slice(0, 4).map((g) => chip(g, g)).join('')}${custom ? chip(cur, cur) : ''}${chip('~surprise', 'Surprise me', 'casino')}
+    <span class="row" style="gap:4px"><label class="visually-hidden" for="flav">Try another genre</label><input id="flav" class="flav-in" placeholder="Try a genre…" autocomplete="off" maxlength="40"><button class="ib tonal" data-act="dflavgo" aria-label="Use this genre">${ic('arrow_forward')}</button></span></div>`;
 }
 function gapRow(g, i) {
   const miss = g.track_count - g.have;
@@ -1320,7 +1336,7 @@ function viewDiscover() {
       <span class="b-m v">Releases and songs you don’t have yet, picked from what’s in your library.</span></div>
       <button class="btn tonal" data-act="drefresh" ${d && d.building ? 'disabled' : ''}>${d && d.building ? '<span class="ms spin" aria-hidden="true">progress_activity</span>Working…' : `${ic('refresh')}Refresh`}</button></header>
     <div class="row wrap" style="gap:8px" role="group" aria-label="Based on"><span class="b-m v" style="margin-right:4px">Based on</span>${chip('artists', 'Artists you collect')}${chip('genres', 'Genres')}${chip('similar', 'Similar artists')}
-      <button class="chip ${D.recent ? 'on' : ''}" aria-pressed="${D.recent}" data-act="drecent">${D.recent ? ic('check') : ''}Added this month</button></div>`;
+      <button class="chip ${D.recent ? 'on' : ''}" aria-pressed="${D.recent}" data-act="drecent">${D.recent ? ic('check') : ''}Added this month</button></div>${d && d.state === 'ready' ? flavourRow(d) : ''}`;
   let body;
   const skel = Array.from({ length: 3 }, () => `<div class="li"><div class="lead skel"></div><div class="grow col" style="gap:8px"><span class="skel" style="height:14px;width:55%;border-radius:4px"></span><span class="skel" style="height:12px;width:35%;border-radius:4px"></span></div></div>`).join('');
   if (D.error && !(d && d.releases && (d.releases.length || d.songs.length))) body = emptyState('cloud_off', 'Couldn’t build suggestions', D.error);
@@ -1330,10 +1346,13 @@ function viewDiscover() {
     body = emptyState('library_music', D.recent ? 'Nothing added this month' : 'Nothing to base suggestions on yet', D.recent ? 'Turn off “Added this month” to use your whole library.' : 'Discover learns from your library. Download a few songs, or wait for the library scan to finish.');
   } else {
     const sh = discShown();
-    const any = sh.releases.length || sh.gaps.length || sh.songs.length;
+    const any = sh.releases.length || sh.gaps.length || sh.songs.length || sh.artists.length;
+    const relN = Math.min(sh.releases.length, D.relShown);
     body = `<div class="disc"><div class="disc-main">
-      ${sh.releases.length ? `<div class="col" style="gap:14px">${discSec('New from artists you collect', 'Releases by artists in your library that you don’t own yet')}<div class="rel-row">${sh.releases.map(relCard).join('')}</div></div>` : ''}
+      ${sh.releases.length ? `<div class="col" style="gap:14px">${discSec('New from artists you collect', 'Releases by artists in your library that you don’t own yet')}<div class="rel-row">${sh.releases.slice(0, relN).map(relCard).join('')}</div>${sh.releases.length > relN ? `<button class="btn text" style="align-self:flex-start" data-act="drelmore">Show ${Math.min(10, sh.releases.length - relN)} more</button>` : ''}</div>` : ''}
+      ${sh.artists.length ? `<div class="col" style="gap:14px">${discSec('Artists you might like', D.flavour ? 'In this flavour' : 'New names from similar artists and your genres')}<div class="rel-row">${sh.artists.map(artistCard).join('')}</div></div>` : ''}
       ${sh.songs.length ? `<div class="col" style="gap:8px">${discSec('Songs you might like', d.similar === false ? 'Artists in your top genres' : 'Similar artists and genres from your library', `<button class="btn tonal" data-act="ddlall">${ic('download')}Download all ${sh.songs.length}</button>`)}<div class="col" style="gap:2px;margin-top:6px">${sh.songs.map(songRow).join('')}</div></div>` : ''}
+      ${any || D.flavour ? `<div class="row wrap" style="gap:12px;align-items:center"><button class="btn tonal" data-act="dmore" ${D.more ? 'disabled' : ''}>${D.more ? '<span class="ms spin" aria-hidden="true">progress_activity</span>Looking…' : `${ic('add')}Load more songs and artists`}</button><span class="b-m v">${D.flavour === '~surprise' && D.label ? `Surprise picks: ${esc(D.label)}` : 'Not your taste? Pick another flavour above.'}</span></div>` : ''}
       ${sh.gaps.length ? `<div class="col" style="gap:14px">${discSec('Complete your albums', 'You own most of these. Download what’s missing.')}<div class="col" style="gap:10px">${sh.gaps.map(gapRow).join('')}</div></div>` : ''}
       ${any ? '' : emptyState('explore_off', 'No suggestions for this selection', 'Try turning on another “Based on” option, or refresh.')}
     </div>${discSide(d)}</div>`;
@@ -1720,20 +1739,39 @@ A.jretrypart = async (el) => {
 };
 
 // Discover
+async function loadSongs(more) {
+  const D = S.disc; if (D.more || !D.data) return;
+  D.more = true; render();
+  try {
+    const d = await api(`/api/discover/songs?flavour=${encodeURIComponent(D.flavour)}&recent=${D.recent ? 1 : 0}${more ? '&more=1' : ''}`);
+    const have = new Set(D.data.songs.map((x) => x.url)), haveA = new Set((D.data.artists || []).map((x) => x.url));
+    const songs = d.songs.filter((x) => !have.has(x.url)), artists = d.artists.filter((x) => !haveA.has(x.url));
+    D.data.songs = more ? D.data.songs.concat(songs) : d.songs; D.data.artists = more ? (D.data.artists || []).concat(artists) : d.artists;
+    D.label = d.label; D.data.similar = d.similar;
+    if (more && !songs.length && !artists.length) snack('Nothing new found. Try another flavour.');
+    else if (!more && !d.songs.length && !d.artists.length) snack('Nothing found for that flavour. Try another genre.');
+  } catch (e) { oops('Couldn’t find more')(e); }
+  D.more = false; render();
+}
+A.dmore = () => loadSongs(true);
+A.dflav = (el) => { S.disc.flavour = el.dataset.k; loadSongs(false); };
+A.dflavgo = () => { const v = ($('#flav')?.value || '').trim().toLowerCase(); if (v) { S.disc.flavour = v; loadSongs(false); } };
+A.drelmore = () => { S.disc.relShown += 10; render(); };
+A.dartist = (el) => { const a = discShown().artists[+el.dataset.i]; if (!a) return; S.q = a.name; scheduleSearch(); go('download'); setTimeout(() => $('#q')?.focus(), 0); };
 A.ddl = (el) => { const x = discItem(el); if (x) discQueue([x.it.url], x.it.title, () => discDrop(x.k, [x.it.url])); };
 A.ddlall = () => { const l = discShown().songs; if (l.length) discQueue(l.map((t) => t.url), '', () => discDrop('songs', l.map((t) => t.url))); };
 A.dhide = async (el) => {
   const x = discItem(el); if (!x) return; const { k, it } = x;
-  try { await api('/api/discover/hide', { method: 'POST', body: { url: it.url, title: it.title, sub: it.artist || it.artists || '' } }); } catch (e) { return oops('Couldn’t hide it')(e); }
-  discDrop(k, [it.url]); S.disc.data.hidden = [{ url: it.url, title: it.title, sub: it.artist || it.artists || '' }, ...(S.disc.data.hidden || [])];
+  try { await api('/api/discover/hide', { method: 'POST', body: { url: it.url, title: it.title || it.name, sub: it.artist || it.artists || (it.name ? 'Artist' : '') } }); } catch (e) { return oops('Couldn’t hide it')(e); }
+  discDrop(k, [it.url]); S.disc.data.hidden = [{ url: it.url, title: it.title || it.name, sub: it.artist || it.artists || (it.name ? 'Artist' : '') }, ...(S.disc.data.hidden || [])];
   render();
-  snack(`Hidden “${it.title}”`, { label: 'Undo', fn: () => api('/api/discover/unhide', { method: 'POST', body: { url: it.url } }).then(() => loadDiscover()).catch(oops('Couldn’t undo')) });
+  snack(`Hidden “${it.title || it.name}”`, { label: 'Undo', fn: () => api('/api/discover/unhide', { method: 'POST', body: { url: it.url } }).then(() => loadDiscover()).catch(oops('Couldn’t undo')) });
 };
 A.dunhide = (el) => api('/api/discover/unhide', { method: 'POST', body: { url: el.dataset.url } }).then(() => loadDiscover()).catch(oops('Couldn’t restore'));
 A.dhidden = () => { S.disc.hiddenOpen = !S.disc.hiddenOpen; render(); };
 A.dbasis = (el) => { const b = S.disc.basis, k = el.dataset.k; if (b.has(k)) b.delete(k); else b.add(k); render(); };
-A.drecent = () => { S.disc.recent = !S.disc.recent; S.disc.data = null; render(); loadDiscover(); };
-A.drefresh = () => { if (S.disc.data) S.disc.data.building = true; render(); loadDiscover(true); };
+A.drecent = () => { S.disc.recent = !S.disc.recent; S.disc.flavour = ''; S.disc.relShown = 10; S.disc.data = null; render(); loadDiscover(); };
+A.drefresh = () => { if (S.disc.flavour) return loadSongs(false); if (S.disc.data) S.disc.data.building = true; render(); loadDiscover(true); };
 
 // Library
 A.cd = (el) => { S.lib.path = el.dataset.path.split('/'); S.lib.focus = null; render(); libQuery(); };
@@ -2188,6 +2226,7 @@ document.addEventListener('paste', (e) => {
   if (tr) { e.preventDefault(); quickQueue(tr); }
 });
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target && e.target.id === 'flav') { e.preventDefault(); A.dflavgo(); return; }
   if (e.key === '/' && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName) && !$('#dlg').open) { e.preventDefault(); if (S.route !== 'download') go('download'); setTimeout(() => $('#q')?.focus(), 0); }
 });
 // Drag-to-reorder for the source list

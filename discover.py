@@ -10,6 +10,7 @@ on disk and applied when the cache is read, so hiding something is instant.
 import json
 import logging
 import os
+import random
 import re
 import threading
 import time
@@ -27,7 +28,7 @@ _cache: dict[str, dict] = {}     # "all" / "recent" -> {data, at, building, erro
 _hidden_lock = threading.Lock()
 
 TOP_ARTISTS = 12
-MAX_RELEASES = 20
+MAX_RELEASES = 60
 MAX_GAPS = 6
 MAX_SONGS = 15
 
@@ -141,6 +142,11 @@ def _top_tracks(client, artist_id: str) -> list[dict]:
     return [t for t in data.get("tracks") or [] if t]
 
 
+def _artist_card(a: dict, reason: str, source: str) -> dict:
+    return {"name": a.get("name", ""), "url": f"https://open.spotify.com/artist/{a['id']}", "cover_url": _cover(a.get("images")),
+            "genres": [g for g in (a.get("genres") or [])[:2]], "reason": reason, "source": source}
+
+
 def _song(t: dict, reason: str, source: str) -> dict:
     album = t.get("album") or {}
     return {"title": t.get("name", ""), "artists": ", ".join(a["name"] for a in t.get("artists") or []),
@@ -153,7 +159,7 @@ def _song(t: dict, reason: str, source: str) -> dict:
 def _build(records, client, releases_of, track_owned, album_have, album_status, recent: bool, rnd: int) -> dict:
     prof = library_profile(records, 30 if recent else 0)
     if not prof["artists"]:
-        return {"state": "empty", "taste": [], "releases": [], "gaps": [], "songs": [], "seeds": []}
+        return {"state": "empty", "taste": [], "releases": [], "gaps": [], "songs": [], "artists": [], "seeds": []}
     top_g = prof["genres"]
     wmax = top_g[0][1] if top_g else 1
     taste = [{"name": g, "weight": round(n / wmax * 100)} for g, n in top_g]
@@ -191,50 +197,121 @@ def _build(records, client, releases_of, track_owned, album_have, album_status, 
     releases.sort(key=lambda r: r["date"] or r["year"] or "", reverse=True)
     gaps.sort(key=lambda r: r["have"] / max(1, r["track_count"]), reverse=True)
 
-    # Songs: artists you don't have, via similar artists (when Spotify still serves them) and your genres.
-    songs, seen, taken = [], set(), set(prof["known"])
-    similar_ok = True
-
-    def add_artist(a, reason, source):
-        if not a or _norm(a.get("name")) in taken:
-            return
-        taken.add(_norm(a["name"]))
-        try:
-            for t in _top_tracks(client, a["id"])[:2]:
-                key = (_norm(t.get("name")), _norm((t.get("artists") or [{}])[0].get("name")))
-                if key in seen or track_owned(t.get("name", ""), ", ".join(x["name"] for x in t.get("artists") or [])):
-                    continue
-                seen.add(key)
-                songs.append(_song(t, reason, source))
-        except Exception as exc:
-            log.info("Discover: top tracks for %s failed (%s)", a.get("name"), exc)
-
-    for name, aid, _ in per_artist[:4]:
-        if not similar_ok:
-            break
-        try:
-            rel = client._get(f"/artists/{aid}/related-artists").get("artists") or []
-        except Exception as exc:
-            log.info("Discover: similar artists unavailable (%s)", exc)
-            similar_ok = False
-            break
-        for a in rel[(rnd % 3) * 3:(rnd % 3) * 3 + 3]:
-            add_artist(a, f"Similar to {name}", "similar")
-    for g, _n in top_g[:3]:
-        try:
-            found = client._get("/search", params={"q": f'genre:"{g}"', "type": "artist", "limit": 6,
-                                                   "offset": (rnd % 4) * 6}).get("artists", {}).get("items") or []
-        except Exception as exc:
-            log.info("Discover: genre %s search failed (%s)", g, exc)
-            continue
-        for a in found[:4]:
-            add_artist(a, g, "genres")
-    # Interleave the sources so one of them doesn't fill the list.
-    sim = [s for s in songs if s["source"] == "similar"]
-    gen = [s for s in songs if s["source"] == "genres"]
-    mixed = [x for pair in zip(sim, gen) for x in pair] + sim[len(gen):] + gen[len(sim):]
+    finder = Songs(client, [(n, aid) for n, aid, _ in per_artist], top_g, prof["known"], track_owned)
+    songs, _label, artists = finder.next("", reset=True)
     return {"state": "ready", "taste": taste, "releases": releases[:MAX_RELEASES], "gaps": gaps[:MAX_GAPS],
-            "songs": mixed[:MAX_SONGS], "seeds": [a for a, _ in prof["artists"]], "similar": similar_ok}
+            "songs": songs, "artists": artists, "seeds": [a for a, _ in prof["artists"]], "similar": finder.similar_ok, "_finder": finder}
+
+
+# Genres offered by "Surprise me" (the ones your library already leans on are left out).
+_SURPRISE = ["indie rock", "hip hop", "jazz", "soul", "funk", "r&b", "reggae", "latin", "afrobeats", "k-pop", "ambient", "folk",
+             "synthwave", "drum and bass", "techno", "disco", "blues", "classic rock", "metal", "country", "bossa nova", "trip hop",
+             "shoegaze", "punk", "gospel", "lo-fi"]
+
+
+class Songs:
+    """Finds songs by artists you don't have yet, and keeps going where it stopped ("load more").
+    A flavour steers it: "" mixes similar artists with your top genres, a genre name sticks to that genre,
+    "~surprise" picks three genres your library doesn't lean on."""
+
+    def __init__(self, client, per_artist, genres, known, track_owned):
+        self.client, self.per_artist, self.genres = client, per_artist, genres
+        self.known, self.track_owned = set(known), track_owned
+        self.similar_ok = True
+        self.related: dict[str, list] = {}
+        self.st: dict[str, dict] = {}
+        self.lock = threading.Lock()
+
+    def _state(self, flavour: str, reset: bool) -> dict:
+        s = self.st.get(flavour)
+        if s is None or reset:
+            picked = None
+            if flavour == "~surprise":
+                mine = {_norm(g) for g, _ in self.genres}
+                pool = [g for g in _SURPRISE if _norm(g) not in mine] or list(_SURPRISE)
+                picked = random.sample(pool, min(3, len(pool)))
+            s = {"seen": set(), "taken": set(self.known), "cursor": {}, "picked": picked, "sim": 0}
+            self.st[flavour] = s
+        return s
+
+    def _related(self, name: str, aid: str) -> list:
+        if aid not in self.related:
+            try:
+                self.related[aid] = self.client._get(f"/artists/{aid}/related-artists").get("artists") or []
+            except Exception as exc:
+                log.info("Discover: similar artists unavailable (%s)", exc)
+                self.similar_ok = False
+                self.related[aid] = []
+        return self.related[aid]
+
+    def next(self, flavour: str = "", reset: bool = False, want: int = 10) -> tuple[list[dict], str, list[dict]]:
+        with self.lock:
+            s = self._state(flavour, reset)
+            cands: list[tuple[dict, str, str]] = []   # (artist, reason, source)
+
+            def take(a, reason, source):
+                if a and a.get("id") and _norm(a.get("name")) not in s["taken"]:
+                    s["taken"].add(_norm(a["name"]))
+                    cands.append((a, reason, source))
+
+            if flavour == "":
+                for name, aid in self.per_artist[:4]:
+                    if not self.similar_ok:
+                        break
+                    rel = self._related(name, aid)
+                    for a in rel[s["sim"] * 3:(s["sim"] + 1) * 3]:
+                        take(a, f"Similar to {name}", "similar")
+                s["sim"] += 1
+                gl = [g for g, _ in self.genres[:3]]
+            elif flavour == "~surprise":
+                gl = s["picked"] or []
+            else:
+                gl = [flavour]
+            for g in gl:
+                off = s["cursor"].get(g, 0)
+                try:
+                    found = self.client._get("/search", params={"q": f'genre:"{g}"', "type": "artist", "limit": 6,
+                                                                "offset": off}).get("artists", {}).get("items") or []
+                except Exception as exc:
+                    log.info("Discover: genre %s search failed (%s)", g, exc)
+                    continue
+                s["cursor"][g] = off + 6 if len(found) == 6 else 0
+                for a in found:
+                    take(a, g.title() if g.islower() else g, "genres")
+
+            def tracks(c):
+                try:
+                    return c, _top_tracks(self.client, c[0]["id"])[:2]
+                except Exception as exc:
+                    log.info("Discover: top tracks for %s failed (%s)", c[0].get("name"), exc)
+                    return c, []
+
+            with ThreadPoolExecutor(4) as pool:
+                got = list(pool.map(tracks, cands))
+            sim, gen = [], []
+            for (a, reason, source), ts in got:
+                for t in ts:
+                    key = (_norm(t.get("name")), _norm((t.get("artists") or [{}])[0].get("name")))
+                    if key in s["seen"] or self.track_owned(t.get("name", ""), ", ".join(x["name"] for x in t.get("artists") or [])):
+                        continue
+                    s["seen"].add(key)
+                    (sim if source == "similar" else gen).append(_song(t, reason, source))
+            mixed = [x for pair in zip(sim, gen) for x in pair] + sim[len(gen):] + gen[len(sim):]
+            artists = [_artist_card(a, reason, source) for (a, reason, source), _ in got if a.get("images")]
+            return mixed[:want], ", ".join(s["picked"] or []), artists[:12]
+
+
+def more_songs(recent: bool, flavour: str, more: bool) -> dict | None:
+    """Another batch of songs (`more`) or a fresh start for `flavour`; None before the first build finished."""
+    with _lock:
+        c = _cache.get("recent" if recent else "all")
+        finder = c and c["data"] and c["data"].get("_finder")
+    if not finder:
+        return None
+    songs, label, artists = finder.next(flavour, reset=not more)
+    hid = hidden()
+    return {"songs": [x for x in songs if x["url"] not in hid], "artists": [x for x in artists if x["url"] not in hid],
+            "label": label, "similar": finder.similar_ok}
 
 
 def snapshot(get_records, client_fn, releases_of, track_owned, album_have, album_status,
@@ -248,7 +325,7 @@ def snapshot(get_records, client_fn, releases_of, track_owned, album_have, album
             records = get_records()
             if records is None:
                 return {"state": "building", "building": True, "why": "library", "taste": [], "releases": [], "gaps": [],
-                        "songs": [], "hidden": [], "error": ""}
+                        "songs": [], "artists": [], "hidden": [], "error": ""}
             c["building"], c["error"] = True, ""
             if refresh:
                 c["round"] += 1
@@ -271,8 +348,8 @@ def snapshot(get_records, client_fn, releases_of, track_owned, album_have, album
             threading.Thread(target=work, daemon=True, name="discover").start()
         data, building, error, at = c["data"], c["building"], c["error"], c["at"]
     hid = hidden()
-    out = dict(data) if data else {"state": "error" if error else "building", "taste": [], "releases": [], "gaps": [], "songs": []}
-    for k in ("releases", "gaps", "songs"):
+    out = {k: v for k, v in data.items() if k != "_finder"} if data else {"state": "error" if error else "building", "taste": [], "releases": [], "gaps": [], "songs": [], "artists": []}
+    for k in ("releases", "gaps", "songs", "artists"):
         out[k] = [x for x in out.get(k, []) if x["url"] not in hid]
     out.update(building=building, error=error if not data else "", built_at=at,
                hidden=[{"url": u, **v} for u, v in sorted(hid.items(), key=lambda kv: kv[1].get("at", ""), reverse=True)])
