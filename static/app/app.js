@@ -442,6 +442,24 @@ async function checkLibrary(items) {
   try { Object.assign(S.inLib, await api('/api/library/check-items', { method: 'POST', body: { items: list } })); renderResults(); } catch { /* the badge just doesn't show */ }
 }
 
+// Pasting nothing but Spotify track links queues them right away and leaves the box empty.
+// Albums, playlists and artists still wait for a click, since one paste can mean hundreds of songs.
+const TRACK_URL = /^https?:\/\/open\.spotify\.com\/(?:intl-[a-z-]+\/)?track\/[A-Za-z0-9]+(?:[?#]\S*)?$/;
+function pastedTracks(text) {
+  const lines = String(text || '').split(/[\s,]+/).filter(Boolean);
+  return lines.length && lines.every((l) => TRACK_URL.test(l)) ? [...new Set(lines.map((l) => l.replace(/[?#].*$/, '')))] : null;
+}
+async function quickQueue(urls) {
+  S.q = ''; scheduleSearch();
+  const box = $('#q'); if (box) box.value = '';
+  renderResults();
+  try {
+    await api('/api/download', { method: 'POST', body: { urls: urls.join('\n'), quality: S.quality } });
+    snack(urls.length > 1 ? `Added ${plural(urls.length, 'song')} to the queue` : 'Added to the queue');
+    refreshJobs();
+  } catch (e) { oops('Couldn’t queue it')(e); }
+}
+
 function resultsHTML() {
   const q = S.q.trim();
   if (!q) return emptyState('search', 'Search Spotify or paste a link', 'Tracks, albums and playlists download straight from a link.');
@@ -1499,7 +1517,7 @@ A.paste = () => {
     if (navigator.clipboard && navigator.clipboard.readText) navigator.clipboard.readText().then((t) => { if (t && LINK_RE.test(t)) { S.q = t.trim(); scheduleSearch(); render(); const q2 = $('#q'); if (q2) q2.focus(); } }).catch(() => {});
   }, 0);
 };
-A.pasteq = () => { navigator.clipboard?.readText().then((t) => { if (t) { S.q = t.trim(); scheduleSearch(); render(); $('#q')?.focus(); } }).catch(() => snack('Clipboard is blocked by the browser — paste with Ctrl+V')); };
+A.pasteq = () => { navigator.clipboard?.readText().then((t) => { const tr = pastedTracks(t); if (tr) return quickQueue(tr); if (t) { S.q = t.trim(); scheduleSearch(); render(); $('#q')?.focus(); } }).catch(() => snack('Clipboard is blocked by the browser — paste with Ctrl+V')); };
 A.clearlq = () => { const i = $('#lq'); if (i) { i.value = ''; i.focus(); INPUT.lq(i); } };
 A.clearq = () => { S.q = ''; scheduleSearch(); render(); $('#q')?.focus(); };
 A.type = (el) => { S.type = el.dataset.k; renderResults(); };
@@ -2056,6 +2074,11 @@ document.addEventListener('click', (e) => {
 });
 document.addEventListener('change', (e) => { if (e.target.dataset && e.target.dataset.change === 'seed') render(); });
 document.addEventListener('input', (e) => { const f = e.target.dataset && e.target.dataset.input; if (f && INPUT[f]) INPUT[f](e.target); });
+document.addEventListener('paste', (e) => {
+  if (!e.target || e.target.id !== 'q') return;
+  const tr = pastedTracks(e.clipboardData && e.clipboardData.getData('text'));
+  if (tr) { e.preventDefault(); quickQueue(tr); }
+});
 document.addEventListener('keydown', (e) => {
   if (e.key === '/' && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName) && !$('#dlg').open) { e.preventDefault(); if (S.route !== 'download') go('download'); setTimeout(() => $('#q')?.focus(), 0); }
 });
@@ -2081,7 +2104,8 @@ window.addEventListener('resize', (() => { let t; return () => { clearTimeout(t)
   if (!q.has('text') && !q.has('url') && !q.has('title')) return;
   const hit = [q.get('url'), q.get('text'), q.get('title')].map((x) => (x || '').match(/https?:\/\/open\.spotify\.com\/\S+/)).find(Boolean);
   history.replaceState(null, '', location.pathname + '#/download');
-  if (hit) { S.q = hit[0]; scheduleSearch(); }
+  const tr = hit && pastedTracks(hit[0]);
+  if (tr) setTimeout(() => quickQueue(tr), 0); else if (hit) { S.q = hit[0]; scheduleSearch(); }
 })();
 // Offline copy of the app and update prompt. Browsers only allow this on https or localhost.
 if ('serviceWorker' in navigator) {
