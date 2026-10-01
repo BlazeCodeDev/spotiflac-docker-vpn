@@ -848,7 +848,8 @@ function detailHTML(t, compact = false) {
     ${t.expected && t.file !== t.expected ? `<span class="tag error" style="align-self:flex-start">${ic('text_fields')}Should be named “${esc(t.expected)}”</span>` : ''}
     <div class="pathbox mono">${esc(trackPath(t))}</div>
     <div class="row"><button class="btn ${miss.length ? 'filled' : 'tonal'} grow" data-act="enrich" data-id="${esc(t.id)}">${ic('auto_awesome')}${miss.length ? 'Enrich' : 'Re-enrich'}</button>
-      <button class="btn outlined grow" data-act="dlfiles" data-id="${esc(t.id)}">${ic('download')}Download</button></div>`;
+      <button class="btn outlined grow" data-act="dlfiles" data-id="${esc(t.id)}">${ic('download')}Download</button></div>
+    <div class="enr" data-enr="${esc(t.id)}" aria-live="polite">${enrichHTML(t.id)}</div>`;
 }
 
 function libEmpty() {
@@ -1400,6 +1401,41 @@ const later = (ms = 2500) => setTimeout(() => loadTracks(true), ms);
 const firstError = (d) => (d && d.errors && d.errors[0]) || '';
 function downloadFile(href) { const a = document.createElement('a'); a.href = href; a.rel = 'noopener'; document.body.appendChild(a); a.click(); a.remove(); }
 
+// Progress of single-song enrichment (per path), shown under the Enrich button of that song's details.
+const ENR = {};
+function enrichHTML(path) {
+  const e = ENR[path];
+  if (!e) return '';
+  const line = (st) => `<div class="row" style="gap:8px;align-items:flex-start"><span class="ms ${st.pending ? 'spin' : ''}" aria-hidden="true" style="font-size:18px;color:${st.pending ? 'var(--md-primary)' : 'var(--md-outline)'}">${st.pending ? 'progress_activity' : 'check'}</span><span class="b-m ${st.pending ? '' : 'v'} grow" style="word-break:break-word">${esc(st.text)}</span></div>`;
+  const res = e.result ? `<span class="tag ${e.result.error ? 'error' : 'primary'}" style="align-self:flex-start;height:auto;min-height:24px;white-space:normal;padding:4px 10px">${ic(e.result.error ? 'error' : 'check_circle')}${esc(e.result.text)}</span>` : '';
+  return `<div class="pathbox col" style="gap:6px;font-family:inherit">${e.steps.map(line).join('')}</div>${res}`;
+}
+function paintEnrich(path) {
+  for (const el of document.querySelectorAll('[data-enr]')) if (el.dataset.enr === path) el.innerHTML = enrichHTML(path);
+}
+function enrichOne(path) {
+  if (ENR[path] && !ENR[path].result) return;                       // already running
+  const e = ENR[path] = { steps: [], result: null, es: null };
+  const fail = (text) => { e.steps.forEach((st) => { st.pending = false; }); e.result = { error: true, text }; e.es && e.es.close(); paintEnrich(path); };
+  const es = e.es = new EventSource('/api/library/enrich-one?path=' + encodeURIComponent(path));
+  es.onmessage = (ev) => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === 'step') {
+      const st = e.steps.find((x) => x.id === m.id);
+      if (st) { st.text = m.text; st.pending = !!m.pending; } else e.steps.push({ id: m.id, text: m.text, pending: !!m.pending });
+    } else if (m.type === 'result') {
+      es.close();
+      e.steps.forEach((st) => { st.pending = false; });
+      e.result = m.error ? { error: true, text: m.error }
+        : { text: [m.enriched ? 'Enriched' : 'Already complete — nothing changed', m.moved ? 'file moved' : '', `${m.elapsed}s`].filter(Boolean).join(' · ') };
+      if (!m.error) later(800);                                      // new tags: look at the row again
+    } else if (m.type === 'error') return fail(m.msg || 'Enrichment failed');
+    paintEnrich(path);
+  };
+  es.onerror = () => { if (!e.result) fail('Connection lost'); };
+  paintEnrich(path);
+}
+
 async function enrichPaths(paths) {
   if (!paths.length) return;
   try {
@@ -1572,7 +1608,7 @@ A.focus = (el) => {
 A.libreload = async () => {
   try { await api('/api/library/rescan', { method: 'POST' }); snack('Rescanning your library…'); refreshTasks(); } catch (e) { oops('Couldn’t start a rescan')(e); }
 };
-A.enrich = (el) => enrichPaths(idsOf(el));
+A.enrich = (el) => { const ids = idsOf(el); if (ids.length === 1) enrichOne(ids[0]); else enrichPaths(ids); };
 A.enrichsel = () => enrichPaths([...S.lib.sel]);
 async function renamePaths(paths) {
   try {
