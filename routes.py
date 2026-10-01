@@ -14,7 +14,7 @@ from functools import wraps
 
 import json
 
-from flask import Blueprint, Response, jsonify, render_template, request, send_file, stream_with_context
+from flask import Blueprint, Response, jsonify, render_template, request, send_file, stream_with_context, url_for
 
 import settings as _settings
 import worker
@@ -178,6 +178,70 @@ def _asset_version() -> int:
 @bp.get("/")
 def index():
     return render_template("app.html", git_commit=_GIT_COMMIT, asset_v=_asset_version())
+
+
+# ── Installable app (PWA) ─────────────────────────────────────────────────────
+@bp.get("/manifest.webmanifest")
+def pwa_manifest():
+    icons = lambda n: url_for("static", filename="app/" + n)
+    data = {
+        "id": "/", "name": "SpotiFLAC", "short_name": "SpotiFLAC",
+        "description": "Download and manage your lossless music library.",
+        "start_url": "/", "scope": "/", "display": "standalone", "orientation": "any",
+        "background_color": "#0E1513", "theme_color": "#0E1513", "categories": ["music", "utilities"],
+        "icons": [
+            {"src": icons("icon-192.png"), "sizes": "192x192", "type": "image/png", "purpose": "any"},
+            {"src": icons("icon-512.png"), "sizes": "512x512", "type": "image/png", "purpose": "any"},
+            {"src": icons("icon-maskable-512.png"), "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+        ],
+        "shortcuts": [
+            {"name": "Library", "url": "/#/library", "icons": [{"src": icons("icon-192.png"), "sizes": "192x192"}]},
+            {"name": "Library health", "url": "/#/health", "icons": [{"src": icons("icon-192.png"), "sizes": "192x192"}]},
+            {"name": "Settings", "url": "/#/settings", "icons": [{"src": icons("icon-192.png"), "sizes": "192x192"}]},
+        ],
+        # Lets "Share" in the Spotify app open SpotiFLAC with the link already in the search box.
+        "share_target": {"action": "/", "method": "GET", "params": {"title": "title", "text": "text", "url": "url"}},
+    }
+    return Response(json.dumps(data), content_type="application/manifest+json", headers={"Cache-Control": "no-cache"})
+
+
+_SW_JS = """
+const V = %(v)s, SHELL = 'shell-' + V, FONTS = 'fonts';
+const ASSETS = %(assets)s;
+self.addEventListener('install', (e) => {
+  e.waitUntil(caches.open(SHELL).then((c) => c.addAll(ASSETS)));
+});
+self.addEventListener('message', (e) => { if (e.data === 'skip') self.skipWaiting(); });
+self.addEventListener('activate', (e) => {
+  e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== SHELL && k !== FONTS).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
+});
+const put = (name, req, res) => { if (res && res.ok) { const copy = res.clone(); caches.open(name).then((c) => c.put(req, copy)); } return res; };
+self.addEventListener('fetch', (e) => {
+  const r = e.request, u = new URL(r.url);
+  if (r.method !== 'GET') return;
+  if (u.origin === location.origin) {
+    if (r.mode === 'navigate' && u.pathname === '/') {
+      // The page is always fetched fresh; the saved copy only opens the app when the server can't be reached.
+      e.respondWith(fetch(r).then((res) => put(SHELL, '/', res)).catch(() => caches.match('/')));
+    } else if (u.pathname.startsWith('/static/app/')) {
+      e.respondWith(caches.match(r).then((hit) => hit || fetch(r).then((res) => put(SHELL, r, res))));
+    }
+    return; // everything else (the API, downloads, covers) goes straight to the network
+  }
+  if (u.hostname === 'fonts.googleapis.com' || u.hostname === 'fonts.gstatic.com') {
+    e.respondWith(caches.match(r).then((hit) => { const net = fetch(r).then((res) => put(FONTS, r, res)).catch(() => hit); return hit || net; }));
+  }
+});
+"""
+
+
+@bp.get("/sw.js")
+def pwa_sw():
+    v = _asset_version()
+    assets = ["/"] + [url_for("static", filename="app/" + f) + ("?v=%d" % v if f.endswith((".js", ".css")) and f != "mcu.js" else "")
+                      for f in ("m3.css", "app.js", "logo.svg", "icon-192.png")]
+    body = _SW_JS % {"v": json.dumps(v), "assets": json.dumps(assets)}
+    return Response(body, content_type="text/javascript", headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
 
 
 @bp.post("/api/download")

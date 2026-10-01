@@ -2075,6 +2075,26 @@ matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { i
 window.addEventListener('hashchange', onRoute);
 window.addEventListener('resize', (() => { let t; return () => { clearTimeout(t); t = setTimeout(() => { if (S.route === 'library') render(); }, 150); }; })());
 
+// Shared from another app (the manifest's share target): drop a Spotify link into the search box.
+(() => {
+  const q = new URLSearchParams(location.search);
+  if (!q.has('text') && !q.has('url') && !q.has('title')) return;
+  const hit = [q.get('url'), q.get('text'), q.get('title')].map((x) => (x || '').match(/https?:\/\/open\.spotify\.com\/\S+/)).find(Boolean);
+  history.replaceState(null, '', location.pathname + '#/download');
+  if (hit) { S.q = hit[0]; scheduleSearch(); }
+})();
+// Offline copy of the app and update prompt. Browsers only allow this on https or localhost.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').then((reg) => {
+    const ask = (w) => snack('A new version is ready', { label: 'Reload', fn: () => w.postMessage('skip') });
+    const watch = (w) => w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) ask(w); });
+    if (reg.waiting && navigator.serviceWorker.controller) ask(reg.waiting);
+    reg.addEventListener('updatefound', () => watch(reg.installing));
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+    let had = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (had) location.reload(); had = true; });
+  }).catch(() => { /* not a secure context, or blocked */ });
+}
 applyTheme();
 import(`${APP.assets}mcu.js?v=1`).then((m) => { MCU = m; applyTheme(); render(); }).catch(() => { /* static fallback colours stay */ });
 onRoute();
