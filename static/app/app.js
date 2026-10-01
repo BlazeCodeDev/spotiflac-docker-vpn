@@ -691,8 +691,8 @@ async function refreshTasks() {
     if (!t.running) continue;
     const now = tasks.find((x) => x.id === t.id);
     if (now && now.running) continue;
-    if (t.id === 'scan-library') { loadScan('dups'); loadScan('mistag'); loadTracks(true); }
-    else if (t.id === 'scan-dups') loadScan('dups');
+    if (t.id === 'scan-library') { loadDups(true); loadScan('mistag'); loadTracks(true); }
+    else if (t.id === 'scan-dups') loadDups(true);
     else if (t.id === 'scan-mistag') loadScan('mistag');
     else if (t.id === 'lib-index' || t.id === 'lib-enrich') loadTracks(true);
   }
@@ -1002,11 +1002,13 @@ const KIND = { id: ['tag', 'Same ID'], tags: ['sell', 'Same tags'] };
 const qLabel = (f) => (f.lossless ? 'Lossless' : `${Math.round((f.bitrate || 0) / 1000)} kbps`);
 const MB = 1048576;
 
+// A group's id comes from its files, so a choice made in the list survives the list being refreshed.
+const dupKey = (paths) => { let h = 0; for (const ch of [...paths].sort().join('|')) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return h.toString(36); };
 function mapDupGroups(res) {
   return (res.groups || []).map((g, gi) => {
     const f0 = g.files[0];
     return {
-      id: 'd' + gi, kind: g.match === 'title' ? 'tags' : 'id', title: `${f0.artist} — ${f0.title}`,
+      id: 'd' + dupKey(g.files.map((f) => f.rel)), kind: g.match === 'title' ? 'tags' : 'id', title: `${f0.artist} — ${f0.title}`,
       keepIdx: Math.max(0, g.files.findIndex((f) => f.rel === g.keep)),
       files: g.files.map((f) => ({ name: f.title, path: f.rel, fmt: f.ext.toUpperCase(), q: qLabel(f), size: f.size / MB, lossless: f.lossless })),
     };
@@ -1018,23 +1020,32 @@ function mapMisGroups(res) {
     files: g.files.map((f) => ({ name: f.title, artist: f.artist, path: f.rel, fmt: f.ext.toUpperCase(), q: qLabel(f), size: f.size / MB })),
   }));
 }
+// Duplicates are live: the server groups the tag cache on every request, so there is nothing to scan.
+let dupsSig = '';
+async function loadDups(fresh) {
+  try {
+    const d = await api(`/api/library/duplicates${fresh ? '?fresh=1' : ''}`);
+    if (!d.ready) return;
+    const sig = JSON.stringify(d.groups);
+    if (sig === dupsSig && S.h.dups) return;
+    dupsSig = sig;
+    S.h.dups = mapDupGroups(d);
+    const ids = new Set(S.h.dups.map((g) => g.id));
+    for (const k of Object.keys(S.h.keep)) if (!ids.has(k)) delete S.h.keep[k];
+    if (S.route === 'health') render();
+  } catch { /* the list stays as it was */ }
+}
+// Mistagged songs need the audio fingerprinted, so they are a scan; the server patches a finished result when files change.
 async function loadScan(kind) {
   try {
     const d = await api(`/api/library/scan/${kind}`);
     const info = d.idle ? { idle: true } : { running: d.running, summary: d.summary, error: d.error, phase: d.phase };
-    if (kind === 'dups') {
-      S.h.dupsInfo = info; S.h.keep = {};
-      S.h.dups = d.result ? mapDupGroups(d.result) : null;
-    } else {
-      S.h.misInfo = { ...info, fingerprint: d.result ? d.result.fingerprint : true, fp_reason: d.result ? d.result.fp_reason : '', fp_failed: d.result ? d.result.fp_failed : 0 };
-      S.h.mis = d.result ? mapMisGroups(d.result) : null; S.h.sel.mis.clear();
-    }
+    S.h.misInfo = { ...info, fingerprint: d.result ? d.result.fingerprint : true, fp_reason: d.result ? d.result.fp_reason : '', fp_failed: d.result ? d.result.fp_failed : 0 };
+    S.h.mis = d.result ? mapMisGroups(d.result) : null; S.h.sel.mis.clear();
     render();
   } catch { /* leave what we have */ }
 }
-// One scan finds duplicates and mistagged songs together.
-// The server patches stored scan results when files change, so just fetch them again (no rescan needed).
-function refreshScans() { if (S.h.dups !== null) loadScan('dups'); if (S.h.mis !== null) loadScan('mistag'); }
+function refreshScans() { loadDups(true); if (S.h.mis !== null) loadScan('mistag'); }
 const scanRunning = () => S.tasks.some((t) => t.running && t.id.startsWith('scan-'));
 const keepOf = (g) => S.h.keep[g.id] ?? g.keepIdx;
 
@@ -1058,16 +1069,16 @@ function fileRowDup(g, f, i) {
 
 // A scan that hasn't produced a result yet: running, never run, or the library changed since.
 function scanPending(kind, what, hint) {
-  const info = kind === 'dups' ? S.h.dupsInfo : S.h.misInfo;
-  if (scanRunning() || (info && info.running)) return emptyState('hourglass_top', 'Scanning your library…', 'One scan finds duplicates and mistagged songs. You can leave this page; the result is kept.');
+  const info = S.h.misInfo;
+  if (scanRunning() || (info && info.running)) return emptyState('hourglass_top', 'Scanning your library…', 'Fingerprinting takes a while on a big library. You can leave this page; the result is kept.');
   if (info && info.error) return emptyState('error', 'The scan failed', info.error);
   const stale = info && info.summary && /changed/i.test(info.summary);
   return `${emptyState(stale ? 'refresh' : 'radar', stale ? 'The library changed since the last scan' : `Not scanned yet`, hint)}
-    <div class="row" style="justify-content:center"><button class="btn filled" data-act="scan">${ic('radar')}Scan library</button></div>`;
+    <div class="row" style="justify-content:center"><button class="btn filled" data-act="scan">${ic('radar')}Scan audio</button></div>`;
 }
 
 function healthDups() {
-  if (S.h.dups === null) return scanPending('dups', 'duplicates', 'Looks for the same song saved more than once, even when the tags differ slightly.');
+  if (S.h.dups === null) return libGate(() => emptyState('hourglass_top', 'Looking for duplicates…'));
   const groups = S.h.dups.filter((g) => S.h.filters.has(g.kind));
   const plan = dupPlan();
   return `<div class="row wrap" style="gap:8px"><span class="b-m v grow">Pick the copy to keep in each group. The best copy is preselected: lossless first, then the most complete tags.</span>
@@ -1152,8 +1163,8 @@ function viewHealth() {
   const busy = !!b;
   return `<section class="pane" style="padding:24px 28px 20px;display:flex;flex-direction:column;gap:16px" aria-labelledby="h-health">
     <header class="row wrap" style="align-items:flex-end;gap:16px"><div class="grow col" style="gap:4px"><h1 id="h-health" class="hl-m">Library health</h1>
-      <span class="b-m v">One scan finds duplicates and mistagged songs. Misnamed files and missing tags are read live from your library.</span></div>
-      <button class="btn tonal" data-act="scan" ${busy ? 'disabled' : ''}>${busy ? `<span class="ms spin" aria-hidden="true">progress_activity</span><span data-scan-health>${esc(b ? b.text : 'Scanning…')}</span>` : `${ic('radar')}Scan library`}</button></header>
+      <span class="b-m v">Duplicates, misnamed files, missing tags and broken files are read live from your library. Mistagged songs need a scan, because the audio has to be fingerprinted.</span></div>
+      <button class="btn tonal" data-act="scan" ${busy ? 'disabled' : ''}>${busy ? `<span class="ms spin" aria-hidden="true">progress_activity</span><span data-scan-health>${esc(b ? b.text : 'Scanning…')}</span>` : `${ic('radar')}Scan audio`}</button></header>
     ${busy ? `<div class="lp ${b && b.pct != null ? '' : 'ind'}" role="progressbar" aria-label="Scan progress" data-scan-bar><span class="a" style="width:${b && b.pct != null ? b.pct : 30}%"></span><span class="t"></span></div>` : ''}
     <div class="tabs" role="tablist" aria-label="Issue type">${tabs.map(([k, i, l, n]) => `<button class="tab" role="tab" aria-selected="${S.h.tab === k}" data-act="htab" data-k="${k}">${ic(i, S.h.tab === k ? 'f' : '')}<span class="t-s">${l}</span><span class="tag ${S.h.tab === k ? 'primary' : 'neutral'}" style="height:20px;padding:0 8px">${n}</span></button>`).join('')}</div>
     ${body}</section>`;
@@ -1592,8 +1603,8 @@ A.applydups = async () => {
 };
 A.scan = async () => {
   try {
-    const d = await api('/api/library/scan/library', { method: 'POST' });
-    snack(d.started === false ? 'A scan is already running' : 'Scanning your library for duplicates and mistagged songs…');
+    const d = await api('/api/library/scan/mistag', { method: 'POST' });
+    snack(d.started === false ? 'A scan is already running' : 'Fingerprinting your library for mistagged songs…');
     refreshTasks();
   } catch (e) { oops('Couldn’t start the scan')(e); }
 };
@@ -1782,7 +1793,7 @@ async function loadAllTracks(quiet, fresh) {
     const have = new Set(L.tracks.map((t) => t.path));
     for (const k of Object.keys(S.h.sel)) for (const p of [...S.h.sel[k]]) if (!have.has(p) && k !== 'mis') S.h.sel[k].delete(p);
     rebuildDirCovers();
-    if (S.route === 'health') render(); else renderChrome();
+    if (S.route === 'health') { loadDups(); render(); } else renderChrome();
     if (!d.ready || d.pending || d.checking) tracksTimer = setTimeout(() => { if (S.route === 'health') loadAllTracks(true); else S.lib.loaded = false; }, 2500);
   } catch (e) {
     S.lib.error = e.message; S.lib.loaded = true; if (S.route === 'health') render();
@@ -1819,7 +1830,7 @@ function enterRoute() {
   if (S.route === 'library') loadPage();
   if (S.route === 'health' && !S.lib.loaded) loadAllTracks();
   if (S.route === 'health') {
-    if (S.h.dups === null && !S.h.dupsInfo) loadScan('dups');
+    loadDups();
     if (S.h.mis === null && !S.h.misInfo) loadScan('mistag');
   }
   if (S.route === 'settings') { loadExt(); loadVersion(); }

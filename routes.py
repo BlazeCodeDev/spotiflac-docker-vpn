@@ -1021,10 +1021,10 @@ _TRACK_SORTS = {
 }
 
 
-def _library_rows(fresh: bool = False):
-    """(rows, search texts, abs paths still unread) for every library file whose tags are cached,
-    or None before the first scan. Unread files are queued for a background tag read, and a
-    background check for changed files is started (always when `fresh`)."""
+def _cached_records(fresh: bool = False):
+    """({rel: abs}, {abs: (stamp, record)}, abs paths still unread) from the library index and the
+    tag cache, or None before the first index scan. Never touches the files: unread ones are queued
+    for a background read, and a background check for changed files is started (always when `fresh`)."""
     import tagcache
     files = lib_index.all_files()
     if files is None:
@@ -1039,6 +1039,19 @@ def _library_rows(fresh: bool = False):
     missing = [a for a in all_abs if a not in recs]
     _tracks_fill_start(missing)
     _tracks_verify_start(all_abs, force=fresh)
+    return abs_by_rel, recs, missing
+
+
+def _library_rows(fresh: bool = False):
+    """(rows, search texts, abs paths still unread) for every library file whose tags are cached,
+    or None before the first scan. Unread files are queued for a background tag read, and a
+    background check for changed files is started (always when `fresh`)."""
+    import tagcache
+    got = _cached_records(fresh)
+    if got is None:
+        return None
+    abs_by_rel, recs, missing = got
+    root = _lib_root()
     fmt = _settings.load().get("filename_fmt") or "{artist}/{album}/{track} {title}"
     name_fmt = fmt.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or "{title}"
     rows, hays = [], []
@@ -1999,26 +2012,6 @@ def _cleanup_empty_dirs_up(dirpath: str, root: str) -> None:
         cur = os.path.dirname(cur)
 
 
-def _metadata_score(abs_path: str, audio) -> int:
-    """Counts "this file's metadata is complete/verified" signals.
-
-    Used as the primary tiebreaker between duplicate copies of the same song
-    (see _find_duplicate_tracks) — the better-tagged copy is worth keeping
-    even over a technically higher-bitrate but poorly-tagged one, since a
-    poorly-tagged file just gets re-enriched anyway (cost: one API round
-    trip) while a wrongly-kept low-quality file is permanent.
-    """
-    score = 0
-    if _has_mbid(abs_path):
-        score += 1
-    for field in ("genre", "bpm", "album", "isrc"):
-        if str((audio.get(field) or [""])[0]).strip():
-            score += 1
-    if _has_cover(abs_path):
-        score += 1
-    return score
-
-
 # ── Duplicate detection ──────────────────────────────────────────────────────
 # Titles differ between releases of the same recording only by decoration —
 # "(feat. X)", "- Remastered 2011", "(Album Version)", "(Deluxe Edition)".
@@ -2114,8 +2107,8 @@ def _dup_info(abs_path: str, rel: str, rec: dict):
         "lossless": ext in (".flac", ".wav") or (ext == ".m4a" and "alac" in codec),
         "tkey": _dup_title_key(title),
         "artists": _dup_artists(artist, title),
-        # _metadata_score reads these like a mutagen easy-tags object
-        "_audio": {k: [rec[k]] for k in ("genre", "bpm", "album", "isrc") if rec.get(k)},
+        # Same signals as _metadata_score, read from the cached tags instead of opening the file.
+        "score": sum(1 for k in ("musicbrainz_trackid", "genre", "bpm", "album", "isrc", "cover") if rec.get(k)),
     }
 
 
@@ -2166,7 +2159,11 @@ def _find_duplicate_groups(rel_paths: list[str], root: str, *,
     if phase:
         phase("Reading tags")
     infos = _read_infos(rel_paths, root, progress, cancel)
+    return _group_infos(infos, lossless_first, cancel)
 
+
+def _group_infos(infos: list[dict], lossless_first: bool = True, cancel=None) -> list[dict]:
+    """The grouping itself, on already-read file infos (see _find_duplicate_groups)."""
     parent = list(range(len(infos)))
 
     def find(a):
@@ -2217,8 +2214,6 @@ def _find_duplicate_groups(rel_paths: list[str], root: str, *,
         if len(members) < 2:
             continue
         files = [infos[i] for i in members]
-        for f in files:
-            f["score"] = _metadata_score(f["abs"], f["_audio"])
         files.sort(key=lambda f: ((f["lossless"] if lossless_first else 0),
                                   f["score"], f["bitrate"], f["size"]),
                    reverse=True)
@@ -2243,6 +2238,47 @@ def _find_duplicate_tracks(rel_paths: list[str], root: str) -> list[dict]:
             if f["rel"] != grp["keep"]:
                 result.append({"removed": f["rel"], "kept": grp["keep"]})
     return result
+
+
+# Live duplicates: the same grouping over the tag cache, so the list needs no scan and follows the
+# library as it changes. Cached on a fingerprint of every file's stamp, so polling it is cheap.
+_dups_live_cache: dict = {"sig": None, "groups": []}
+
+
+def _live_duplicates(fresh: bool = False):
+    """(groups, abs paths still unread) or None before the first index scan."""
+    import tagcache
+    got = _cached_records(fresh)
+    if got is None:
+        return None
+    abs_by_rel, recs, missing = got
+    sig = hash(tuple((rel, recs[a][0]) for rel, a in abs_by_rel.items() if a in recs))
+    if _dups_live_cache["sig"] != sig:
+        infos = []
+        for rel, a in abs_by_rel.items():
+            hit = recs.get(a)
+            if hit:
+                size, mtime = tagcache.stamp_size_mtime(hit[0])
+                inf = _dup_info(a, rel, {**hit[1], "size": size, "mtime": mtime})
+                if inf:
+                    infos.append(inf)
+        _dups_live_cache.update(sig=sig, groups=_group_infos(infos))
+    groups = []
+    for g in _dups_live_cache["groups"]:
+        # A copy removed a moment ago stays in the cache until the next index scan: leave it out now.
+        files = [f for f in g["files"] if os.path.isfile(f["abs"])]
+        if len(files) > 1:
+            groups.append({**g, "files": files, "keep": g["keep"] if any(f["rel"] == g["keep"] for f in files) else files[0]["rel"]})
+    return groups, missing
+
+
+@bp.get("/api/library/duplicates")
+def api_dups_live():
+    got = _live_duplicates(fresh=request.args.get("fresh") == "1")
+    if got is None:
+        return jsonify(ready=False, pending=0, groups=[])
+    groups, missing = got
+    return jsonify(ready=True, pending=len(missing), summary=_dup_summary(groups), **_dup_result(groups))
 
 
 # ── Background library scans ─────────────────────────────────────────────────
