@@ -119,7 +119,7 @@ RUN apk add --no-cache netcat-openbsd
 
 COPY entrypoint.sh /entrypoint.sh
 COPY patch_spotiflac.py /app/patch_spotiflac.py
-COPY app.py config.py worker.py vpn.py routes.py settings.py lib_index.py listenbrainz.py audiofp.py tagcache.py /app/
+COPY app.py config.py worker.py applog.py vpn.py routes.py settings.py lib_index.py listenbrainz.py audiofp.py tagcache.py /app/
 COPY templates/ /app/templates/
 COPY static/ /app/static/
 COPY --from=gitinfo /GIT_COMMIT /app/GIT_COMMIT
