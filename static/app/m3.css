@@ -298,8 +298,25 @@ html[data-mode=light]{--vpn-ok-bg:#bbf7d0;--vpn-ok-fg:#14532d;--vpn-bad-bg:#feca
 html[data-scheme=neutral][data-mode=dark]{--md-primary:#bcc8d3;--md-on-primary:#27323a;--md-primary-container:#3d4851;--md-on-primary-container:#d8e4f0;--md-secondary-container:#41474d;--md-on-secondary-container:#dde3ea;--md-tertiary:#b7c9d9;--md-tertiary-container:#384956;--md-on-tertiary-container:#d3e5f5;--md-error:#ffb4ab;--md-on-error:#690005;--md-error-container:#93000a;--md-on-error-container:#ffdad6;--md-surface:#131314;--md-on-surface:#e4e2e3;--md-on-surface-variant:#c7c6c7;--md-outline:#919091;--md-outline-variant:#464748;--md-sc-lowest:#0d0e0f;--md-sc-low:#1b1c1d;--md-sc:#1f2021;--md-sc-high:#292a2b;--md-sc-highest:#343536;--md-inverse-surface:#e4e2e3;--md-inverse-on-surface:#303031;--md-inverse-primary:#546069}
 html[data-scheme=neutral][data-mode=light]{--md-primary:#546069;--md-on-primary:#ffffff;--md-primary-container:#d8e4f0;--md-on-primary-container:#3d4851;--md-secondary-container:#dde3ea;--md-on-secondary-container:#41474d;--md-tertiary:#4f606e;--md-tertiary-container:#d3e5f5;--md-on-tertiary-container:#384956;--md-error:#ba1a1a;--md-on-error:#ffffff;--md-error-container:#ffdad6;--md-on-error-container:#93000a;--md-surface:#fbf9fa;--md-on-surface:#1b1c1d;--md-on-surface-variant:#464748;--md-outline:#777778;--md-outline-variant:#c7c6c7;--md-sc-lowest:#ffffff;--md-sc-low:#f5f3f4;--md-sc:#efedee;--md-sc-high:#e9e8e8;--md-sc-highest:#e4e2e3;--md-inverse-surface:#303031;--md-inverse-on-surface:#f2f0f1;--md-inverse-primary:#bcc8d3}
 
-/* Background task chip: top right of every page */
-#bg{position:fixed;top:16px;right:16px;z-index:12}
+/* Background task chip: its own row above the page content (top right), never on top of it */
+#bg{display:flex;justify-content:flex-end;padding:12px 16px 0 0}
 #bg:empty{display:none}
 #bg .chip{background:var(--md-sc-high);border-color:transparent;box-shadow:0 1px 3px rgba(0,0,0,.25);height:36px}
-@media (max-width:840px){#bg{top:64px;right:16px}}
+@media (max-width:840px){#bg{padding:4px 12px 0}}
+
+/* Phone: with nothing typed, the Results card is just a hint, so give the queue the space. Tapping the search box brings it back. */
+@media (max-width:840px){
+  .res-pane.idle{display:none !important}
+  #view:has(#q:focus) .res-pane.idle{display:flex !important}
+}
+
+/* Settings appears twice in the markup: bottom of the desktop rail, and in the phone's bottom bar */
+.rail .mobile-only{display:none}
+@media (max-width:840px){.rail .mobile-only{display:flex}}
+
+/* Phone: the VPN status collapses to its coloured icon chip (the colour and the aria-label still carry the state) */
+@media (max-width:840px){
+  .mtop .vpn{width:36px;height:36px;padding:0;gap:0;justify-content:center;align-items:center;border-radius:12px}
+  .mtop .vpn .l-m,.mtop .vpn .vpn-s{display:none}
+  .mtop .vpn .ms{font-size:20px}
+}

@@ -203,8 +203,6 @@ const trackPath = (t) => t.path;
 const misnamed = () => S.lib.tracks.filter((t) => t.expected && t.file !== t.expected);
 const missingList = () => S.lib.tracks.filter((t) => missingOf(t).length);
 const dupGroups = () => S.h.dups || [];
-const misGroups = () => S.h.mis || [];
-const healthCount = () => dupGroups().length + misGroups().length + misnamed().length + missingList().length;
 const dupFor = (t) => dupGroups().find((g) => g.files.some((f) => f.path === t.path));
 const queueJobs = () => {
   const rank = { running: 0, queued: 1, error: 2, cancelled: 3 };
@@ -277,18 +275,22 @@ const NAV = [
   ['settings', 'Settings', 'settings'],
 ];
 function railHTML() {
-  const badge = { download: activeJobs(), health: healthCount() };
-  const items = NAV.map(([id, label, icon]) => {
+  const badge = { download: activeJobs() };
+  const link = (id, label, icon, cls = '') => {
     const n = badge[id] || 0;
-    return `<a href="#/${id}" class="rail-item ${S.route === id ? 'on' : ''}" ${S.route === id ? 'aria-current="page"' : ''}>
+    return `<a href="#/${id}" class="rail-item ${S.route === id ? 'on' : ''} ${cls}" ${S.route === id ? 'aria-current="page"' : ''}>
       <span class="ind">${ic(icon)}${n ? `<span class="badge" aria-label="${n} items">${n}</span>` : ''}</span><span>${label}</span></a>`;
-  }).join('');
+  };
+  // Settings sits with the status controls at the bottom of the desktop rail, but stays in the phone's bottom bar.
+  const items = NAV.map(([id, label, icon]) => link(id, label, icon, id === 'settings' ? 'mobile-only' : '')).join('');
+  const settings = NAV.filter((n) => n[0] === 'settings').map(([id, label, icon]) => link(id, label, icon, 'rail-extra')).join('');
   const dark = document.documentElement.dataset.mode === 'dark';
   return `<div class="col rail-extra" style="align-items:center;gap:8px;margin-bottom:12px">${brandHTML()}</div>
     <button class="fab" data-act="paste" aria-label="Paste link and download" style="margin:4px 0 20px">${ic('add_link')}</button>
     ${items}
     <div class="grow rail-extra"></div>
     <button class="ib rail-extra" data-act="theme" aria-label="Switch to ${dark ? 'light' : 'dark'} mode">${ic(dark ? 'light_mode' : 'dark_mode')}</button>
+    ${settings}
     <span class="rail-extra">${vpnPill()}</span>
     ${S.route === 'download' || S.route === 'health' || (S.route === 'library' && S.lib.sel.size) ? '' : `<button class="fab ext mfab" data-act="paste">${ic('add_link')}<span class="l-l">Paste link</span></button>`}`;
 }
@@ -476,7 +478,7 @@ function viewDownload() {
     </div>
   </header>
   <div class="split">
-    <section class="pane" aria-labelledby="h-res" style="padding:20px 12px;display:flex;flex-direction:column;gap:12px">
+    <section class="pane res-pane ${S.q.trim() ? '' : 'idle'}" aria-labelledby="h-res" style="padding:20px 12px;display:flex;flex-direction:column;gap:12px">
       <div class="row" style="padding:0 12px;align-items:baseline"><h2 id="h-res" class="t-l">Results</h2><span class="b-m v">${S.q.trim() && !LINK_RE.test(S.q) && S.results.length ? plural(count, 'match', 'matches') : ''}</span></div>
       <div class="row wrap" style="padding:0 12px;gap:8px" role="group" aria-label="Result type">
         ${types.map(([k, l]) => `<button class="chip ${S.type === k ? 'on' : ''}" aria-pressed="${S.type === k}" data-act="type" data-k="${k}">${S.type === k ? ic('check') : ''}${l}</button>`).join('')}
@@ -654,13 +656,20 @@ const colBody = () => `<div class="row wrap" style="gap:8px">${COLS.map((c) => {
   return `<button class="chip ${on ? 'on' : ''}" aria-pressed="${on}" data-act="coltoggle" data-k="${c.id}" ${c.fixed ? 'disabled title="Always shown"' : ''}>${on ? ic('check') : ''}${esc(c.name || c.label)}</button>`; }).join('')}</div>
   <div class="row" style="margin-top:16px"><button class="btn text" data-act="colreset" style="padding:0">Reset to default</button></div>`;
 
-function detailHTML(t) {
+function detailHTML(t, compact = false) {
   const miss = missingOf(t);
   const dup = dupFor(t);
   const prop = (icon, k, v) => `<div class="p">${ic(icon, 'v', 'font-size:20px')}<span class="b-m v" style="width:96px">${k}</span><span class="b-m grow" style="word-break:break-word">${v}</span></div>`;
   const bad = (txt) => `<span class="tag error">${txt}</span>`;
-  return `<div class="cover" style="position:relative;overflow:hidden;${t.cover ? `background:${coverGradient(t.album || t.title)};color:rgba(255,255,255,.8)` : 'background:var(--md-sc-highest);color:var(--md-outline)'}">${ic(t.cover ? 'album' : 'image_not_supported', '', 'font-size:64px')}<span class="l-m">${t.cover ? '' : 'No cover art'}</span>${t.cover ? `<img src="${esc(coverUrl(t))}" alt="Cover art" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.remove()">` : ''}</div>
-    <div class="col"><h2 class="hl-s" style="word-break:break-word">${esc(t.title)}</h2><span class="b-m v">${esc([t.artist, t.album, t.year].filter(Boolean).join(' · '))}</span></div>
+  const sub = esc([t.artist, t.album, t.year].filter(Boolean).join(' · '));
+  // Wide screens: big cover above the name. Phone dialog: a small cover beside the name and artist.
+  const head = compact
+    ? `<div class="row" style="gap:16px;align-items:center">${t.cover ? coverTile({ title: t.album || t.title, kind: 'track', url: coverUrl(t) }, 72)
+        : `<span class="coverthumb" style="width:72px;height:72px;border-radius:14px;background:var(--md-sc-highest);color:var(--md-outline)" role="img" aria-label="No cover art">${ic('image_not_supported', '', 'font-size:32px')}</span>`}
+        <div class="col grow" style="min-width:0"><h3 class="t-m" style="word-break:break-word;color:var(--md-on-surface)">${esc(t.title)}</h3><span class="b-m v">${sub}</span></div></div>`
+    : `<div class="cover" style="position:relative;overflow:hidden;${t.cover ? `background:${coverGradient(t.album || t.title)};color:rgba(255,255,255,.8)` : 'background:var(--md-sc-highest);color:var(--md-outline)'}">${ic(t.cover ? 'album' : 'image_not_supported', '', 'font-size:64px')}<span class="l-m">${t.cover ? '' : 'No cover art'}</span>${t.cover ? `<img src="${esc(coverUrl(t))}" alt="Cover art" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.remove()">` : ''}</div>
+    <div class="col"><h2 class="hl-s" style="word-break:break-word">${esc(t.title)}</h2><span class="b-m v">${sub}</span></div>`;
+  return `${head}
     <div class="props">
       ${prop('graphic_eq', 'Format', t.lossless ? `${t.fmt.toUpperCase()} · lossless` : `${t.fmt.toUpperCase()} · ${t.kbps} kbps`)}
       ${prop('sell', 'Genre', t.genre ? t.genreName : bad('Missing'))}
@@ -1133,7 +1142,7 @@ A.focus = (el) => {
   S.lib.focus = el.dataset.id; render();
   if (window.innerWidth < 1100) {
     const t = trackOf(S.lib.focus);
-    if (t) dialog(t.title, `<div class="col" style="gap:16px">${detailHTML(t)}</div>`, [{ key: 'close', label: 'Close' }]);
+    if (t) dialog('Song details', `<div class="col" style="gap:16px">${detailHTML(t, true)}</div>`, [{ key: 'close', label: 'Close' }]);
   }
 };
 A.libreload = async () => {
