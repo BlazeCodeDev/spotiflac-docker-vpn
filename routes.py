@@ -1022,6 +1022,7 @@ def _search_match(q: str, hay: str) -> bool:
 # Built rows are kept per file (abs path → (stamp, name format, row, search text)) so a page
 # request only rebuilds rows for files that changed; _org_target() per song is the expensive part.
 _row_cache: dict[str, tuple] = {}
+_rows_lock = threading.Lock()   # one request builds the rows; the others wait and find them cached (not N× the work)
 
 _MISS_KEYS = ("genre", "mbid", "bpm", "cover")
 _TRACK_CHIPS = {
@@ -1082,24 +1083,25 @@ def _library_rows(fresh: bool = False):
     root = _lib_root()
     fmt = _settings.load().get("filename_fmt") or "{artist}/{album}/{track} {title}"
     name_fmt = fmt.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or "{title}"
-    rows, hays = [], []
-    for rel, a in abs_by_rel.items():
-        got = recs.get(a)
-        if got is None:
-            continue
-        stamp, rec = got
-        hit = _row_cache.get(a)
-        if not hit or hit[:2] != (stamp, name_fmt) or hit[2]["path"] != rel:
-            size, mtime = tagcache.stamp_size_mtime(stamp)
-            row = _track_row(rel, {**rec, "size": size, "mtime": mtime}, name_fmt)
-            hay = _search_hay(row)
-            hit = _row_cache[a] = (stamp, name_fmt, row, hay)
-        rows.append(hit[2])
-        hays.append(hit[3])
-    if len(_row_cache) > len(rows) + 1000:   # drop rows of files that are gone
-        live = set(abs_by_rel.values())
-        for a in [a for a in _row_cache if a not in live]:
-            _row_cache.pop(a, None)
+    with _rows_lock:
+        rows, hays = [], []
+        for rel, a in abs_by_rel.items():
+            got = recs.get(a)
+            if got is None:
+                continue
+            stamp, rec = got
+            hit = _row_cache.get(a)
+            if not hit or hit[:2] != (stamp, name_fmt) or hit[2]["path"] != rel:
+                size, mtime = tagcache.stamp_size_mtime(stamp)
+                row = _track_row(rel, {**rec, "size": size, "mtime": mtime}, name_fmt)
+                hay = _search_hay(row)
+                hit = _row_cache[a] = (stamp, name_fmt, row, hay)
+            rows.append(hit[2])
+            hays.append(hit[3])
+        if len(_row_cache) > len(rows) + 1000:   # drop rows of files that are gone
+            live = set(abs_by_rel.values())
+            for a in [a for a in _row_cache if a not in live]:
+                _row_cache.pop(a, None)
     return rows, hays, missing
 
 
