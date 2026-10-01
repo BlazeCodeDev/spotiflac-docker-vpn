@@ -954,6 +954,7 @@ def _track_row(rel: str, rec: dict, name_fmt: str) -> dict:
         "genre": rec.get("genre", ""), "bpm": int(bpm.group()) if bpm else None,
         "mbid": rec.get("musicbrainz_trackid", ""), "isrc": rec.get("isrc", ""),
         "cover": bool(rec.get("cover")), "expected": expected,
+        "unreadable": "dur" not in rec,   # the tag reader couldn't open the file at all
     }
 
 

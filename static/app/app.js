@@ -193,7 +193,7 @@ const S = {
   h: {
     tab: 'dups', filters: new Set(['id', 'tags']),
     dups: null, dupsInfo: null, keep: {}, mis: null, misInfo: null,
-    sel: { mis: new Set(), name: new Set(), miss: new Set() },
+    sel: { mis: new Set(), name: new Set(), miss: new Set(), bad: new Set() },
   },
   section: 'appearance',
   set: clone(DEFAULT_SET), setLoaded: false, setError: '',
@@ -206,6 +206,9 @@ const expectedFile = (t) => t.expected || t.file;
 const trackPath = (t) => t.path;
 const misnamed = () => S.lib.tracks.filter((t) => t.expected && t.file !== t.expected);
 const missingList = () => S.lib.tracks.filter((t) => missingOf(t).length);
+// Songs that can't play: the file is empty or cut short, has no audio in it, or can't be opened at all.
+const brokenWhy = (t) => (t.bytes === 0 ? 'Empty file' : t.unreadable ? 'Can’t be read' : !t.len ? 'No audio (0:00)' : t.bytes < 8192 ? 'Almost empty' : '');
+const brokenList = () => S.lib.tracks.filter((t) => brokenWhy(t));
 const dupGroups = () => S.h.dups || [];
 const dupFor = (t) => dupGroups().find((g) => g.files.some((f) => f.path === t.path));
 const queueJobs = () => {
@@ -1126,10 +1129,23 @@ function healthMissing() {
   });
 }
 
+function healthBroken() {
+  return libGate(() => {
+    const list = brokenList(); const sel = S.h.sel.bad;
+    return `<span class="b-m v">Files that can’t play: empty, cut short, or with no audio in them (they show as 0:00). Usually a download that was interrupted. Delete them, then download the song again.</span>
+    ${list.length ? listRows('bad', list, (t) => `<span class="col grow" style="min-width:0"><span class="b-l ell">${esc(t.title)}</span><span class="b-m v ell">${esc(t.dir)}/${esc(t.file)}</span></span>
+      <span class="b-s v hide-sm mono" style="white-space:nowrap">${t.bytes < 1024 * 1024 ? Math.max(0.1, t.bytes / 1024).toFixed(0) + ' KB' : t.size.toFixed(1) + ' MB'}</span><span class="tag error">${brokenWhy(t)}</span>`)
+      : emptyState('task_alt', 'No broken songs', 'Every file in your library has audio in it.')}
+    ${list.length ? `<div class="dock"><span class="b-l grow">${sel.size ? plural(sel.size, 'file') + ' selected' : plural(list.length, 'broken file')}</span>
+      <button class="btn outlined danger" data-act="hdeletebad" ${sel.size ? '' : 'disabled'}>${ic('delete')}Delete${sel.size ? ' ' + sel.size : ''}</button></div>` : ''}`;
+  });
+}
+
 function viewHealth() {
   const tabs = [['dups', 'content_copy', 'Duplicates', S.h.dups ? S.h.dups.length : '–'], ['mis', 'graphic_eq', 'Mistagged', S.h.mis ? S.h.mis.length : '–'],
-    ['name', 'text_fields', 'Misnamed', S.lib.loaded && S.lib.ready ? misnamed().length : '–'], ['miss', 'label_off', 'Missing tags', S.lib.loaded && S.lib.ready ? missingList().length : '–']];
-  const body = { dups: healthDups, mis: healthMis, name: healthNames, miss: healthMissing }[S.h.tab]();
+    ['name', 'text_fields', 'Misnamed', S.lib.loaded && S.lib.ready ? misnamed().length : '–'], ['miss', 'label_off', 'Missing tags', S.lib.loaded && S.lib.ready ? missingList().length : '–'],
+    ['bad', 'broken_image', 'Broken', S.lib.loaded && S.lib.ready ? brokenList().length : '–']];
+  const body = { dups: healthDups, mis: healthMis, name: healthNames, miss: healthMissing, bad: healthBroken }[S.h.tab]();
   const b = scanInfo();
   const busy = !!b;
   return `<section class="pane" style="padding:24px 28px 20px;display:flex;flex-direction:column;gap:16px" aria-labelledby="h-health">
@@ -1566,7 +1582,7 @@ A.scan = async () => {
 };
 A.hsel = (el) => { const s = S.h.sel[el.dataset.set]; const id = el.dataset.id; el.checked ? s.add(id) : s.delete(id); render(); };
 A.hselall = (el) => {
-  const set = el.dataset.set; const list = set === 'name' ? misnamed() : missingList();
+  const set = el.dataset.set; const list = { name: misnamed, miss: missingList, bad: brokenList }[set]();
   list.forEach((t) => (el.checked ? S.h.sel[set].add(t.id) : S.h.sel[set].delete(t.id))); render();
 };
 A.repair = async () => {
@@ -1584,6 +1600,18 @@ A.hdelete = async () => {
     const d = await api('/api/library/mistag/delete', { method: 'POST', body: { files } });
     snack(firstError(d) ? `Deleted ${(d.removed || []).length}. ${firstError(d)}` : `Deleted ${plural((d.removed || []).length, 'file')}`);
     S.h.sel.mis.clear(); refreshScans(); later();
+  } catch (e) { oops('Couldn’t delete')(e); }
+};
+A.hdeletebad = async () => {
+  const files = [...S.h.sel.bad];
+  if (!(await confirmDlg(`Delete ${plural(files.length, 'broken file')}?`, 'The files are removed from disk. This can’t be undone.', 'Delete'))) return;
+  try {
+    const d = await api('/api/library/mistag/delete', { method: 'POST', body: { files } });
+    const gone = new Set(d.removed || []);
+    S.lib.tracks = S.lib.tracks.filter((t) => !gone.has(t.path));
+    gone.forEach((p) => S.h.sel.bad.delete(p));
+    snack(firstError(d) ? `Deleted ${gone.size}. ${firstError(d)}` : `Deleted ${plural(gone.size, 'file')}`);
+    render(); later(); loadAllTracks(true, true);
   } catch (e) { oops('Couldn’t delete')(e); }
 };
 A.renamenames = () => {
@@ -1673,7 +1701,7 @@ function adaptTrack(r) {
     id: r.path, path: r.path, dir: r.dir, file: r.file, title: r.title, artist: r.artist, album: r.album,
     year: r.year || '', no: r.no != null ? String(r.no).padStart(2, '0') : '', fmt: r.fmt, kbps: r.kbps, lossless: r.lossless, len: r.len,
     size: r.size / MB, genre: !!r.genre, genreName: r.genre, mbid: !!r.mbid, bpm: !!r.bpm, bpmVal: r.bpm, cover: r.cover,
-    isrc: r.isrc, mtime: Math.round(r.mtime || 0), addedDays: Math.max(0, Math.floor((Date.now() / 1000 - r.mtime) / 86400)), expected: r.expected,
+    isrc: r.isrc, unreadable: !!r.unreadable, bytes: r.size, mtime: Math.round(r.mtime || 0), addedDays: Math.max(0, Math.floor((Date.now() / 1000 - r.mtime) / 86400)), expected: r.expected,
     csrc: r.cpath ? { path: r.cpath, mtime: Math.round(r.cmtime || 0) } : null,   // the album's cover file (paged rows)
   };
 }
