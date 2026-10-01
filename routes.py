@@ -135,8 +135,23 @@ _GIT_COMMIT = _read_git_commit()
 
 
 
+def _asset_version() -> int:
+    """Changes whenever a file of the UI changes, so browsers never run a stale script or stylesheet."""
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "app")
+    try:
+        return int(max(os.stat(os.path.join(root, f)).st_mtime for f in os.listdir(root)))
+    except (OSError, ValueError):
+        return 0
+
+
 @bp.get("/")
 def index():
+    return render_template("app.html", git_commit=_GIT_COMMIT, asset_v=_asset_version())
+
+
+@bp.get("/classic")
+def classic():
+    """The previous interface, kept as a fallback (and for Organize, which the new one doesn't have yet)."""
     cfg = _settings.load()
     return render_template(
         "index.html",
@@ -714,6 +729,146 @@ def api_library_check_items():
 def api_library_rescan():
     lib_index.trigger_rescan()
     return jsonify(ok=True)
+
+
+# ── Library table data ───────────────────────────────────────────────────────
+# One row per audio file for the library table. Rows come from the tag cache; files it hasn't
+# read yet are parsed in a background thread and show up on a later poll (`pending` says how many
+# are still missing), so a first visit never blocks on a slow disk.
+_tracks_fill = {"running": False, "done": 0, "total": 0}
+_tracks_fill_lock = threading.Lock()
+_tracks_tried: set[str] = set()
+
+
+class _TagView:
+    """Lets _org_target() read a tag-cache record as if it were a mutagen easy-tags object."""
+    def __init__(self, rec: dict):
+        self.rec = rec
+
+    def get(self, key, default=None):
+        v = self.rec.get(key)
+        return [v] if v else default
+
+
+def _tracks_fill_start(abs_paths: list[str]) -> None:
+    import tagcache
+    todo = [p for p in abs_paths if p not in _tracks_tried]
+    if not todo:
+        return
+    with _tracks_fill_lock:
+        if _tracks_fill["running"]:
+            return
+        _tracks_fill.update(running=True, done=0, total=len(todo))
+        _tracks_tried.update(todo)
+
+    def work():
+        try:
+            tagcache.get_many(todo, progress=lambda d, t: _tracks_fill.update(done=d, total=t))
+        except Exception:
+            log.exception("Library tag read failed")
+        finally:
+            _tracks_fill["running"] = False
+
+    threading.Thread(target=work, daemon=True, name="tracks-fill").start()
+
+
+def _track_row(rel: str, rec: dict, name_fmt: str) -> dict:
+    d, _, fname = rel.rpartition("/")
+    ext = os.path.splitext(fname)[1].lower()
+    codec = str(rec.get("codec", "")).lower()
+    no = re.match(r"\s*(\d+)", str(rec.get("tracknumber", "")))
+    year = re.match(r"\d{4}", str(rec.get("date", "")))
+    bpm = re.match(r"\d+", str(rec.get("bpm", "")))
+    expected = ""
+    if rec.get("title"):
+        try:
+            expected = _org_target(_TagView(rec), name_fmt, ext).rsplit("/", 1)[-1]
+        except Exception:
+            expected = ""
+    return {
+        "path": rel, "dir": d, "file": fname,
+        "title": rec.get("title") or os.path.splitext(fname)[0],
+        "artist": rec.get("artist") or rec.get("albumartist") or "",
+        "album": rec.get("album", ""),
+        "year": int(year.group()) if year else None,
+        "no": int(no.group(1)) if no else None,
+        "fmt": ext.lstrip("."), "codec": codec,
+        "kbps": round((rec.get("bitrate") or 0) / 1000),
+        "lossless": ext in (".flac", ".wav") or (ext == ".m4a" and "alac" in codec),
+        "len": round(rec.get("dur") or 0), "size": rec["size"], "mtime": rec["mtime"],
+        "genre": rec.get("genre", ""), "bpm": int(bpm.group()) if bpm else None,
+        "mbid": rec.get("musicbrainz_trackid", ""), "isrc": rec.get("isrc", ""),
+        "cover": bool(rec.get("cover")), "expected": expected,
+    }
+
+
+@bp.get("/api/library/tracks")
+def api_library_tracks():
+    import tagcache
+    files = lib_index.all_files()
+    if files is None:
+        return jsonify(ready=False, tracks=[], pending=0, filling=None)
+    root = _lib_root()
+    abs_by_rel = {(f"{d}/{f}" if d else f): None for d, f in files}
+    for rel in abs_by_rel:
+        abs_by_rel[rel] = os.path.join(root, *rel.split("/"))
+    recs = tagcache.peek_many(list(abs_by_rel.values()))
+    missing = [a for a in abs_by_rel.values() if a not in recs]
+    _tracks_fill_start(missing)
+    fmt = _settings.load().get("filename_fmt") or "{artist}/{album}/{track} {title}"
+    name_fmt = fmt.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or "{title}"
+    tracks = [_track_row(rel, recs[a], name_fmt) for rel, a in abs_by_rel.items() if a in recs]
+    return jsonify(ready=True, tracks=tracks, pending=len(missing) if _tracks_fill["running"] else 0,
+                   filling=dict(_tracks_fill) if _tracks_fill["running"] else None)
+
+
+@bp.get("/api/library/cover")
+def api_library_cover():
+    try:
+        abs_path = _safe_lib_path(request.args.get("path", ""))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    if not os.path.isfile(abs_path):
+        return jsonify(error="Not found"), 404
+    data = _existing_cover_bytes(abs_path)
+    if not data:
+        return jsonify(error="No cover"), 404
+    mime = "image/png" if data[:8] == b"\x89PNG\r\n\x1a\n" else "image/webp" if data[:4] == b"RIFF" else "image/jpeg"
+    resp = Response(data, mimetype=mime)
+    resp.headers["Cache-Control"] = "private, max-age=86400"
+    resp.last_modified = os.path.getmtime(abs_path)
+    return resp.make_conditional(request)
+
+
+@bp.get("/api/jobs/<job_id>/download")
+def api_job_download(job_id: str):
+    """Send the files a finished job produced: the file itself for one song, a .zip for several."""
+    import tempfile
+    import zipfile
+    job = next((j for j in worker.get_jobs() if j["id"] == job_id), None)
+    if not job:
+        return jsonify(error="Not found"), 404
+    root = os.path.realpath(Config.OUTPUT_DIR)
+    paths = []
+    for r in job.get("track_results") or []:
+        fp = r.get("file_path") if r.get("success") else None
+        if fp:
+            real = os.path.realpath(fp)
+            if real.startswith(root + os.sep) and os.path.isfile(real):
+                paths.append(real)
+    if not paths:
+        return jsonify(error="This download has no files on disk"), 404
+    if len(paths) == 1:
+        return send_file(paths[0], as_attachment=True, download_name=os.path.basename(paths[0]))
+    name = re.sub(r'[\\/:*?"<>|]+', "_", job.get("title") or "download").strip() or "download"
+    tmp = tempfile.NamedTemporaryFile(prefix="spotiflac-", suffix=".zip", delete=False)
+    tmp.close()
+    with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_STORED) as z:   # audio is already compressed
+        for p in paths:
+            z.write(p, arcname=os.path.relpath(p, root).replace(os.sep, "/"))
+    resp = send_file(tmp.name, as_attachment=True, download_name=name + ".zip", mimetype="application/zip")
+    resp.call_on_close(lambda: os.path.exists(tmp.name) and os.unlink(tmp.name))
+    return resp
 
 
 @bp.get("/api/tasks")

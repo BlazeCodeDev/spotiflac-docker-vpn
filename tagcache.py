@@ -20,8 +20,9 @@ _CACHE_FILE = os.path.join(
     "tagcache.json",
 )
 _FIELDS = ("title", "artist", "albumartist", "album", "isrc", "genre", "bpm",
-           "musicbrainz_trackid")
-_VERSION = 1
+           "musicbrainz_trackid", "tracknumber", "date")
+# 2: added tracknumber/date and the "cover" flag for the library table; old entries are re-read once.
+_VERSION = 2
 
 _lock = threading.Lock()
 _mem: dict | None = None     # {path: [stamp, record]}
@@ -83,7 +84,29 @@ def _parse(path: str) -> dict:
     codec = str(getattr(info, "codec", "") or "")
     if codec:
         rec["codec"] = codec
+    rec["cover"] = _has_cover(path)
     return rec
+
+
+def _has_cover(path: str) -> bool:
+    """True when the file carries an embedded picture. Cheap: tags only, no audio decoding."""
+    from mutagen import File as MFile
+    try:
+        raw = MFile(path)
+        if raw is None:
+            return False
+        if getattr(raw, "pictures", None):               # FLAC, and Ogg/Opus via mutagen's FLAC-style block
+            return True
+        tags = getattr(raw, "tags", None)
+        if tags is None:
+            return False
+        if hasattr(tags, "getall"):                      # ID3 (mp3, wav)
+            return bool(tags.getall("APIC"))
+        if "covr" in tags:                               # MP4/M4A
+            return bool(tags.get("covr"))
+        return "metadata_block_picture" in tags          # Ogg Vorbis/Opus
+    except Exception:
+        return False
 
 
 def _store(p: str, stamp: str, rec: dict) -> None:
@@ -128,6 +151,23 @@ def get_many(paths: list[str], progress=None, cancel=None, workers: int = 8) -> 
         with _lock:
             if _dirty:
                 _save()
+    return out
+
+
+def peek_many(paths: list[str]) -> dict:
+    """Like get_many() but never opens a file: only paths whose cached record is still valid
+    (same size and mtime) are returned. Lets the library table paint immediately while the
+    rest is read in the background."""
+    out: dict = {}
+    for p in paths:
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        with _lock:
+            hit = _cache().get(p)
+        if hit and hit[0] == _stamp(st):
+            out[p] = {**hit[1], "size": st.st_size, "mtime": st.st_mtime}
     return out
 
 

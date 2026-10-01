@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en" data-scheme="teal" data-mode="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SpotiFLAC</title>
+<link rel="icon" href="{{ url_for('static', filename='app/logo.svg') }}">
+<meta name="theme-color" content="#0E1513">
+<script>
+/* Apply the saved theme before first paint to avoid a flash. */
+(function () {
+  try {
+    var g = function (k, d) { var v = localStorage.getItem('next.' + k); return v === null ? d : JSON.parse(v); };
+    var m = g('mode', 'auto');
+    if (m === 'auto') m = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    var s = g('scheme', null);
+    document.documentElement.dataset.scheme = ['neutral', 'teal', 'violet', 'amber'].indexOf(s) >= 0 ? s : 'neutral';
+    document.documentElement.dataset.mode = m;
+    var tv = g('themevars', null);
+    if (tv && tv[m]) for (var k in tv[m]) document.documentElement.style.setProperty('--md-' + k, tv[m][k]);
+  } catch (e) {}
+})();
+window.APP = { commit: {{ git_commit | tojson }}, assets: {{ (url_for('static', filename='app/') ) | tojson }} };
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Flex:opsz,wght@8..144,300..800&amp;family=Roboto+Mono:wght@400;500&amp;family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,300..600,0..1,0&amp;display=block">
+<link rel="stylesheet" href="{{ url_for('static', filename='app/m3.css') }}?v={{ asset_v }}">
+</head>
+<body>
+<div class="app">
+  <nav class="rail" id="rail" aria-label="Main"></nav>
+  <div class="col grow" style="min-width:0">
+    <header class="mtop" id="mtop"></header>
+    <main id="view" tabindex="-1"></main>
+  </div>
+</div>
+<div id="snack" role="status" aria-live="polite"></div>
+<dialog id="dlg"></dialog>
+<script src="{{ url_for('static', filename='app/app.js') }}?v={{ asset_v }}"></script>
+</body>
+</html>
