@@ -1823,9 +1823,10 @@ def _track_total(audio) -> int:
     return int(m.group(1)) if m else 0
 
 
-def _isrc_releases(isrc: str) -> list[dict]:
+def _isrc_releases(isrc: str, album: str = "") -> list[dict]:
     """Every Spotify release carrying this ISRC. Which releases a search returns depends on the
-    market, so a few are asked and merged."""
+    market, so a few are asked and merged. With `album`, stops as soon as that album turns up as a
+    single or album (the usual case: nothing to repair), so a healthy file costs one request."""
     client = _search_client()
     seen: dict[str, dict] = {}
     for market in (None, "DE", "US", "GB"):
@@ -1843,6 +1844,8 @@ def _isrc_releases(isrc: str) -> list[dict]:
                 "total": a.get("total_tracks") or 0, "track": t.get("track_number") or 0, "disc": t.get("disc_number") or 1,
                 "cover": imgs[0]["url"] if imgs else "",
             }
+        if album and any(r["type"] in ("single", "album") and _fold_loose(r["name"]) == _fold_loose(album) for r in seen.values()):
+            break
     return list(seen.values())
 
 
@@ -1889,11 +1892,11 @@ def _repair_album(abs_path: str, audio, isrc: str, strong: bool) -> tuple[str, d
     """(step text, release written or None). Never raises."""
     album = str((audio.get("album") or [""])[0]).strip()
     if not isrc:
-        return "Album may be a compilation, but the file has no ISRC to find its original release", None
+        return "No ISRC in the file, so the album can’t be checked against Spotify", None
     try:
-        releases = _isrc_releases(isrc)
+        releases = _isrc_releases(isrc, album)
         here = next((r for r in releases if _fold_loose(r["name"]) == _fold_loose(album)), None)
-        if here and here["type"] in ("single", "album"):
+        if here and here["type"] in ("single", "album") and not _VARIOUS_RE.match(here["artists"]):
             return f"Album “{album}” is already an original release", None
         if not here and not strong:
             return f"Album “{album}” isn’t listed for this recording — left alone", None
@@ -3039,11 +3042,12 @@ def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
                "pending": False}
 
         album_fixed = False
+        # Tags that say "compilation" are enough to replace the album. Otherwise (the usual case: a
+        # download tagged with a compilation it appears on, with nothing marking it) the album is only
+        # replaced when Spotify itself lists it as a compilation or something else that isn't an original.
         _strong = _looks_compiled(audio)
-        # Very long "albums" are usually compilations too, though not provably: those are only
-        # replaced when Spotify itself lists that album as a compilation.
-        if _strong or _track_total(audio) >= 25:
-            yield {"type": "step", "id": "album", "text": "Album may be a compilation — looking for the original release…", "pending": True}
+        if str((audio.get("album") or [""])[0]).strip():
+            yield {"type": "step", "id": "album", "text": "Checking the album against Spotify…", "pending": True}
             _txt, _rel = _repair_album(abs_path, audio, isrc, _strong)
             yield {"type": "step", "id": "album", "text": _txt, "pending": False}
             if _rel or _txt.startswith("Album check skipped"):
