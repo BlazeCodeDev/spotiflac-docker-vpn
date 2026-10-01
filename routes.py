@@ -822,26 +822,179 @@ def _track_row(rel: str, rec: dict, name_fmt: str) -> dict:
     }
 
 
-@bp.get("/api/library/tracks")
-def api_library_tracks():
+# Built rows are kept per file (abs path → (size, mtime, name format, row, search text)) so a page
+# request only rebuilds rows for files that changed; _org_target() per song is the expensive part.
+_row_cache: dict[str, tuple] = {}
+
+_MISS_KEYS = ("genre", "mbid", "bpm", "cover")
+_TRACK_CHIPS = {
+    "lossless": lambda r: r["lossless"],
+    "missing":  lambda r: any(not r[k] for k in _MISS_KEYS),
+    "mbid":     lambda r: not r["mbid"],
+    "cover":    lambda r: not r["cover"],
+}
+# Same orderings as the table's columns in app.js (COLS[].sort).
+_TRACK_SORTS = {
+    "no":     lambda r: r["no"] or 0,
+    "title":  lambda r: r["title"].lower(),
+    "artist": lambda r: r["artist"].lower(),
+    "album":  lambda r: r["album"].lower(),
+    "year":   lambda r: r["year"] or 0,
+    "genre":  lambda r: r["genre"].lower() if r["genre"] else "~",
+    "format": lambda r: r["fmt"] + str(r["kbps"]).zfill(4),
+    "bpm":    lambda r: r["bpm"] or -1,
+    "tags":   lambda r: sum(1 for k in _MISS_KEYS if r[k]),
+    "size":   lambda r: r["size"],
+    "len":    lambda r: r["len"],
+    "isrc":   lambda r: r["isrc"],
+    "file":   lambda r: r["file"].lower(),
+    "dir":    lambda r: r["dir"].lower(),
+}
+
+
+def _library_rows():
+    """(rows, search texts, abs paths still unread) for every library file whose tags are cached,
+    or None before the first scan. Unread files are queued for a background tag read."""
     import tagcache
     files = lib_index.all_files()
     if files is None:
-        return jsonify(ready=False, tracks=[], pending=0, filling=None)
+        return None
     root = _lib_root()
-    abs_by_rel = {(f"{d}/{f}" if d else f): None for d, f in files}
-    for rel in abs_by_rel:
+    abs_by_rel = {}
+    for d, f in files:
+        rel = f"{d}/{f}" if d else f
         abs_by_rel[rel] = os.path.join(root, *rel.split("/"))
     recs = tagcache.peek_many(list(abs_by_rel.values()))
     missing = [a for a in abs_by_rel.values() if a not in recs]
     _tracks_fill_start(missing)
     fmt = _settings.load().get("filename_fmt") or "{artist}/{album}/{track} {title}"
     name_fmt = fmt.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or "{title}"
-    tracks = [_track_row(rel, recs[a], name_fmt) for rel, a in abs_by_rel.items() if a in recs]
-    body = json.dumps({"ready": True, "tracks": tracks, "pending": len(missing) if _tracks_fill["running"] else 0,
-                       "filling": dict(_tracks_fill) if _tracks_fill["running"] else None},
-                      separators=(",", ":")).encode()
-    return _json_cached(body)
+    rows, hays = [], []
+    for rel, a in abs_by_rel.items():
+        rec = recs.get(a)
+        if rec is None:
+            continue
+        hit = _row_cache.get(a)
+        if not hit or hit[:3] != (rec["size"], rec["mtime"], name_fmt) or hit[3]["path"] != rel:
+            row = _track_row(rel, rec, name_fmt)
+            hay = f"{row['title']} {row['artist']} {row['album']} {row['year'] or ''}".lower()
+            hit = _row_cache[a] = (rec["size"], rec["mtime"], name_fmt, row, hay)
+        rows.append(hit[3])
+        hays.append(hit[4])
+    if len(_row_cache) > len(rows) + 1000:   # drop rows of files that are gone
+        live = set(abs_by_rel.values())
+        for a in [a for a in _row_cache if a not in live]:
+            _row_cache.pop(a, None)
+    return rows, hays, missing
+
+
+def _child_folders(rows: list[dict], p: str) -> list[dict]:
+    prefix = p + "/" if p else ""
+    out: dict[str, dict] = {}
+    for r in rows:
+        d = r["dir"]
+        if not d.startswith(prefix) or len(d) == len(prefix):
+            continue
+        rest = d[len(prefix):]
+        name = rest.split("/", 1)[0]
+        f = out.get(name)
+        if f is None:
+            f = out[name] = {"name": name, "tracks": 0, "size": 0, "dirs": set(), "leaf": True, "miss": 0}
+        f["tracks"] += 1
+        f["size"] += r["size"]
+        f["dirs"].add(d)
+        if rest != name:
+            f["leaf"] = False
+        if any(not r[k] for k in _MISS_KEYS):
+            f["miss"] += 1
+    folders = sorted(out.values(), key=lambda f: (f["name"].casefold(), f["name"]))
+    for f in folders:
+        f["dirs"] = len(f["dirs"])
+    return folders
+
+
+def _tracks_page(rows: list[dict], hays: list[str]) -> dict:
+    """One page of the library table: the folder and filter view, sort and search all applied here,
+    so the browser only ever receives the rows it shows."""
+    a = request.args
+    per = max(1, min(500, _safe_int(a.get("per"), 50)))
+    p = a.get("path", "").strip("/")
+    q = a.get("q", "").strip().lower()
+    chips = {c for c in a.get("chips", "").split(",") if c}
+    flat = a.get("view", "tracks") == "tracks" or bool(q) or bool(chips)
+    now = time.time()
+
+    prefix = p + "/" if p else ""
+    in_scope = [i for i, r in enumerate(rows) if not p or r["dir"] == p or r["dir"].startswith(prefix)]
+    scope_size = sum(rows[i]["size"] for i in in_scope)
+    tests = [_TRACK_CHIPS[c] for c in chips if c in _TRACK_CHIPS]
+    new_only = "new" in chips
+    picked = []
+    for i in in_scope:
+        r = rows[i]
+        if not flat and r["dir"] != p:
+            continue
+        if q and q not in hays[i]:
+            continue
+        if new_only and (now - r["mtime"]) // 86400 > 7:
+            continue
+        if all(t(r) for t in tests):
+            picked.append(r)
+
+    sort_k, desc = a.get("sort", ""), a.get("dir") == "desc"
+    if sort_k == "added":
+        picked.sort(key=lambda r: r["path"])
+        picked.sort(key=lambda r: (now - r["mtime"]) // 86400, reverse=desc)
+    elif sort_k in _TRACK_SORTS:
+        picked.sort(key=lambda r: r["path"])
+        picked.sort(key=_TRACK_SORTS[sort_k], reverse=desc)   # stable: ties stay in path order
+
+    folders = [] if flat else _child_folders(rows, p)
+    if sort_k == "title" and desc:
+        folders.reverse()
+
+    # Folders come first, then songs; both count towards the page.
+    total = len(folders) + len(picked)
+    pages = max(1, -(-total // per))
+    page = max(1, min(pages, _safe_int(a.get("page"), 1)))
+    lo, hi = (page - 1) * per, page * per
+    page_folders = folders[lo:hi]
+    page_rows = picked[max(0, lo - len(folders)):max(0, hi - len(folders))]
+
+    # Every song in an album shows the album's cover from one file, so the browser fetches it once.
+    want = {r["dir"] for r in page_rows if r["cover"]}
+    cover_src = {}
+    if want:
+        for r in rows:
+            if r["cover"] and r["dir"] in want and r["dir"] not in cover_src:
+                cover_src[r["dir"]] = r
+    out_rows = []
+    for r in page_rows:
+        src = cover_src.get(r["dir"])
+        out_rows.append({**r, "cpath": src["path"], "cmtime": src["mtime"]} if r["cover"] and src else r)
+
+    return {"tracks": out_rows, "folders": page_folders, "count": len(picked), "total": total,
+            "page": page, "pages": pages, "per": per,
+            "scope": {"tracks": len(in_scope), "size": scope_size},
+            # The folder being shown no longer holds any songs (moved or deleted): the page goes back to the top.
+            "lost": bool(p) and not in_scope and bool(rows)}
+
+
+@bp.get("/api/library/tracks")
+def api_library_tracks():
+    """Every library song, or with ?page= one page of the table (see _tracks_page for the other arguments)."""
+    paged = "page" in request.args
+    got = _library_rows()
+    if got is None:
+        empty = {"ready": False, "tracks": [], "pending": 0, "filling": None}
+        if paged:
+            empty.update(folders=[], count=0, total=0, page=1, pages=1, per=50, scope={"tracks": 0, "size": 0}, lost=False)
+        return jsonify(**empty)
+    rows, hays, missing = got
+    out = _tracks_page(rows, hays) if paged else {"tracks": rows}
+    out.update(ready=True, pending=len(missing) if _tracks_fill["running"] else 0,
+               filling=dict(_tracks_fill) if _tracks_fill["running"] else None)
+    return _json_cached(json.dumps(out, separators=(",", ":")).encode())
 
 
 def _json_cached(body: bytes) -> Response:

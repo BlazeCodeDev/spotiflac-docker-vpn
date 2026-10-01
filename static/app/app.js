@@ -185,7 +185,8 @@ const S = {
   vpn: { known: false, on: false, since: null, ip: null },
   tasks: [],
   // library
-  lib: { filtersOpen: false, path: [], view: 'tracks', chips: new Set(), q: '', sel: new Set(), focus: null, tracks: [], loaded: false, ready: true, pending: 0, error: '' },
+  lib: { filtersOpen: false, path: [], view: 'tracks', chips: new Set(), q: '', sel: new Set(), focus: null, tracks: [], loaded: false, ready: true, pending: 0, error: '', page: 1, focusT: null,
+    pg: { loaded: false, ready: true, pending: 0, error: '', rows: [], folders: [], count: 0, total: 0, page: 1, pages: 1, scopeN: 0, scopeSize: 0 } },
   // health: null = no scan result yet
   h: {
     tab: 'dups', filters: new Set(['id', 'tags']),
@@ -361,7 +362,7 @@ function rebuildDirCovers() {
 // Thumbnail sized for where it's shown; v= is the file's version, so the browser may keep it indefinitely.
 const coverUrl = (t, size = 96) => {
   if (!t.cover) return '';
-  const src = dirCover.get(t.dir) || t;
+  const src = t.csrc || dirCover.get(t.dir) || t;
   return `/api/library/cover?path=${encodeURIComponent(src.path)}&s=${size}&v=${src.mtime || 0}`;
 };
 const libCover = (t) => (t.cover ? coverTile({ title: t.album || t.title, kind: 'track', url: coverUrl(t) }, 40)
@@ -603,54 +604,28 @@ async function enqueue(r) {
 const CHIPS = [['lossless', 'Lossless only'], ['missing', 'Missing tags'], ['mbid', 'No MusicBrainz ID'], ['cover', 'No cover art'], ['new', 'Added this week']];
 const TAG_ICONS = [['genre', 'sell', 'genre'], ['mbid', 'fingerprint', 'MusicBrainz ID'], ['bpm', 'speed', 'BPM'], ['cover', 'image', 'cover']];
 
-function libScope() {
-  const p = S.lib.path.join('/');
-  return S.lib.tracks.filter((t) => !p || t.dir === p || t.dir.startsWith(p + '/'));
-}
-function libFiltered(list) {
-  const { chips, q } = S.lib; const needle = q.trim().toLowerCase();
-  return list.filter((t) =>
-    (!chips.has('lossless') || t.lossless) && (!chips.has('missing') || missingOf(t).length) &&
-    (!chips.has('mbid') || !t.mbid) && (!chips.has('cover') || !t.cover) && (!chips.has('new') || t.addedDays <= 7) &&
-    (!needle || (t._hay || `${t.title} ${t.artist} ${t.album} ${t.year}`.toLowerCase()).includes(needle)));
-}
-function childFolders(p) {
-  const prefix = p ? p + '/' : '';
-  const m = new Map();
-  for (const t of S.lib.tracks) {
-    if (!t.dir.startsWith(prefix)) continue;
-    const rest = t.dir.slice(prefix.length);
-    if (!rest) continue;
-    const name = rest.split('/')[0];
-    if (!m.has(name)) m.set(name, { name, tracks: 0, size: 0, dirs: new Set(), leaf: true, miss: 0 });
-    const f = m.get(name);
-    f.tracks++; f.size += t.size; f.dirs.add(t.dir); if (rest !== name) f.leaf = false; if (missingOf(t).length) f.miss++;
-  }
-  return [...m.values()].sort((a, b) => a.name.localeCompare(b.name));
-}
 const qualityTag = (t) => (t.lossless ? '<span class="tag tertiary">Lossless</span>' : t.kbps ? `<span class="tag neutral">${t.kbps} kbps</span>` : '');
 
 // ── Library columns ──────────────────────────────────────────────────────
-// Each column knows how to render a cell and how to sort. Title is always shown; the rest are
+// Each column knows how to render a cell; sorting happens on the server (_TRACK_SORTS in routes.py). Title is always shown; the rest are
 // toggled from the cog in the table header and remembered in this browser.
-const tagsPresent = (t) => 4 - missingOf(t).length;
 const dash = '<span style="color:var(--md-outline)">—</span>';
 const COLS = [
-  { id: 'no', label: '#', name: 'Track number', w: '36px', def: true, sort: (t) => +t.no, cell: (t) => `<span class="mono l-m v">${t.no}</span>` },
-  { id: 'title', label: 'Title', w: 'minmax(0,2.2fr)', fixed: true, def: true, sort: (t) => t.title.toLowerCase() },
-  { id: 'artist', label: 'Artist', w: 'minmax(0,1.2fr)', sort: (t) => t.artist.toLowerCase(), cell: (t) => `<span class="b-m ell">${esc(t.artist)}</span>` },
-  { id: 'album', label: 'Album', w: 'minmax(0,1.3fr)', def: true, sort: (t) => t.album.toLowerCase(), cell: (t) => `<span class="b-m ell">${esc(t.album)}</span>` },
-  { id: 'year', label: 'Year', w: '56px', sort: (t) => t.year || 0, cell: (t) => (t.year ? `<span class="mono l-m">${t.year}</span>` : dash) },
-  { id: 'genre', label: 'Genre', w: '104px', sort: (t) => (t.genre ? t.genreName.toLowerCase() : '~'), cell: (t) => (t.genre ? `<span class="b-m ell">${t.genreName}</span>` : dash) },
-  { id: 'format', label: 'Format', w: '150px', def: true, sort: (t) => t.fmt + String(t.kbps).padStart(4, '0'), cell: (t) => `<span class="row" style="gap:8px"><span class="mono l-m">${t.fmt.toUpperCase()}</span>${qualityTag(t)}</span>` },
-  { id: 'bpm', label: 'BPM', w: '56px', right: true, sort: (t) => (t.bpm ? t.bpmVal : -1), cell: (t) => (t.bpm ? `<span class="mono l-m">${t.bpmVal}</span>` : dash) },
-  { id: 'tags', label: 'Tags', w: '110px', def: true, sort: tagsPresent, cell: (t) => { const m = missingOf(t); return `<span class="tags4" role="img" aria-label="${m.length ? 'Missing ' + m.join(', ') : 'All tags present'}">${TAG_ICONS.map(([k, i]) => `<span class="ms ${t[k] ? 'on' : 'off'}" aria-hidden="true">${i}</span>`).join('')}</span>`; } },
-  { id: 'size', label: 'Size', w: '80px', right: true, sort: (t) => t.size, cell: (t) => `<span class="mono l-m v">${fmtMB(t.size)}</span>` },
-  { id: 'len', label: 'Time', w: '56px', right: true, def: true, sort: (t) => t.len, cell: (t) => `<span class="mono l-m v">${fmtLen(t.len)}</span>` },
-  { id: 'added', label: 'Added', w: '88px', sort: (t) => t.addedDays, cell: (t) => `<span class="b-m v">${t.addedDays === 0 ? 'Today' : t.addedDays + ' d ago'}</span>` },
-  { id: 'isrc', label: 'ISRC', w: '132px', sort: (t) => t.isrc, cell: (t) => (t.isrc ? `<span class="mono v ell" style="font-size:12px">${esc(t.isrc)}</span>` : dash) },
-  { id: 'file', label: 'File name', w: 'minmax(0,1.5fr)', sort: (t) => t.file.toLowerCase(), cell: (t) => { const bad = t.expected && t.file !== t.expected; return `<span class="mono ell ${bad ? '' : 'v'}" style="font-size:12px;${bad ? 'color:var(--md-error)' : ''}" title="${esc(t.file)}">${esc(t.file)}</span>`; } },
-  { id: 'dir', label: 'Folder', w: 'minmax(0,1.5fr)', sort: (t) => t.dir.toLowerCase(), cell: (t) => `<span class="mono v ell" style="font-size:12px" title="${esc(t.dir)}">${esc(t.dir)}</span>` },
+  { id: 'no', label: '#', name: 'Track number', w: '36px', def: true, cell: (t) => `<span class="mono l-m v">${t.no}</span>` },
+  { id: 'title', label: 'Title', w: 'minmax(0,2.2fr)', fixed: true, def: true },
+  { id: 'artist', label: 'Artist', w: 'minmax(0,1.2fr)', cell: (t) => `<span class="b-m ell">${esc(t.artist)}</span>` },
+  { id: 'album', label: 'Album', w: 'minmax(0,1.3fr)', def: true, cell: (t) => `<span class="b-m ell">${esc(t.album)}</span>` },
+  { id: 'year', label: 'Year', w: '56px', cell: (t) => (t.year ? `<span class="mono l-m">${t.year}</span>` : dash) },
+  { id: 'genre', label: 'Genre', w: '104px', cell: (t) => (t.genre ? `<span class="b-m ell">${t.genreName}</span>` : dash) },
+  { id: 'format', label: 'Format', w: '150px', def: true, cell: (t) => `<span class="row" style="gap:8px"><span class="mono l-m">${t.fmt.toUpperCase()}</span>${qualityTag(t)}</span>` },
+  { id: 'bpm', label: 'BPM', w: '56px', right: true, cell: (t) => (t.bpm ? `<span class="mono l-m">${t.bpmVal}</span>` : dash) },
+  { id: 'tags', label: 'Tags', w: '110px', def: true, cell: (t) => { const m = missingOf(t); return `<span class="tags4" role="img" aria-label="${m.length ? 'Missing ' + m.join(', ') : 'All tags present'}">${TAG_ICONS.map(([k, i]) => `<span class="ms ${t[k] ? 'on' : 'off'}" aria-hidden="true">${i}</span>`).join('')}</span>`; } },
+  { id: 'size', label: 'Size', w: '80px', right: true, cell: (t) => `<span class="mono l-m v">${fmtMB(t.size)}</span>` },
+  { id: 'len', label: 'Time', w: '56px', right: true, def: true, cell: (t) => `<span class="mono l-m v">${fmtLen(t.len)}</span>` },
+  { id: 'added', label: 'Added', w: '88px', cell: (t) => `<span class="b-m v">${t.addedDays === 0 ? 'Today' : t.addedDays + ' d ago'}</span>` },
+  { id: 'isrc', label: 'ISRC', w: '132px', cell: (t) => (t.isrc ? `<span class="mono v ell" style="font-size:12px">${esc(t.isrc)}</span>` : dash) },
+  { id: 'file', label: 'File name', w: 'minmax(0,1.5fr)', cell: (t) => { const bad = t.expected && t.file !== t.expected; return `<span class="mono ell ${bad ? '' : 'v'}" style="font-size:12px;${bad ? 'color:var(--md-error)' : ''}" title="${esc(t.file)}">${esc(t.file)}</span>`; } },
+  { id: 'dir', label: 'Folder', w: 'minmax(0,1.5fr)', cell: (t) => `<span class="mono v ell" style="font-size:12px" title="${esc(t.dir)}">${esc(t.dir)}</span>` },
 ];
 const DEFAULT_COLS = COLS.filter((c) => c.def).map((c) => c.id);
 S.lib.cols = store.get('libcols', DEFAULT_COLS);
@@ -658,13 +633,6 @@ S.lib.sort = store.get('libsort', null);
 const colsOn = () => COLS.filter((c) => c.fixed || S.lib.cols.includes(c.id));
 const colTpl = (cols) => ['40px', ...cols.map((c) => c.w)].join(' ');
 const colMinW = (cols) => 40 + cols.reduce((n, c) => n + (/^\d+px$/.test(c.w) ? parseInt(c.w, 10) : 150) + 12, 0);
-
-function sortRows(list) {
-  const s = S.lib.sort; const col = s && COLS.find((c) => c.id === s.k);
-  if (!col) return list;
-  const m = s.dir === 'desc' ? -1 : 1;
-  return list.slice().sort((a, b) => { const x = col.sort(a), y = col.sort(b); return (x < y ? -1 : x > y ? 1 : 0) * m || a.path.localeCompare(b.path); });
-}
 
 function trackRow(t, cols) {
   const sel = S.lib.sel.has(t.id);
@@ -678,7 +646,7 @@ function trackRow(t, cols) {
 function folderRow(f, p, cols) {
   const path = (p ? p + '/' : '') + f.name;
   const cells = cols.map((c) => {
-    if (c.id === 'title') return `<button class="title" data-act="cd" data-path="${esc(path)}" style="flex-direction:row;align-items:center;gap:12px">${ic('folder', 'f', 'color:var(--md-primary)')}<span class="col" style="min-width:0"><span class="b-l ell">${esc(f.name)}</span><span class="b-m v ell">${f.leaf ? plural(f.tracks, 'track') : plural(f.dirs.size, 'album') + ' · ' + plural(f.tracks, 'track')} · ${fmtMB(f.size)}</span></span></button>`;
+    if (c.id === 'title') return `<button class="title" data-act="cd" data-path="${esc(path)}" style="flex-direction:row;align-items:center;gap:12px">${ic('folder', 'f', 'color:var(--md-primary)')}<span class="col" style="min-width:0"><span class="b-l ell">${esc(f.name)}</span><span class="b-m v ell">${f.leaf ? plural(f.tracks, 'track') : plural(f.dirs, 'album') + ' · ' + plural(f.tracks, 'track')} · ${fmtMB(f.size)}</span></span></button>`;
     if (c.id === 'format' && f.miss) return `<span class="c"><span class="tag error">${f.miss} missing tags</span></span>`;
     return '<span class="c"></span>';
   }).join('');
@@ -727,28 +695,19 @@ function detailHTML(t, compact = false) {
 }
 
 function libEmpty() {
-  const L = S.lib;
+  const L = S.lib.pg;
   if (!L.loaded) return Array.from({ length: 6 }, () => `<div class="trow"><span></span><span class="skel" style="height:14px;width:60%;border-radius:4px;grid-column:2/-1"></span></div>`).join('');
   if (L.error) return emptyState('cloud_off', 'Couldn’t load the library', L.error);
   if (!L.ready) return emptyState('hourglass_top', 'Indexing your library…', 'The first scan can take a few minutes on a large library. This page fills in when it finishes.');
-  return emptyState('folder_open', L.tracks.length ? 'Nothing matches' : 'No songs yet', L.tracks.length ? 'Clear a filter or pick another folder.' : 'Downloaded songs show up here.');
+  return emptyState('folder_open', L.scopeN || S.lib.path.length ? 'Nothing matches' : 'No songs yet', L.scopeN || S.lib.path.length ? 'Clear a filter or pick another folder.' : 'Downloaded songs show up here.');
 }
-const libNotice = () => (S.lib.pending ? `<div class="row b-m" style="gap:12px;background:var(--md-sc-high);border-radius:16px;padding:10px 16px">${ic('hourglass_top', 'v')}<span class="grow">Reading tags… ${S.lib.pending.toLocaleString()} songs still loading. They appear as they finish.</span></div>` : '');
+const libNotice = () => (S.lib.pg.pending ? `<div class="row b-m" style="gap:12px;background:var(--md-sc-high);border-radius:16px;padding:10px 16px">${ic('hourglass_top', 'v')}<span class="grow">Reading tags… ${S.lib.pg.pending.toLocaleString()} songs still loading. They appear as they finish.</span></div>` : '');
 
 // The library is drawn in three parts so a keystroke or tap only redraws what changed:
 // the shell (title, search box, view switch) on navigation, the body (filters, table, toolbar)
 // on filter/sort/selection changes, and the aside (song details) when a song is picked.
-// The table shows LIB_PAGE rows and adds more as the end scrolls into view.
-const LIB_PAGE = 200;
-function libRows() {
-  const L = S.lib, p = L.path.join('/');
-  const scope = libScope();
-  const flat = L.view === 'tracks' || L.q.trim() || L.chips.size;
-  const rows = sortRows(flat ? libFiltered(scope) : libFiltered(scope.filter((t) => t.dir === p)));
-  const folders = flat ? [] : childFolders(p);
-  if (L.sort && L.sort.k === 'title' && L.sort.dir === 'desc') folders.reverse();
-  return { p, scope, rows, folders };
-}
+// The server filters, sorts and pages the table; the browser holds only the LIB_PER rows on screen.
+const LIB_PER = 50;
 const libFiltersActive = () => S.lib.chips.size > 0 || S.lib.view !== 'tracks';
 function libToolbar() {
   const L = S.lib;
@@ -760,26 +719,32 @@ function libToolbar() {
         <button class="ib" data-act="delsel" title="Delete" aria-label="Delete">${ic('delete')}</button>
         <button class="ib" data-act="clearsel" title="Clear selection" aria-label="Clear selection">${ic('close')}</button></div>` : '';
 }
-let libCur = null;   // the rows the table is currently showing, for "show more" and select-all
-function libMoreHTML() {
-  const left = libCur ? libCur.rows.length - libCur.shown : 0;
-  return left > 0 ? `<div id="lib-more" class="row" style="justify-content:center;padding:12px"><button class="btn text" data-act="libmore">Show ${Math.min(left, LIB_PAGE)} more of ${left.toLocaleString()}</button></div>` : '';
+let libCur = null;   // the rows the table is currently showing, for select-all
+function libPager() {
+  const g = S.lib.pg;
+  if (g.pages <= 1) return '';
+  const from = (g.page - 1) * LIB_PER + 1, to = Math.min(g.total, g.page * LIB_PER);
+  const btn = (p, icon, label, off) => `<button class="ib" data-act="libpage" data-p="${p}" ${off ? 'disabled' : ''} aria-label="${label}" title="${label}">${ic(icon)}</button>`;
+  return `<nav class="row" aria-label="Pages" style="justify-content:center;gap:4px">
+    ${btn(1, 'first_page', 'First page', g.page <= 1)}${btn(g.page - 1, 'chevron_left', 'Previous page', g.page <= 1)}
+    <span class="b-m v" style="padding:0 12px;text-align:center">${from.toLocaleString()}–${to.toLocaleString()} of ${g.total.toLocaleString()}<span class="hide-sm"> · page ${g.page} of ${g.pages}</span></span>
+    ${btn(g.page + 1, 'chevron_right', 'Next page', g.page >= g.pages)}${btn(g.pages, 'last_page', 'Last page', g.page >= g.pages)}</nav>`;
 }
 function libBodyHTML() {
-  const L = S.lib, cols = colsOn();
-  const d = libRows();
-  libCur = { ...d, cols, shown: Math.min(d.rows.length, LIB_PAGE) };
+  const L = S.lib, cols = colsOn(), g = L.pg;
+  const d = { p: L.path.join('/'), rows: g.rows, folders: g.folders };
+  libCur = { rows: d.rows, cols };
   const allSel = d.rows.length > 0 && d.rows.every((t) => L.sel.has(t.id));
   return `<div class="row wrap" style="gap:8px"><div class="row wrap lib-extra" style="gap:8px" role="group" aria-label="Filters">${CHIPS.map(([k, l]) => `<button class="chip ${L.chips.has(k) ? 'on' : ''}" aria-pressed="${L.chips.has(k)}" data-act="chip" data-k="${k}">${L.chips.has(k) ? ic('check') : ''}${l}</button>`).join('')}</div>
-        <span class="b-m v" style="margin-left:auto">${plural(d.rows.length, 'track')}</span>
+        <span class="b-m v" style="margin-left:auto">${g.loaded ? plural(g.count, 'track') : ''}</span>
         <button class="ib" data-act="libreload" title="Rescan library" aria-label="Rescan library">${ic('refresh')}</button>
         <button class="ib hide-sm" data-act="cols" title="Choose columns" aria-label="Choose columns">${ic('settings')}</button></div>
       ${libNotice()}
       <div class="tscroll"><div role="table" aria-label="Tracks" class="tbl" id="lib-tbl" style="--minw:${colMinW(cols)}px">
         ${tableHead(cols, allSel)}
-        ${d.folders.map((f) => folderRow(f, d.p, cols)).join('')}${d.rows.slice(0, libCur.shown).map((t) => trackRow(t, cols)).join('')}
+        ${d.folders.map((f) => folderRow(f, d.p, cols)).join('')}${d.rows.map((t) => trackRow(t, cols)).join('')}
         ${!d.folders.length && !d.rows.length ? libEmpty() : ''}
-      </div>${libMoreHTML()}</div>
+      </div></div>${libPager()}
       <div id="lib-tools">${libToolbar()}</div>`;
 }
 // ── Cover-tinted details card ────────────────────────────────────────────
@@ -843,18 +808,17 @@ async function tintEl(el, t) {
 }
 function tintDetail() {
   const el = $('#lib-aside'); if (!el) return;
-  tintEl(el, S.lib.focus != null ? trackOf(S.lib.focus) : null);
+  tintEl(el, S.lib.focus != null ? trackOf(S.lib.focus) || S.lib.focusT : null);
 }
 
 function libAsideHTML() {
   const L = S.lib;
-  const focus = L.focus != null ? trackOf(L.focus) : null;
+  const focus = L.focus != null ? trackOf(L.focus) || L.focusT : null;
   return focus ? detailHTML(focus) : emptyState('music_note', 'Select a track', 'Pick a song to see its tags, file path and duplicates.');
 }
+const libTotal = () => (S.lib.pg.loaded ? `· ${plural(S.lib.pg.scopeN, 'track')} · ${fmtMB(S.lib.pg.scopeSize)}` : '');
 function viewLibrary() {
   const L = S.lib;
-  const scope = libScope();
-  const totalSize = scope.reduce((a, t) => a + t.size, 0);
   const crumbs = ['Library', ...L.path];
   return `<div class="lib-layout ${L.filtersOpen ? 'fopen' : ''}">
     <section class="pane grow" aria-labelledby="h-lib" style="padding:16px 16px 20px;display:flex;flex-direction:column;gap:14px;min-width:0">
@@ -863,7 +827,7 @@ function viewLibrary() {
         <div class="grow col"><h1 id="h-lib" class="hl-s ell">${esc(L.path.length ? L.path[L.path.length - 1] : 'Library')}</h1>
           <nav class="row wrap b-m v crumbs" aria-label="Breadcrumb">${crumbs.map((c, i) => i === crumbs.length - 1
             ? `<span>${esc(c)}</span>` : `<button class="btn text" style="height:28px;padding:0 6px" data-act="crumb" data-i="${i}">${esc(c)}</button><span>/</span>`).join('')}
-            <span id="lib-total">· ${plural(scope.length, 'track')} · ${fmtMB(totalSize)}</span></nav></div>
+            <span id="lib-total">${libTotal()}</span></nav></div>
         <label class="searchbar sm" style="width:300px;max-width:100%">${ic('search', 'v')}<input id="lq" type="search" enterkeyhint="search" value="${esc(L.q)}" placeholder="Search library" aria-label="Search library" data-input="lq" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
           <button class="ib show-sm ${libFiltersActive() ? 'dotted' : ''}" data-act="libfilters" aria-expanded="${!!L.filtersOpen}" aria-label="Filters and view" title="Filters and view">${ic('tune')}</button></label>
         <div class="seg lib-extra" role="radiogroup" aria-label="View">
@@ -883,23 +847,6 @@ function renderLib({ aside = false } = {}) {
   body.innerHTML = libBodyHTML();
   const tg = $('[data-act=libfilters]'); if (tg) tg.classList.toggle('dotted', libFiltersActive());
   if (aside) { $('#lib-aside').innerHTML = libAsideHTML(); tintDetail(); }
-  watchLibMore();
-}
-function libAppend() {
-  if (!libCur) return;
-  const next = libCur.rows.slice(libCur.shown, libCur.shown + LIB_PAGE);
-  libCur.shown += next.length;
-  const tbl = $('#lib-tbl'); if (tbl) tbl.insertAdjacentHTML('beforeend', next.map((t) => trackRow(t, libCur.cols)).join(''));
-  const more = $('#lib-more'); if (more) more.outerHTML = libMoreHTML();
-  watchLibMore();
-}
-let libObserver;
-function watchLibMore() {
-  if (libObserver) libObserver.disconnect();
-  const more = $('#lib-more');
-  if (!more || !('IntersectionObserver' in window)) return;
-  libObserver = new IntersectionObserver((ents) => { if (ents.some((x) => x.isIntersecting)) libAppend(); }, { rootMargin: '600px' });
-  libObserver.observe(more);
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -1057,7 +1004,7 @@ function viewHealth() {
 // Settings
 // ═════════════════════════════════════════════════════════════════════════
 const SECTIONS = [['appearance', 'palette', 'Appearance'], ['naming', 'text_fields', 'File naming'], ['downloads', 'download', 'Downloads'], ['sources', 'hub', 'Sources'],
-  ['extensions', 'extension', 'Extensions'], ['metadata', 'sell', 'Metadata'], ['lb', 'queue_music', 'ListenBrainz'], ['network', 'vpn_lock', 'Network & VPN']];
+  ['extensions', 'extension', 'Extensions'], ['metadata', 'sell', 'Metadata'], ['lb', 'queue_music', 'ListenBrainz'], ['network', 'vpn_lock', 'Network & VPN'], ['info', 'info', 'Info']];
 const TOKENS = ['{artist}', '{album}', '{title}', '{track}', '{year}'];
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -1112,9 +1059,8 @@ const SETTINGS = {
   appearance: () => `<section class="section" aria-labelledby="h-set"><h2 id="h-set" class="t-l">Appearance</h2>
     ${schemePicker()}
     <div class="col" style="gap:12px"><span class="t-s">Mode</span><div class="seg" role="radiogroup" aria-label="Mode">
-      ${[['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button role="radio" aria-checked="${store.get('mode', 'auto') === k}" data-act="mode" data-k="${k}">${store.get('mode', 'auto') === k ? ic('check') : ''}${l}</button>`).join('')}</div></div>
-    <div class="li" style="background:var(--md-sc-low);border-radius:20px">${ic('info', 'v')}<span class="grow col"><span class="b-l">SpotiFLAC ${S.ver ? esc(S.ver.installed) : ''}</span><span class="b-m v">${S.ver && S.ver.update_available ? `Version ${esc(S.ver.latest)} is available` : 'Colour and mode are saved in this browser.'}</span></span>
-      <a class="btn outlined" href="/classic">Classic interface</a></div></section>`,
+      ${[['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => `<button role="radio" aria-checked="${store.get('mode', 'auto') === k}" data-act="mode" data-k="${k}">${store.get('mode', 'auto') === k ? ic('check') : ''}${l}</button>`).join('')}</div>
+      <span class="b-s v">Colour and mode are saved in this browser.</span></div></section>`,
   naming: () => `<section class="section" aria-labelledby="h-set"><h2 id="h-set" class="t-l">File naming</h2>
     ${field('Path template', 'fmt', { help: 'Use / to make subfolders' })}
     <div class="row wrap" style="gap:8px">${TOKENS.map((t) => `<button class="chip mono" data-act="token" data-t="${t}">${ic('add')}${t}</button>`).join('')}</div>
@@ -1159,6 +1105,14 @@ const SETTINGS = {
   network: () => `<section class="section" aria-labelledby="h-set"><h2 id="h-set" class="t-l">Network &amp; VPN</h2>
     <div class="li vpn-card ${S.vpn.known ? (S.vpn.on ? 'on' : 'off') : ''}" style="border-radius:20px">${ic(S.vpn.on ? 'vpn_lock' : 'vpn_key_off', 'f')}<span class="grow col"><span class="b-l">${!S.vpn.known ? 'Checking VPN…' : S.vpn.on ? 'VPN connected' : 'VPN not connected'}</span><span class="b-m">${S.vpn.on && S.vpn.since ? 'Up for ' + span(Date.now() / 1000 - S.vpn.since) : S.vpn.known && !S.vpn.on ? 'Using your normal connection' : ''}</span></span><button class="btn tonal" data-act="vpn">Details</button></div>
     ${field('Reconnect the VPN after', 'reconnect', { type: 'number', min: 0, suffix: 'failures', help: 'Consecutive downloads where every source failed. 0 = never.' })}</section>`,
+  info: () => {
+    const v = S.ver;
+    const installed = v ? (v.installed === 'unknown' ? 'Unknown' : v.installed) : (S.verError ? '—' : 'Checking…');
+    return `<section class="section" aria-labelledby="h-set"><h2 id="h-set" class="t-l">Info</h2>
+    <div class="li" style="background:var(--md-sc-low);border-radius:20px">${ic('info', 'v')}<span class="grow col"><span class="b-l">SpotiFLAC version</span><span class="b-m v mono">${esc(installed)}</span></span></div>
+    ${v && v.update_available ? `<div class="li" style="background:var(--md-primary-container);color:var(--md-on-primary-container);border-radius:20px">${ic('system_update', 'f')}<span class="grow col"><span class="b-l">Update available</span><span class="b-m">SpotiFLAC <span class="mono">${esc(v.latest)}</span> is out. You have <span class="mono">${esc(v.installed)}</span>.</span></span></div>`
+      : v ? `<span class="b-m v">${ic('check_circle', 'v', 'font-size:18px;vertical-align:-4px')} You’re on the latest version.</span>` : ''}</section>`;
+  },
 };
 
 function viewSettings() {
@@ -1188,7 +1142,7 @@ function render() {
   const y = window.scrollY;
   renderChrome();
   $('#view').innerHTML = VIEWS[S.route]();
-  if (S.route === 'library') { watchLibMore(); tintDetail(); }
+  if (S.route === 'library') tintDetail();
   if (fid) {
     const n = document.getElementById(fid);
     if (n) { n.focus({ preventScroll: true }); if (caret) { try { n.setSelectionRange(caret[0], caret[1]); } catch { /* not a text field */ } } }
@@ -1215,7 +1169,7 @@ function onRoute() {
 const A = {};
 const idsOf = (el) => (el && el.dataset.id ? [el.dataset.id] : [...S.lib.sel]);
 const baseName = (p) => p.slice(p.lastIndexOf('/') + 1);
-const trackOf = (path) => S.lib.tracks.find((t) => t.path === path);
+const trackOf = (path) => S.lib.pg.rows.find((t) => t.path === path) || S.lib.tracks.find((t) => t.path === path);
 // The server re-indexes in the background after file changes, so look again a moment later.
 const later = (ms = 2500) => setTimeout(() => loadTracks(true), ms);
 const firstError = (d) => (d && d.errors && d.errors[0]) || '';
@@ -1275,12 +1229,12 @@ A.jretrypart = async (el) => {
 };
 
 // Library
-A.cd = (el) => { S.lib.path = el.dataset.path.split('/'); S.lib.focus = null; render(); };
-A.up = () => { S.lib.path.pop(); render(); };
-A.crumb = (el) => { S.lib.path = S.lib.path.slice(0, +el.dataset.i); render(); };
-A.view = (el) => { S.lib.view = el.dataset.k; render(); };
-A.chip = (el) => { const c = S.lib.chips; c.has(el.dataset.k) ? c.delete(el.dataset.k) : c.add(el.dataset.k); renderLib(); };
-A.libmore = () => libAppend();
+A.cd = (el) => { S.lib.path = el.dataset.path.split('/'); S.lib.focus = null; render(); libQuery(); };
+A.up = () => { S.lib.path.pop(); render(); libQuery(); };
+A.crumb = (el) => { S.lib.path = S.lib.path.slice(0, +el.dataset.i); render(); libQuery(); };
+A.view = (el) => { S.lib.view = el.dataset.k; render(); libQuery(); };
+A.chip = (el) => { const c = S.lib.chips; c.has(el.dataset.k) ? c.delete(el.dataset.k) : c.add(el.dataset.k); renderLib(); libQuery(); };
+A.libpage = (el) => { S.lib.page = +el.dataset.p; loadPage({ top: true }); };
 // Phone only: the view switch and filter chips are folded away until asked for.
 A.libfilters = (el) => {
   S.lib.filtersOpen = !S.lib.filtersOpen;
@@ -1302,16 +1256,22 @@ A.sel = (el) => {
 A.sort = (el) => {
   const k = el.dataset.k, s = S.lib.sort;
   S.lib.sort = !s || s.k !== k ? { k, dir: 'asc' } : s.dir === 'asc' ? { k, dir: 'desc' } : null;
-  store.set('libsort', S.lib.sort); renderLib();
+  store.set('libsort', S.lib.sort); renderLib(); libQuery();
 };
 A.cols = () => dialog('Columns', `<p class="b-m v" style="margin-bottom:12px">Choose what the table shows. Click a column heading to sort by it.</p><div id="col-body">${colBody()}</div>`, [{ key: 'done', label: 'Done', cls: 'filled' }]);
 A.coltoggle = (el) => {
   const k = el.dataset.k, c = S.lib.cols, i = c.indexOf(k);
   i < 0 ? c.push(k) : c.splice(i, 1);
-  if (i >= 0 && S.lib.sort && S.lib.sort.k === k) { S.lib.sort = null; store.set('libsort', null); }
-  store.set('libcols', c); $('#col-body').innerHTML = colBody(); renderLib();
+  const unsort = i >= 0 && S.lib.sort && S.lib.sort.k === k;
+  if (unsort) { S.lib.sort = null; store.set('libsort', null); }
+  store.set('libcols', c); $('#col-body').innerHTML = colBody(); renderLib(); if (unsort) libQuery();
 };
-A.colreset = () => { S.lib.cols = [...DEFAULT_COLS]; store.set('libcols', S.lib.cols); if (S.lib.sort && !colsOn().some((c) => c.id === S.lib.sort.k)) S.lib.sort = null; $('#col-body').innerHTML = colBody(); renderLib(); };
+A.colreset = () => {
+  S.lib.cols = [...DEFAULT_COLS]; store.set('libcols', S.lib.cols);
+  const unsort = S.lib.sort && !colsOn().some((c) => c.id === S.lib.sort.k);
+  if (unsort) { S.lib.sort = null; store.set('libsort', null); }
+  $('#col-body').innerHTML = colBody(); renderLib(); if (unsort) libQuery();
+};
 A.selall = (el) => {
   const rows = libCur ? libCur.rows : [];
   rows.forEach((t) => (el.checked ? S.lib.sel.add(t.id) : S.lib.sel.delete(t.id)));
@@ -1320,7 +1280,7 @@ A.selall = (el) => {
 };
 A.clearsel = () => { S.lib.sel.clear(); renderLib(); };
 A.focus = (el) => {
-  const prev = S.lib.focus; S.lib.focus = el.dataset.id;
+  const prev = S.lib.focus; S.lib.focus = el.dataset.id; S.lib.focusT = trackOf(S.lib.focus) || null;
   if (window.innerWidth < 1100) {
     const t = trackOf(S.lib.focus);
     if (t) { dialog('Song details', `<div class="col" style="gap:16px">${detailHTML(t, true)}</div>`, [{ key: 'close', label: 'Close' }]).then(() => clearTint($('#dlg'))); tintEl($('#dlg'), t); }
@@ -1379,7 +1339,7 @@ A.delsel = async () => {
   if (!(await confirmDlg(`Delete ${plural(paths.length, 'file')}?`, 'The files are removed from disk. This can’t be undone.', 'Delete'))) return;
   let gone = 0, err = '';
   for (const p of paths) {
-    try { await api(`/api/library/file?path=${encodeURIComponent(p)}`, { method: 'DELETE' }); gone++; S.lib.tracks = S.lib.tracks.filter((t) => t.path !== p); S.lib.sel.delete(p); if (S.lib.focus === p) S.lib.focus = null; } catch (e) { err = e.message; }
+    try { await api(`/api/library/file?path=${encodeURIComponent(p)}`, { method: 'DELETE' }); gone++; S.lib.tracks = S.lib.tracks.filter((t) => t.path !== p); S.lib.pg.rows = S.lib.pg.rows.filter((t) => t.path !== p); S.lib.sel.delete(p); if (S.lib.focus === p) S.lib.focus = null; } catch (e) { err = e.message; }
   }
   rebuildDirCovers();
   snack(err ? `Deleted ${gone} of ${paths.length}. ${err}` : `Deleted ${plural(gone, 'file')}`);
@@ -1519,20 +1479,48 @@ function adaptTrack(r) {
     year: r.year || '', no: r.no != null ? String(r.no).padStart(2, '0') : '', fmt: r.fmt, kbps: r.kbps, lossless: r.lossless, len: r.len,
     size: r.size / MB, genre: !!r.genre, genreName: r.genre, mbid: !!r.mbid, bpm: !!r.bpm, bpmVal: r.bpm, cover: r.cover,
     isrc: r.isrc, mtime: Math.round(r.mtime || 0), addedDays: Math.max(0, Math.floor((Date.now() / 1000 - r.mtime) / 86400)), expected: r.expected,
-    _hay: `${r.title} ${r.artist} ${r.album} ${r.year || ''}`.toLowerCase(),   // search text, built once
+    csrc: r.cpath ? { path: r.cpath, mtime: Math.round(r.cmtime || 0) } : null,   // the album's cover file (paged rows)
   };
 }
-let tracksTimer;
-// New track data: on the library page redraw only the table and details (the search box stays put).
-function tracksChanged(shell) {
-  if (S.route === 'library' && $('#lib-body') && !shell) {
-    renderLib({ aside: true });
-    const scope = libScope(); const tot = $('#lib-total');
-    if (tot) tot.textContent = `· ${plural(scope.length, 'track')} · ${fmtMB(scope.reduce((x, t) => x + t.size, 0))}`;
-  } else if (S.route === 'library' || S.route === 'health') render();
-  else renderChrome();
+let tracksTimer, pageTimer, pageSeq = 0;
+// The library page asks the server for one page of its table; any change of folder, view, filter,
+// search or sort starts again at page 1.
+function libQuery() { S.lib.page = 1; loadPage({ top: true }); }
+async function loadPage({ top = false } = {}) {
+  clearTimeout(pageTimer);
+  const L = S.lib, seq = ++pageSeq;
+  const qs = new URLSearchParams({ page: L.page, per: LIB_PER, path: L.path.join('/'), view: L.view, q: L.q.trim(), chips: [...L.chips].join(',') });
+  if (L.sort) { qs.set('sort', L.sort.k); qs.set('dir', L.sort.dir); }
+  const body = $('#lib-body'); if (body && L.pg.loaded) body.style.opacity = '.6';
+  try {
+    const d = await api(`/api/library/tracks?${qs}`);
+    if (seq !== pageSeq) return;
+    if (d.lost) { L.path = []; L.page = 1; render(); return loadPage(); }
+    L.page = d.page;
+    L.pg = { loaded: true, ready: d.ready, pending: d.pending || 0, error: '', rows: (d.tracks || []).map(adaptTrack), folders: d.folders || [],
+      count: d.count || 0, total: d.total || 0, page: d.page || 1, pages: d.pages || 1, scopeN: d.scope ? d.scope.tracks : 0, scopeSize: d.scope ? d.scope.size / MB : 0 };
+    const f = L.focus != null && L.pg.rows.find((t) => t.path === L.focus); if (f) L.focusT = f;
+    if (S.route === 'library' && $('#lib-body')) {
+      renderLib({ aside: !!f });
+      const tot = $('#lib-total'); if (tot) tot.textContent = libTotal();
+      const tbl = $('#lib-tbl'); if (top && tbl && tbl.getBoundingClientRect().top < 0) tbl.scrollIntoView({ block: 'start' });
+    } else if (S.route === 'library') render();
+    if (!d.ready || d.pending) pageTimer = setTimeout(() => { if (S.route === 'library') loadPage(); }, 2500);
+  } catch (e) {
+    if (seq !== pageSeq) return;
+    L.pg.error = e.message; L.pg.loaded = true; if (S.route === 'library') render();
+    pageTimer = setTimeout(() => { if (S.route === 'library') loadPage(); }, 8000);
+  } finally {
+    const b = $('#lib-body'); if (b && seq === pageSeq) b.style.opacity = '';
+  }
 }
-async function loadTracks(quiet) {
+// Library data changed: refresh what's on screen. Library health needs every song; the library page needs one page.
+function loadTracks(quiet) {
+  if (S.route === 'library') loadPage();
+  if (S.route === 'health') loadAllTracks(quiet);
+  else S.lib.loaded = false;   // fetched again on the next visit to health
+}
+async function loadAllTracks(quiet) {
   clearTimeout(tracksTimer);
   try {
     const d = await api('/api/library/tracks');
@@ -1540,17 +1528,13 @@ async function loadTracks(quiet) {
     L.ready = d.ready; L.pending = d.pending || 0; L.error = '';
     L.tracks = (d.tracks || []).map(adaptTrack); L.loaded = true;
     const have = new Set(L.tracks.map((t) => t.path));
-    for (const p of [...L.sel]) if (!have.has(p)) L.sel.delete(p);
     for (const k of Object.keys(S.h.sel)) for (const p of [...S.h.sel[k]]) if (!have.has(p) && k !== 'mis') S.h.sel[k].delete(p);
-    if (L.focus && !have.has(L.focus)) L.focus = null;
-    const lost = L.path.length && L.tracks.length && !L.tracks.some((t) => t.dir === L.path.join('/') || t.dir.startsWith(L.path.join('/') + '/'));
-    if (lost) L.path = [];
     rebuildDirCovers();
-    tracksChanged(lost);
-    if (!d.ready || d.pending) tracksTimer = setTimeout(() => loadTracks(true), 2500);
+    if (S.route === 'health') render(); else renderChrome();
+    if (!d.ready || d.pending) tracksTimer = setTimeout(() => { if (S.route === 'health') loadAllTracks(true); else S.lib.loaded = false; }, 2500);
   } catch (e) {
-    S.lib.error = e.message; S.lib.loaded = true; render();
-    tracksTimer = setTimeout(() => loadTracks(true), 8000);
+    S.lib.error = e.message; S.lib.loaded = true; if (S.route === 'health') render();
+    tracksTimer = setTimeout(() => { if (S.route === 'health') loadAllTracks(true); else S.lib.loaded = false; }, 8000);
   }
 }
 async function loadSettings() {
@@ -1575,9 +1559,13 @@ async function loadVpn() {
     if (changed) renderChrome();
   } catch { /* keep the last known state */ }
 }
-async function loadVersion() { try { S.ver = await api('/api/spotiflac/version'); } catch { /* optional */ } }
+async function loadVersion() {
+  try { S.ver = await api('/api/spotiflac/version'); S.verError = false; } catch { S.verError = true; }
+  if (S.route === 'settings' && S.section === 'info') render();
+}
 function enterRoute() {
-  if ((S.route === 'library' || S.route === 'health') && !S.lib.loaded) loadTracks();
+  if (S.route === 'library') loadPage();
+  if (S.route === 'health' && !S.lib.loaded) loadAllTracks();
   if (S.route === 'health') {
     if (S.h.dups === null && !S.h.dupsInfo) loadScan('dups');
     if (S.h.mis === null && !S.h.misInfo) loadScan('mistag');
@@ -1610,7 +1598,7 @@ let lqTimer;
 const INPUT = {
   seed: (el) => { store.set('seed', el.value); store.set('scheme', 'custom'); applyTheme(); },
   q: (el) => { S.q = el.value; scheduleSearch(); renderResults(); },
-  lq: (el) => { S.lib.q = el.value; clearTimeout(lqTimer); lqTimer = setTimeout(() => renderLib(), S.lib.tracks.length > 2000 ? 160 : 80); },
+  lq: (el) => { S.lib.q = el.value; clearTimeout(lqTimer); lqTimer = setTimeout(libQuery, 200); },
   text: (el) => { setPath(S.set, el.dataset.key, el.value); if (el.dataset.key === 'fmt') { const pv = $('#fmt-preview'); if (pv) pv.textContent = fmtPreview(); } saved(); },
   num: (el) => { setPath(S.set, el.dataset.key, Math.max(0, Number(el.value) || 0)); saved(); },
   slider: (el) => {
