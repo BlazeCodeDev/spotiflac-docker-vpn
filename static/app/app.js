@@ -356,9 +356,14 @@ function coverTile(d, size = 48) {
 const dirCover = new Map();
 function rebuildDirCovers() {
   dirCover.clear();
-  for (const t of S.lib.tracks) if (t.cover && !dirCover.has(t.dir)) dirCover.set(t.dir, t.path);
+  for (const t of S.lib.tracks) if (t.cover && !dirCover.has(t.dir)) dirCover.set(t.dir, t);
 }
-const coverUrl = (t) => (t.cover ? `/api/library/cover?path=${encodeURIComponent(dirCover.get(t.dir) || t.path)}` : '');
+// Thumbnail sized for where it's shown; v= is the file's version, so the browser may keep it indefinitely.
+const coverUrl = (t, size = 96) => {
+  if (!t.cover) return '';
+  const src = dirCover.get(t.dir) || t;
+  return `/api/library/cover?path=${encodeURIComponent(src.path)}&s=${size}&v=${src.mtime || 0}`;
+};
 const libCover = (t) => (t.cover ? coverTile({ title: t.album || t.title, kind: 'track', url: coverUrl(t) }, 40)
   : `<span class="coverthumb" style="width:40px;height:40px;background:var(--md-sc-highest);color:var(--md-outline)" role="img" aria-label="No cover art">${ic('image_not_supported', '', 'font-size:20px')}</span>`);
 
@@ -679,10 +684,10 @@ function detailHTML(t, compact = false) {
   const sub = esc([t.artist, t.album, t.year].filter(Boolean).join(' · '));
   // Wide screens: big cover above the name. Phone dialog: a small cover beside the name and artist.
   const head = compact
-    ? `<div class="row" style="gap:16px;align-items:center">${t.cover ? coverTile({ title: t.album || t.title, kind: 'track', url: coverUrl(t) }, 72)
+    ? `<div class="row" style="gap:16px;align-items:center">${t.cover ? coverTile({ title: t.album || t.title, kind: 'track', url: coverUrl(t, 192) }, 72)
         : `<span class="coverthumb" style="width:72px;height:72px;border-radius:14px;background:var(--md-sc-highest);color:var(--md-outline)" role="img" aria-label="No cover art">${ic('image_not_supported', '', 'font-size:32px')}</span>`}
         <div class="col grow" style="min-width:0"><h3 class="t-m" style="word-break:break-word;color:var(--md-on-surface)">${esc(t.title)}</h3><span class="b-m v">${sub}</span></div></div>`
-    : `<div class="cover" style="position:relative;overflow:hidden;${t.cover ? `background:${coverGradient(t.album || t.title)};color:rgba(255,255,255,.8)` : 'background:var(--md-sc-highest);color:var(--md-outline)'}">${ic(t.cover ? 'album' : 'image_not_supported', '', 'font-size:64px')}<span class="l-m">${t.cover ? '' : 'No cover art'}</span>${t.cover ? `<img src="${esc(coverUrl(t))}" alt="Cover art" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.remove()">` : ''}</div>
+    : `<div class="cover" style="position:relative;overflow:hidden;${t.cover ? `background:${coverGradient(t.album || t.title)};color:rgba(255,255,255,.8)` : 'background:var(--md-sc-highest);color:var(--md-outline)'}">${ic(t.cover ? 'album' : 'image_not_supported', '', 'font-size:64px')}<span class="l-m">${t.cover ? '' : 'No cover art'}</span>${t.cover ? `<img src="${esc(coverUrl(t, 480))}" alt="Cover art" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.remove()">` : ''}</div>
     <div class="col"><h2 class="hl-s" style="word-break:break-word">${esc(t.title)}</h2><span class="b-m v">${sub}</span></div>`;
   return `${head}
     <div class="props">
@@ -1492,7 +1497,7 @@ function adaptTrack(r) {
     id: r.path, path: r.path, dir: r.dir, file: r.file, title: r.title, artist: r.artist, album: r.album,
     year: r.year || '', no: r.no != null ? String(r.no).padStart(2, '0') : '', fmt: r.fmt, kbps: r.kbps, lossless: r.lossless, len: r.len,
     size: r.size / MB, genre: !!r.genre, genreName: r.genre, mbid: !!r.mbid, bpm: !!r.bpm, bpmVal: r.bpm, cover: r.cover,
-    isrc: r.isrc, addedDays: Math.max(0, Math.floor((Date.now() / 1000 - r.mtime) / 86400)), expected: r.expected,
+    isrc: r.isrc, mtime: Math.round(r.mtime || 0), addedDays: Math.max(0, Math.floor((Date.now() / 1000 - r.mtime) / 86400)), expected: r.expected,
     _hay: `${r.title} ${r.artist} ${r.album} ${r.year || ''}`.toLowerCase(),   // search text, built once
   };
 }

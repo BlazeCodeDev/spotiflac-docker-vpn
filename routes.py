@@ -838,8 +838,69 @@ def api_library_tracks():
     fmt = _settings.load().get("filename_fmt") or "{artist}/{album}/{track} {title}"
     name_fmt = fmt.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or "{title}"
     tracks = [_track_row(rel, recs[a], name_fmt) for rel, a in abs_by_rel.items() if a in recs]
-    return jsonify(ready=True, tracks=tracks, pending=len(missing) if _tracks_fill["running"] else 0,
-                   filling=dict(_tracks_fill) if _tracks_fill["running"] else None)
+    body = json.dumps({"ready": True, "tracks": tracks, "pending": len(missing) if _tracks_fill["running"] else 0,
+                       "filling": dict(_tracks_fill) if _tracks_fill["running"] else None},
+                      separators=(",", ":")).encode()
+    return _json_cached(body)
+
+
+def _json_cached(body: bytes) -> Response:
+    """JSON with an ETag (an unchanged list costs a 304) and gzip when the browser accepts it
+    (a large library list shrinks to roughly a tenth)."""
+    import gzip
+    resp = Response(body, mimetype="application/json")
+    resp.set_etag(hashlib.md5(body).hexdigest())
+    resp.headers["Cache-Control"] = "no-cache"
+    resp = resp.make_conditional(request)
+    if resp.status_code == 200 and "gzip" in request.headers.get("Accept-Encoding", "") and len(body) > 1024:
+        resp.set_data(gzip.compress(body, compresslevel=5))
+        resp.headers["Content-Encoding"] = "gzip"
+        resp.headers["Vary"] = "Accept-Encoding"
+    return resp
+
+
+# Covers are served as small JPEG thumbnails (the list shows 40 px tiles; embedded art is often 1400 px+
+# and hundreds of KB). Each size is made once per file version and kept on disk next to the settings,
+# so neither the music file nor the full image is read again.
+_COVER_SIZES = (96, 192, 480)
+_COVER_DIR = os.path.join(os.path.dirname(os.path.abspath(os.environ.get("SETTINGS_FILE", "/vpn/settings.json"))), "covercache")
+
+
+def _cover_thumb(abs_path: str, size: int) -> tuple[bytes, str] | None:
+    st = os.stat(abs_path)
+    key = hashlib.sha1(f"{abs_path}|{st.st_size}|{st.st_mtime_ns}|{size}".encode()).hexdigest()
+    cached = os.path.join(_COVER_DIR, key[:2], key + ".jpg")
+    try:
+        with open(cached, "rb") as f:
+            return f.read(), "image/jpeg"
+    except OSError:
+        pass
+    data = _existing_cover_bytes(abs_path)
+    if not data:
+        return None
+    try:
+        import io
+        from PIL import Image
+        im = Image.open(io.BytesIO(data))
+        im.draft("RGB", (size, size))          # JPEG: decode at reduced scale, much faster for big covers
+        im = im.convert("RGB")
+        im.thumbnail((size, size), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=82, optimize=True, progressive=True)
+        out = buf.getvalue()
+    except Exception:
+        # No Pillow, or an image it can't read: send the original rather than nothing.
+        mime = "image/png" if data[:8] == b"\x89PNG\r\n\x1a\n" else "image/webp" if data[:4] == b"RIFF" else "image/jpeg"
+        return data, mime
+    try:
+        os.makedirs(os.path.dirname(cached), exist_ok=True)
+        tmp = cached + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(out)
+        os.replace(tmp, cached)
+    except OSError as exc:
+        log.debug("cover cache write failed: %s", exc)
+    return out, "image/jpeg"
 
 
 @bp.get("/api/library/cover")
@@ -850,12 +911,21 @@ def api_library_cover():
         return jsonify(error=str(exc)), 400
     if not os.path.isfile(abs_path):
         return jsonify(error="Not found"), 404
-    data = _existing_cover_bytes(abs_path)
-    if not data:
-        return jsonify(error="No cover"), 404
-    mime = "image/png" if data[:8] == b"\x89PNG\r\n\x1a\n" else "image/webp" if data[:4] == b"RIFF" else "image/jpeg"
+    want = _safe_int(request.args.get("s", 0), 0)
+    size = next((z for z in _COVER_SIZES if z >= want), _COVER_SIZES[-1]) if want else 0
+    if size:
+        got = _cover_thumb(abs_path, size)
+        if not got:
+            return jsonify(error="No cover"), 404
+        data, mime = got
+    else:
+        data = _existing_cover_bytes(abs_path)
+        if not data:
+            return jsonify(error="No cover"), 404
+        mime = "image/png" if data[:8] == b"\x89PNG\r\n\x1a\n" else "image/webp" if data[:4] == b"RIFF" else "image/jpeg"
     resp = Response(data, mimetype=mime)
-    resp.headers["Cache-Control"] = "private, max-age=86400"
+    # The URL carries the file's mtime (v=), so a re-tagged file gets a new URL; the old one can be cached for good.
+    resp.headers["Cache-Control"] = "private, max-age=31536000, immutable" if request.args.get("v") else "private, max-age=86400"
     resp.last_modified = os.path.getmtime(abs_path)
     return resp.make_conditional(request)
 

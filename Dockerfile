@@ -81,7 +81,7 @@ ENV CHROME_PATH=/usr/bin/chromium-browser
 RUN mkdir -p /home/appuser && chmod 755 /home/appuser
 
 # App dependencies (SpotiFLAC is installed separately for easy in-place upgrades)
-RUN pip install --no-cache-dir flask python-dotenv gunicorn
+RUN pip install --no-cache-dir flask python-dotenv gunicorn pillow
 
 # SpotiFLAC goes to /spotiflac so it can be upgraded via a named volume without
 # rebuilding the image.  Docker copies this directory into a fresh named volume
