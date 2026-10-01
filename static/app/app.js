@@ -197,7 +197,7 @@ const S = {
 };
 
 // ── Derived data ─────────────────────────────────────────────────────────
-const missingOf = (t) => ['genre', 'mbid', 'bpm', 'cover'].filter((k) => !t[k]);
+const missingOf = (t) => t._miss || (t._miss = ['genre', 'mbid', 'bpm', 'cover'].filter((k) => !t[k]));
 const expectedFile = (t) => t.expected || t.file;
 const trackPath = (t) => t.path;
 const misnamed = () => S.lib.tracks.filter((t) => t.expected && t.file !== t.expected);
@@ -373,24 +373,24 @@ function scheduleSearch() {
 async function runSearch(q, offset) {
   const seq = ++searchSeq;
   S.searching = true; S.searchError = '';
-  if (offset) render();
+  if (offset) renderResults();
   try {
     const d = await api(`/api/search?q=${encodeURIComponent(q)}&offset=${offset}`);
     if (seq !== searchSeq) return;
     S.results = offset ? S.results.concat(d.results || []) : (d.results || []);
     S.resultsFor = q; S.hasMore = !!d.has_more; S.nextOffset = d.next_offset || 0; S.searching = false;
-    render();
+    renderResults();
     checkLibrary(d.results || []);
   } catch (e) {
     if (seq !== searchSeq) return;
-    S.searching = false; S.searchError = e.message; render();
+    S.searching = false; S.searchError = e.message; renderResults();
   }
 }
 async function checkLibrary(items) {
   const list = items.filter((r) => r.type === 'track' || r.type === 'album' || r.type === 'playlist')
     .map((r) => ({ type: r.type, url: r.url, title: r.title, track_count: r.track_count }));
   if (!list.length) return;
-  try { Object.assign(S.inLib, await api('/api/library/check-items', { method: 'POST', body: { items: list } })); render(); } catch { /* the badge just doesn't show */ }
+  try { Object.assign(S.inLib, await api('/api/library/check-items', { method: 'POST', body: { items: list } })); renderResults(); } catch { /* the badge just doesn't show */ }
 }
 
 function resultsHTML() {
@@ -461,41 +461,51 @@ function finishedCard() {
   </section>`;
 }
 
-function viewDownload() {
-  const n = (s) => S.jobs.filter((j) => j.status === s).length;
-  const failed = n('error');
-  const q = queueJobs();
+function resPaneHTML() {
   const types = [['all', 'All'], ['track', 'Tracks'], ['album', 'Albums'], ['playlist', 'Playlists'], ['artist', 'Artists']];
   const count = S.results.filter((r) => S.type === 'all' || r.type === S.type).length;
+  return `<div class="row" style="padding:0 12px;align-items:baseline"><h2 id="h-res" class="t-l">Results</h2><span class="b-m v">${S.q.trim() && !LINK_RE.test(S.q) && S.results.length ? plural(count, 'match', 'matches') : ''}</span></div>
+      <div class="row wrap" style="padding:0 12px;gap:8px" role="group" aria-label="Result type">
+        ${types.map(([k, l]) => `<button class="chip ${S.type === k ? 'on' : ''}" aria-pressed="${S.type === k}" data-act="type" data-k="${k}">${S.type === k ? ic('check') : ''}${l}</button>`).join('')}
+      </div>
+      <div class="col" style="gap:2px">${resultsHTML()}</div>`;
+}
+// Redraw only the Results card, so the search box keeps focus, caret and any half-typed (IME) text.
+function renderResults() {
+  const pane = $('#res-pane');
+  if (S.route !== 'download' || !pane) return render();
+  pane.classList.toggle('idle', !S.q.trim());
+  pane.innerHTML = resPaneHTML();
+  const clr = $('[data-act=clearq]'); if (clr) clr.hidden = !S.q;
+}
+function viewDownload() {
   return `
   <header class="row wrap" style="gap:16px">
     <label class="searchbar grow" style="max-width:760px">${ic('search', 'v')}
-      <input id="q" value="${esc(S.q)}" placeholder="Paste Spotify links or search" aria-label="Paste Spotify links or search" autocomplete="off" data-input="q">
-      ${S.q ? `<button class="ib" data-act="clearq" aria-label="Clear">${ic('close')}</button>` : ''}
+      <input id="q" type="search" enterkeyhint="search" value="${esc(S.q)}" placeholder="Paste Spotify links or search" aria-label="Paste Spotify links or search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-input="q">
+      <button class="ib" data-act="clearq" aria-label="Clear" ${S.q ? '' : 'hidden'}>${ic('close')}</button>
       <button class="ib" data-act="pasteq" aria-label="Paste from clipboard">${ic('content_paste')}</button></label>
     <div class="seg" role="radiogroup" aria-label="Quality">
       ${[['high', 'High'], ['lossless', 'Lossless'], ['hires', 'Hi-Res']].map(([k, l]) => `<button role="radio" aria-checked="${S.quality === k}" data-act="quality" data-k="${k}">${S.quality === k ? ic('check') : ''}${l}</button>`).join('')}
     </div>
   </header>
   <div class="split">
-    <section class="pane res-pane ${S.q.trim() ? '' : 'idle'}" aria-labelledby="h-res" style="padding:20px 12px;display:flex;flex-direction:column;gap:12px">
-      <div class="row" style="padding:0 12px;align-items:baseline"><h2 id="h-res" class="t-l">Results</h2><span class="b-m v">${S.q.trim() && !LINK_RE.test(S.q) && S.results.length ? plural(count, 'match', 'matches') : ''}</span></div>
-      <div class="row wrap" style="padding:0 12px;gap:8px" role="group" aria-label="Result type">
-        ${types.map(([k, l]) => `<button class="chip ${S.type === k ? 'on' : ''}" aria-pressed="${S.type === k}" data-act="type" data-k="${k}">${S.type === k ? ic('check') : ''}${l}</button>`).join('')}
-      </div>
-      <div class="col" style="gap:2px">${resultsHTML()}</div>
-    </section>
-    <div class="col" style="gap:16px;min-width:0">
-    <section class="pane" aria-labelledby="h-q" style="padding:20px;display:flex;flex-direction:column;gap:12px">
+    <section class="pane res-pane ${S.q.trim() ? '' : 'idle'}" id="res-pane" aria-labelledby="h-res" style="padding:20px 12px;display:flex;flex-direction:column;gap:12px">${resPaneHTML()}</section>
+    <div class="col" id="dl-side" style="gap:16px;min-width:0">${dlSideHTML()}</div>
+  </div>`;
+}
+function dlSideHTML() {
+  const n = (s) => S.jobs.filter((j) => j.status === s).length;
+  const failed = n('error');
+  const q = queueJobs();
+  return `<section class="pane" aria-labelledby="h-q" style="padding:20px;display:flex;flex-direction:column;gap:12px">
       <div class="row"><h2 id="h-q" class="t-l grow">Queue</h2>
         ${failed ? `<button class="btn text" data-act="retryall">Retry failed</button>` : ''}
 </div>
       <div class="row" style="gap:8px"><span class="tag tertiary">${n('running')} running</span><span class="tag neutral">${n('queued')} queued</span>${failed ? `<span class="tag error">${failed} failed</span>` : ''}</div>
       ${!S.jobsLoaded ? '<div class="card idle"><span class="skel" style="height:16px;width:60%;border-radius:4px"></span></div>' : q.length ? q.map(jobCard).join('') : emptyState('done_all', 'Queue is empty', 'Search for something to download.')}
     </section>
-    ${finishedCard()}
-    </div>
-  </div>`;
+    ${finishedCard()}`;
 }
 
 // ── Jobs: polled from the server ─────────────────────────────────────────
@@ -508,7 +518,11 @@ async function refreshJobs() {
   S.jobs = d; S.jobsLoaded = true;
   if (prevStatus) for (const j of d) { const was = prevStatus[j.id]; if (was && was !== j.status) { if (j.status === 'done') snack(`Done: ${jobTitle(j)}`); else if (j.status === 'error') snack(`Failed: ${jobTitle(j)}`); } }
   prevStatus = Object.fromEntries(d.map((j) => [j.id, j.status]));
-  if (sig !== jobsSig || first) { jobsSig = sig; render(); } else patchJobs();
+  if (sig !== jobsSig || first) {
+    jobsSig = sig;
+    renderChrome();
+    const side = $('#dl-side'); if (S.route === 'download' && side) side.innerHTML = dlSideHTML();
+  } else patchJobs();
 }
 function patchJobs() {
   for (const j of S.jobs) {
@@ -539,7 +553,7 @@ async function refreshTasks() {
   }
   const tb = $('#tasks-body');
   if (tb) tb.innerHTML = tasksBody();
-  if (sig !== tasksSig) { tasksSig = sig; render(); } else patchScan();
+  if (sig !== tasksSig) { tasksSig = sig; renderChrome(); if (S.route === 'health') render(); } else patchScan();
 }
 
 async function enqueue(r) {
@@ -571,7 +585,7 @@ function libFiltered(list) {
   return list.filter((t) =>
     (!chips.has('lossless') || t.lossless) && (!chips.has('missing') || missingOf(t).length) &&
     (!chips.has('mbid') || !t.mbid) && (!chips.has('cover') || !t.cover) && (!chips.has('new') || t.addedDays <= 7) &&
-    (!needle || `${t.title} ${t.artist} ${t.album} ${t.year}`.toLowerCase().includes(needle)));
+    (!needle || (t._hay || `${t.title} ${t.artist} ${t.album} ${t.year}`.toLowerCase()).includes(needle)));
 }
 function childFolders(p) {
   const prefix = p ? p + '/' : '';
@@ -694,19 +708,62 @@ function libEmpty() {
 }
 const libNotice = () => (S.lib.pending ? `<div class="row b-m" style="gap:12px;background:var(--md-sc-high);border-radius:16px;padding:10px 16px">${ic('hourglass_top', 'v')}<span class="grow">Reading tags… ${S.lib.pending.toLocaleString()} songs still loading. They appear as they finish.</span></div>` : '');
 
-function viewLibrary() {
-  const L = S.lib;
-  const p = L.path.join('/');
+// The library is drawn in three parts so a keystroke or tap only redraws what changed:
+// the shell (title, search box, view switch) on navigation, the body (filters, table, toolbar)
+// on filter/sort/selection changes, and the aside (song details) when a song is picked.
+// The table shows LIB_PAGE rows and adds more as the end scrolls into view.
+const LIB_PAGE = 200;
+function libRows() {
+  const L = S.lib, p = L.path.join('/');
   const scope = libScope();
   const flat = L.view === 'tracks' || L.q.trim() || L.chips.size;
-  const rows = flat ? libFiltered(scope) : libFiltered(scope.filter((t) => t.dir === p));
+  const rows = sortRows(flat ? libFiltered(scope) : libFiltered(scope.filter((t) => t.dir === p)));
   const folders = flat ? [] : childFolders(p);
-  const totalSize = scope.reduce((a, t) => a + t.size, 0);
-  const allSel = rows.length > 0 && rows.every((t) => L.sel.has(t.id));
-  const focus = L.focus != null ? L.tracks.find((t) => t.id === L.focus) : null;
-  const crumbs = ['Library', ...L.path];
-  const cols = colsOn();
   if (L.sort && L.sort.k === 'title' && L.sort.dir === 'desc') folders.reverse();
+  return { p, scope, rows, folders };
+}
+function libToolbar() {
+  const L = S.lib;
+  return L.sel.size ? `<div class="toolbar" role="toolbar" aria-label="Selected tracks"><span class="l-l" style="margin-right:12px">${L.sel.size} selected</span>
+        <button class="btn filled" data-act="enrichsel">${ic('auto_awesome')}Enrich</button>
+        <button class="ib" data-act="renamesel" title="Rename from tags" aria-label="Rename from tags">${ic('drive_file_rename_outline')}</button>
+        <button class="ib" data-act="movesel" title="Move" aria-label="Move">${ic('drive_file_move')}</button>
+        <button class="ib" data-act="dlsel" title="Download to browser" aria-label="Download to browser">${ic('download')}</button>
+        <button class="ib" data-act="delsel" title="Delete" aria-label="Delete">${ic('delete')}</button>
+        <button class="ib" data-act="clearsel" title="Clear selection" aria-label="Clear selection">${ic('close')}</button></div>` : '';
+}
+let libCur = null;   // the rows the table is currently showing, for "show more" and select-all
+function libMoreHTML() {
+  const left = libCur ? libCur.rows.length - libCur.shown : 0;
+  return left > 0 ? `<div id="lib-more" class="row" style="justify-content:center;padding:12px"><button class="btn text" data-act="libmore">Show ${Math.min(left, LIB_PAGE)} more of ${left.toLocaleString()}</button></div>` : '';
+}
+function libBodyHTML() {
+  const L = S.lib, cols = colsOn();
+  const d = libRows();
+  libCur = { ...d, cols, shown: Math.min(d.rows.length, LIB_PAGE) };
+  const allSel = d.rows.length > 0 && d.rows.every((t) => L.sel.has(t.id));
+  return `<div class="row wrap" style="gap:8px" role="group" aria-label="Filters">${CHIPS.map(([k, l]) => `<button class="chip ${L.chips.has(k) ? 'on' : ''}" aria-pressed="${L.chips.has(k)}" data-act="chip" data-k="${k}">${L.chips.has(k) ? ic('check') : ''}${l}</button>`).join('')}
+        <span class="b-m v" style="margin-left:auto">${plural(d.rows.length, 'track')}</span>
+        <button class="ib" data-act="libreload" title="Rescan library" aria-label="Rescan library">${ic('refresh')}</button>
+        <button class="ib hide-sm" data-act="cols" title="Choose columns" aria-label="Choose columns">${ic('settings')}</button></div>
+      ${libNotice()}
+      <div class="tscroll"><div role="table" aria-label="Tracks" class="tbl" id="lib-tbl" style="--minw:${colMinW(cols)}px">
+        ${tableHead(cols, allSel)}
+        ${d.folders.map((f) => folderRow(f, d.p, cols)).join('')}${d.rows.slice(0, libCur.shown).map((t) => trackRow(t, cols)).join('')}
+        ${!d.folders.length && !d.rows.length ? libEmpty() : ''}
+      </div>${libMoreHTML()}</div>
+      <div id="lib-tools">${libToolbar()}</div>`;
+}
+function libAsideHTML() {
+  const L = S.lib;
+  const focus = L.focus != null ? trackOf(L.focus) : null;
+  return focus ? detailHTML(focus) : emptyState('music_note', 'Select a track', 'Pick a song to see its tags, file path and duplicates.');
+}
+function viewLibrary() {
+  const L = S.lib;
+  const scope = libScope();
+  const totalSize = scope.reduce((a, t) => a + t.size, 0);
+  const crumbs = ['Library', ...L.path];
   return `<div class="lib-layout">
     <section class="pane grow" aria-labelledby="h-lib" style="padding:16px 16px 20px;display:flex;flex-direction:column;gap:14px;min-width:0">
       <div class="row wrap" style="gap:12px">
@@ -714,33 +771,41 @@ function viewLibrary() {
         <div class="grow col"><h1 id="h-lib" class="hl-s ell">${esc(L.path.length ? L.path[L.path.length - 1] : 'Library')}</h1>
           <nav class="row wrap b-m v crumbs" aria-label="Breadcrumb">${crumbs.map((c, i) => i === crumbs.length - 1
             ? `<span>${esc(c)}</span>` : `<button class="btn text" style="height:28px;padding:0 6px" data-act="crumb" data-i="${i}">${esc(c)}</button><span>/</span>`).join('')}
-            <span>· ${plural(scope.length, 'track')} · ${fmtMB(totalSize)}</span></nav></div>
-        <label class="searchbar sm" style="width:300px;max-width:100%">${ic('search', 'v')}<input id="lq" value="${esc(L.q)}" placeholder="Search library" aria-label="Search library" data-input="lq" autocomplete="off"></label>
+            <span id="lib-total">· ${plural(scope.length, 'track')} · ${fmtMB(totalSize)}</span></nav></div>
+        <label class="searchbar sm" style="width:300px;max-width:100%">${ic('search', 'v')}<input id="lq" type="search" enterkeyhint="search" value="${esc(L.q)}" placeholder="Search library" aria-label="Search library" data-input="lq" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></label>
         <div class="seg" role="radiogroup" aria-label="View">
           <button role="radio" aria-checked="${L.view === 'folders'}" data-act="view" data-k="folders">${L.view === 'folders' ? ic('check') : ''}Folders</button>
           <button role="radio" aria-checked="${L.view === 'tracks'}" data-act="view" data-k="tracks">${L.view === 'tracks' ? ic('check') : ''}Tracks</button></div>
       </div>
-      <div class="row wrap" style="gap:8px" role="group" aria-label="Filters">${CHIPS.map(([k, l]) => `<button class="chip ${L.chips.has(k) ? 'on' : ''}" aria-pressed="${L.chips.has(k)}" data-act="chip" data-k="${k}">${L.chips.has(k) ? ic('check') : ''}${l}</button>`).join('')}
-        <span class="b-m v" style="margin-left:auto">${plural(rows.length, 'track')}</span>
-        <button class="ib" data-act="libreload" title="Rescan library" aria-label="Rescan library">${ic('refresh')}</button>
-        <button class="ib hide-sm" data-act="cols" title="Choose columns" aria-label="Choose columns">${ic('settings')}</button></div>
-      ${libNotice()}
-      <div class="tscroll"><div role="table" aria-label="Tracks" class="tbl" style="--minw:${colMinW(cols)}px">
-        ${tableHead(cols, allSel)}
-        ${folders.map((f) => folderRow(f, p, cols)).join('')}${sortRows(rows).map((t) => trackRow(t, cols)).join('')}
-        ${!folders.length && !rows.length ? libEmpty() : ''}
-      </div></div>
-      ${L.sel.size ? `<div class="toolbar" role="toolbar" aria-label="Selected tracks"><span class="l-l" style="margin-right:12px">${L.sel.size} selected</span>
-        <button class="btn filled" data-act="enrichsel">${ic('auto_awesome')}Enrich</button>
-        <button class="ib" data-act="renamesel" title="Rename from tags" aria-label="Rename from tags">${ic('drive_file_rename_outline')}</button>
-        <button class="ib" data-act="movesel" title="Move" aria-label="Move">${ic('drive_file_move')}</button>
-        <button class="ib" data-act="dlsel" title="Download to browser" aria-label="Download to browser">${ic('download')}</button>
-        <button class="ib" data-act="delsel" title="Delete" aria-label="Delete">${ic('delete')}</button>
-        <button class="ib" data-act="clearsel" title="Clear selection" aria-label="Clear selection">${ic('close')}</button></div>` : ''}
+      <div id="lib-body" class="col" style="gap:14px;min-width:0">${libBodyHTML()}</div>
     </section>
-    <aside class="pane lib-aside" aria-label="Track details" style="width:360px;flex-shrink:0;padding:20px;display:flex;flex-direction:column;gap:16px;position:sticky;top:16px">
-      ${focus ? detailHTML(focus) : emptyState('music_note', 'Select a track', 'Pick a song to see its tags, file path and duplicates.')}
+    <aside class="pane lib-aside" id="lib-aside" aria-label="Track details" style="width:360px;flex-shrink:0;padding:20px;display:flex;flex-direction:column;gap:16px;position:sticky;top:16px">
+      ${libAsideHTML()}
     </aside></div>`;
+}
+// Redraw only the library body (and optionally the details panel); falls back to a full render elsewhere.
+function renderLib({ aside = false } = {}) {
+  const body = $('#lib-body');
+  if (S.route !== 'library' || !body) return render();
+  body.innerHTML = libBodyHTML();
+  if (aside) $('#lib-aside').innerHTML = libAsideHTML();
+  watchLibMore();
+}
+function libAppend() {
+  if (!libCur) return;
+  const next = libCur.rows.slice(libCur.shown, libCur.shown + LIB_PAGE);
+  libCur.shown += next.length;
+  const tbl = $('#lib-tbl'); if (tbl) tbl.insertAdjacentHTML('beforeend', next.map((t) => trackRow(t, libCur.cols)).join(''));
+  const more = $('#lib-more'); if (more) more.outerHTML = libMoreHTML();
+  watchLibMore();
+}
+let libObserver;
+function watchLibMore() {
+  if (libObserver) libObserver.disconnect();
+  const more = $('#lib-more');
+  if (!more || !('IntersectionObserver' in window)) return;
+  libObserver = new IntersectionObserver((ents) => { if (ents.some((x) => x.isIntersecting)) libAppend(); }, { rootMargin: '600px' });
+  libObserver.observe(more);
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -1016,15 +1081,20 @@ function viewSettings() {
 const VIEWS = { download: viewDownload, library: viewLibrary, health: viewHealth, settings: viewSettings };
 const TITLES = { download: 'Download', library: 'Library', health: 'Library health', settings: 'Settings' };
 
+// Sidebar, task chip and phone top bar: cheap, and safe to redraw while someone is typing in the page.
+function renderChrome() {
+  $('#rail').innerHTML = railHTML();
+  $('#bg').innerHTML = scanChip();
+  $('#mtop').innerHTML = `<div class="row" style="gap:10px">${brandHTML()}</div><span class="grow"></span>${vpnPill()}`;
+}
 function render() {
   const a = document.activeElement;
   const fid = a && a.id && a.closest('#view') ? a.id : null;
   const caret = fid && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd] : null;
   const y = window.scrollY;
-  $('#rail').innerHTML = railHTML();
-  $('#bg').innerHTML = scanChip();
-  $('#mtop').innerHTML = `<div class="row" style="gap:10px">${brandHTML()}</div><span class="grow"></span>${vpnPill()}`;
+  renderChrome();
   $('#view').innerHTML = VIEWS[S.route]();
+  if (S.route === 'library') watchLibMore();
   if (fid) {
     const n = document.getElementById(fid);
     if (n) { n.focus({ preventScroll: true }); if (caret) { try { n.setSelectionRange(caret[0], caret[1]); } catch { /* not a text field */ } } }
@@ -1076,7 +1146,7 @@ A.paste = () => {
 };
 A.pasteq = () => { navigator.clipboard?.readText().then((t) => { if (t) { S.q = t.trim(); scheduleSearch(); render(); $('#q')?.focus(); } }).catch(() => snack('Clipboard is blocked by the browser — paste with Ctrl+V')); };
 A.clearq = () => { S.q = ''; scheduleSearch(); render(); $('#q')?.focus(); };
-A.type = (el) => { S.type = el.dataset.k; render(); };
+A.type = (el) => { S.type = el.dataset.k; renderResults(); };
 A.quality = (el) => { S.quality = el.dataset.k; store.set('quality', S.quality); render(); saved(); };
 A.dl = (el) => {
   const r = S.results[+el.dataset.i];
@@ -1115,35 +1185,51 @@ A.cd = (el) => { S.lib.path = el.dataset.path.split('/'); S.lib.focus = null; re
 A.up = () => { S.lib.path.pop(); render(); };
 A.crumb = (el) => { S.lib.path = S.lib.path.slice(0, +el.dataset.i); render(); };
 A.view = (el) => { S.lib.view = el.dataset.k; render(); };
-A.chip = (el) => { const c = S.lib.chips; c.has(el.dataset.k) ? c.delete(el.dataset.k) : c.add(el.dataset.k); render(); };
-A.sel = (el) => { const id = el.dataset.id; el.checked ? S.lib.sel.add(id) : S.lib.sel.delete(id); render(); };
+A.chip = (el) => { const c = S.lib.chips; c.has(el.dataset.k) ? c.delete(el.dataset.k) : c.add(el.dataset.k); renderLib(); };
+A.libmore = () => libAppend();
+// Ticking a song only touches its row, the toolbar and the select-all box.
+function libSelPatch() {
+  const tools = $('#lib-tools'); if (tools) tools.innerHTML = libToolbar();
+  const all = $('#lib-body [data-act=selall]');
+  if (all && libCur) all.checked = libCur.rows.length > 0 && libCur.rows.every((t) => S.lib.sel.has(t.id));
+  if (S.route === 'library') { const fab = $('.rail .mfab'); if (fab) fab.hidden = S.lib.sel.size > 0; }
+}
+A.sel = (el) => {
+  const id = el.dataset.id; el.checked ? S.lib.sel.add(id) : S.lib.sel.delete(id);
+  const row = el.closest('.trow'); if (row) row.classList.toggle('sel', el.checked);
+  libSelPatch();
+};
 A.sort = (el) => {
   const k = el.dataset.k, s = S.lib.sort;
   S.lib.sort = !s || s.k !== k ? { k, dir: 'asc' } : s.dir === 'asc' ? { k, dir: 'desc' } : null;
-  store.set('libsort', S.lib.sort); render();
+  store.set('libsort', S.lib.sort); renderLib();
 };
 A.cols = () => dialog('Columns', `<p class="b-m v" style="margin-bottom:12px">Choose what the table shows. Click a column heading to sort by it.</p><div id="col-body">${colBody()}</div>`, [{ key: 'done', label: 'Done', cls: 'filled' }]);
 A.coltoggle = (el) => {
   const k = el.dataset.k, c = S.lib.cols, i = c.indexOf(k);
   i < 0 ? c.push(k) : c.splice(i, 1);
   if (i >= 0 && S.lib.sort && S.lib.sort.k === k) { S.lib.sort = null; store.set('libsort', null); }
-  store.set('libcols', c); $('#col-body').innerHTML = colBody(); render();
+  store.set('libcols', c); $('#col-body').innerHTML = colBody(); renderLib();
 };
-A.colreset = () => { S.lib.cols = [...DEFAULT_COLS]; store.set('libcols', S.lib.cols); if (S.lib.sort && !colsOn().some((c) => c.id === S.lib.sort.k)) S.lib.sort = null; $('#col-body').innerHTML = colBody(); render(); };
+A.colreset = () => { S.lib.cols = [...DEFAULT_COLS]; store.set('libcols', S.lib.cols); if (S.lib.sort && !colsOn().some((c) => c.id === S.lib.sort.k)) S.lib.sort = null; $('#col-body').innerHTML = colBody(); renderLib(); };
 A.selall = (el) => {
-  const L = S.lib, p = L.path.join('/');
-  const flat = L.view === 'tracks' || L.q.trim() || L.chips.size;
-  const rows = flat ? libFiltered(libScope()) : libFiltered(libScope().filter((t) => t.dir === p));
-  rows.forEach((t) => (el.checked ? L.sel.add(t.id) : L.sel.delete(t.id)));
-  render();
+  const rows = libCur ? libCur.rows : [];
+  rows.forEach((t) => (el.checked ? S.lib.sel.add(t.id) : S.lib.sel.delete(t.id)));
+  $$('#lib-tbl [data-act=sel]').forEach((cb) => { cb.checked = S.lib.sel.has(cb.dataset.id); const r = cb.closest('.trow'); if (r) r.classList.toggle('sel', cb.checked); });
+  libSelPatch();
 };
-A.clearsel = () => { S.lib.sel.clear(); render(); };
+A.clearsel = () => { S.lib.sel.clear(); renderLib(); };
 A.focus = (el) => {
-  S.lib.focus = el.dataset.id; render();
+  const prev = S.lib.focus; S.lib.focus = el.dataset.id;
   if (window.innerWidth < 1100) {
     const t = trackOf(S.lib.focus);
     if (t) dialog('Song details', `<div class="col" style="gap:16px">${detailHTML(t, true)}</div>`, [{ key: 'close', label: 'Close' }]);
+    return;
   }
+  if (S.route !== 'library' || !$('#lib-aside')) return render();
+  $$('#lib-tbl .trow.focus').forEach((r) => r.classList.remove('focus'));
+  const row = el.closest('.trow'); if (row) row.classList.add('focus');
+  if (prev !== S.lib.focus) $('#lib-aside').innerHTML = libAsideHTML();
 };
 A.libreload = async () => {
   try { await api('/api/library/rescan', { method: 'POST' }); snack('Rescanning your library…'); refreshTasks(); } catch (e) { oops('Couldn’t start a rescan')(e); }
@@ -1333,9 +1419,19 @@ function adaptTrack(r) {
     year: r.year || '', no: r.no != null ? String(r.no).padStart(2, '0') : '', fmt: r.fmt, kbps: r.kbps, lossless: r.lossless, len: r.len,
     size: r.size / MB, genre: !!r.genre, genreName: r.genre, mbid: !!r.mbid, bpm: !!r.bpm, bpmVal: r.bpm, cover: r.cover,
     isrc: r.isrc, addedDays: Math.max(0, Math.floor((Date.now() / 1000 - r.mtime) / 86400)), expected: r.expected,
+    _hay: `${r.title} ${r.artist} ${r.album} ${r.year || ''}`.toLowerCase(),   // search text, built once
   };
 }
 let tracksTimer;
+// New track data: on the library page redraw only the table and details (the search box stays put).
+function tracksChanged(shell) {
+  if (S.route === 'library' && $('#lib-body') && !shell) {
+    renderLib({ aside: true });
+    const scope = libScope(); const tot = $('#lib-total');
+    if (tot) tot.textContent = `· ${plural(scope.length, 'track')} · ${fmtMB(scope.reduce((x, t) => x + t.size, 0))}`;
+  } else if (S.route === 'library' || S.route === 'health') render();
+  else renderChrome();
+}
 async function loadTracks(quiet) {
   clearTimeout(tracksTimer);
   try {
@@ -1347,9 +1443,10 @@ async function loadTracks(quiet) {
     for (const p of [...L.sel]) if (!have.has(p)) L.sel.delete(p);
     for (const k of Object.keys(S.h.sel)) for (const p of [...S.h.sel[k]]) if (!have.has(p) && k !== 'mis') S.h.sel[k].delete(p);
     if (L.focus && !have.has(L.focus)) L.focus = null;
-    if (L.path.length && L.tracks.length && !L.tracks.some((t) => t.dir === L.path.join('/') || t.dir.startsWith(L.path.join('/') + '/'))) L.path = [];
+    const lost = L.path.length && L.tracks.length && !L.tracks.some((t) => t.dir === L.path.join('/') || t.dir.startsWith(L.path.join('/') + '/'));
+    if (lost) L.path = [];
     rebuildDirCovers();
-    render();
+    tracksChanged(lost);
     if (!d.ready || d.pending) tracksTimer = setTimeout(() => loadTracks(true), 2500);
   } catch (e) {
     S.lib.error = e.message; S.lib.loaded = true; render();
@@ -1375,7 +1472,7 @@ async function loadVpn() {
     const next = { known: true, on: !!d.connected, since: d.connected_since || null };
     const changed = !S.vpn.known || S.vpn.on !== next.on;
     S.vpn = next;
-    if (changed) render();
+    if (changed) renderChrome();
   } catch { /* keep the last known state */ }
 }
 async function loadVersion() { try { S.ver = await api('/api/spotiflac/version'); } catch { /* optional */ } }
@@ -1396,10 +1493,11 @@ function boot() {
 }
 
 // ── Inputs (typing never re-renders settings fields, so focus and caret stay put) ──
+let lqTimer;
 const INPUT = {
   seed: (el) => { store.set('seed', el.value); store.set('scheme', 'custom'); applyTheme(); },
-  q: (el) => { S.q = el.value; scheduleSearch(); render(); },
-  lq: (el) => { S.lib.q = el.value; render(); },
+  q: (el) => { S.q = el.value; scheduleSearch(); renderResults(); },
+  lq: (el) => { S.lib.q = el.value; clearTimeout(lqTimer); lqTimer = setTimeout(() => renderLib(), S.lib.tracks.length > 2000 ? 160 : 80); },
   text: (el) => { setPath(S.set, el.dataset.key, el.value); if (el.dataset.key === 'fmt') { const pv = $('#fmt-preview'); if (pv) pv.textContent = fmtPreview(); } saved(); },
   num: (el) => { setPath(S.set, el.dataset.key, Math.max(0, Number(el.value) || 0)); saved(); },
   slider: (el) => {
