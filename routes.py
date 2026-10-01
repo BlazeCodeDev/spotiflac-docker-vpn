@@ -957,6 +957,34 @@ def _track_row(rel: str, rec: dict, name_fmt: str) -> dict:
     }
 
 
+_SEARCH_XLAT = str.maketrans({"ø": "o", "đ": "d", "ł": "l", "æ": "ae", "œ": "oe", "þ": "th", "ı": "i",
+                              "\u2019": "", "'": "", "`": "", "\u00b4": "", "&": " and ", "+": " and "})
+
+
+def _search_norm(s: str) -> str:
+    """Text for loose matching: accents, case, apostrophes and punctuation don't matter
+    ("Beyoncé" = "beyonce", "Don't" = "dont", "World, Hold On" = "world hold on", "&" = "and")."""
+    s = unicodedata.normalize("NFKD", str(s or "")).casefold().translate(_SEARCH_XLAT)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return " ".join(re.sub(r"[\W_]+", " ", s).split())
+
+
+def _search_hay(row: dict) -> str:
+    """Searchable text of one song: its tags and file name, normalised, then the raw lowercase
+    text too (so a query made only of punctuation, like "!!!" or "+/-", still finds it)."""
+    raw = f"{row['title']} {row['artist']} {row['album']} {row['year'] or ''} {row['file']}"
+    return f"{_search_norm(raw)} \x00 {raw.lower()}"
+
+
+def _search_match(q: str, hay: str) -> bool:
+    """Every word of the query appears somewhere in the song's text, in any order and across
+    fields: "hold on world" and "daft punk discovery" both work."""
+    toks = _search_norm(q).split()
+    if not toks:
+        return q in hay   # only punctuation typed
+    return all(t in hay for t in toks)
+
+
 # Built rows are kept per file (abs path → (stamp, name format, row, search text)) so a page
 # request only rebuilds rows for files that changed; _org_target() per song is the expensive part.
 _row_cache: dict[str, tuple] = {}
@@ -1017,7 +1045,7 @@ def _library_rows(fresh: bool = False):
         if not hit or hit[:2] != (stamp, name_fmt) or hit[2]["path"] != rel:
             size, mtime = tagcache.stamp_size_mtime(stamp)
             row = _track_row(rel, {**rec, "size": size, "mtime": mtime}, name_fmt)
-            hay = f"{row['title']} {row['artist']} {row['album']} {row['year'] or ''}".lower()
+            hay = _search_hay(row)
             hit = _row_cache[a] = (stamp, name_fmt, row, hay)
         rows.append(hit[2])
         hays.append(hit[3])
@@ -1074,7 +1102,7 @@ def _tracks_page(rows: list[dict], hays: list[str]) -> dict:
         r = rows[i]
         if not flat and r["dir"] != p:
             continue
-        if q and q not in hays[i]:
+        if q and not _search_match(q, hays[i]):
             continue
         if new_only and (now - r["mtime"]) // 86400 > 7:
             continue
