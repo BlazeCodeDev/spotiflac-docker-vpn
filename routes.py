@@ -1121,6 +1121,74 @@ def api_library_cover():
     return resp.make_conditional(request)
 
 
+# Waveforms for the song details: made the first time a song is opened (ffmpeg decodes it to a low-rate
+# mono stream, which is plenty for ~120 bars) and kept on disk next to the cover thumbnails.
+_WAVE_BARS = 120
+_WAVE_RATE = 4000
+_WAVE_DIR = os.path.join(os.path.dirname(_COVER_DIR), "wavecache")
+_wave_slots = threading.BoundedSemaphore(2)      # each decode reads a whole file off the share
+
+
+def _waveform(abs_path: str) -> list[int]:
+    """Loudness per slice of the song (RMS, 0–100, the loudest slice is 100)."""
+    import array
+    st = os.stat(abs_path)
+    key = hashlib.sha1(f"{abs_path}|{st.st_size}|{st.st_mtime_ns}|{_WAVE_BARS}".encode()).hexdigest()
+    cached = os.path.join(_WAVE_DIR, key[:2], key + ".json")
+    try:
+        with open(cached) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        pass
+    with _wave_slots:
+        out = subprocess.run(
+            ["ffmpeg", "-v", "error", "-nostdin", "-i", abs_path, "-map", "0:a:0", "-ac", "1",
+             "-ar", str(_WAVE_RATE), "-f", "s16le", "-"],
+            capture_output=True, timeout=120)
+    if out.returncode != 0 or len(out.stdout) < 2 * _WAVE_BARS:
+        raise ValueError((out.stderr.decode(errors="replace").strip().splitlines() or ["Couldn’t decode the audio"])[-1])
+    pcm = array.array("h")
+    pcm.frombytes(out.stdout[:len(out.stdout) // 2 * 2])
+    if sys.byteorder != "little":
+        pcm.byteswap()
+    step = len(pcm) / _WAVE_BARS
+    rms = []
+    for i in range(_WAVE_BARS):
+        sl = pcm[int(i * step):int((i + 1) * step)]
+        rms.append((sum(x * x for x in sl) / len(sl)) ** 0.5 if sl else 0.0)
+    top = max(rms) or 1.0
+    bars = [round(100 * v / top) for v in rms]
+    try:
+        os.makedirs(os.path.dirname(cached), exist_ok=True)
+        tmp = cached + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(bars, f)
+        os.replace(tmp, cached)
+    except OSError as exc:
+        log.debug("waveform cache write failed: %s", exc)
+    return bars
+
+
+@bp.get("/api/library/waveform")
+def api_library_waveform():
+    try:
+        abs_path = _safe_lib_path(request.args.get("path", ""))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    if not os.path.isfile(abs_path):
+        return jsonify(error="Not found"), 404
+    try:
+        bars = _waveform(abs_path)
+    except FileNotFoundError:
+        return jsonify(error="ffmpeg isn’t installed"), 500
+    except (ValueError, subprocess.TimeoutExpired) as exc:
+        return jsonify(error=str(exc) or "Couldn’t decode the audio"), 422
+    resp = jsonify(bars=bars)
+    # Same as covers: the URL carries the file's mtime (v=), so a changed file gets a new URL.
+    resp.headers["Cache-Control"] = "private, max-age=31536000, immutable" if request.args.get("v") else "no-cache"
+    return resp
+
+
 @bp.get("/api/jobs/<job_id>/download")
 def api_job_download(job_id: str):
     """Send the files a finished job produced: the file itself for one song, a .zip for several."""

@@ -679,6 +679,7 @@ function detailHTML(t, compact = false) {
     : `<div class="cover" style="position:relative;overflow:hidden;${t.cover ? `background:${coverGradient(t.album || t.title)};color:rgba(255,255,255,.8)` : 'background:var(--md-sc-highest);color:var(--md-outline)'}">${ic(t.cover ? 'album' : 'image_not_supported', '', 'font-size:64px')}<span class="l-m">${t.cover ? '' : 'No cover art'}</span>${t.cover ? `<img src="${esc(coverUrl(t, 480))}" alt="Cover art" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" onerror="this.remove()">` : ''}</div>
     <div class="col"><h2 class="hl-s" style="word-break:break-word">${esc(t.title)}</h2><span class="b-m v">${sub}</span></div>`;
   return `${head}
+    ${waveHTML(t)}
     <div class="props">
       ${prop('graphic_eq', 'Format', t.lossless ? `${t.fmt.toUpperCase()} · lossless` : `${t.fmt.toUpperCase()} · ${t.kbps} kbps`)}
       ${prop('sell', 'Genre', t.genre ? t.genreName : bad('Missing'))}
@@ -809,6 +810,33 @@ async function tintEl(el, t) {
 function tintDetail() {
   const el = $('#lib-aside'); if (!el) return;
   tintEl(el, S.lib.focus != null ? trackOf(S.lib.focus) || S.lib.focusT : null);
+  fillWaves();
+}
+
+// ── Waveform ─────────────────────────────────────────────────────────────
+// The server makes it the first time a song is opened (and keeps it); here each file version is asked for once.
+const waves = new Map();
+function waveBars(path, v) {
+  const k = path + '|' + v;
+  if (!waves.has(k)) waves.set(k, api(`/api/library/waveform?path=${encodeURIComponent(path)}&v=${v}`).then((d) => d.bars)
+    .catch((e) => { waves.delete(k); throw e; }));
+  return waves.get(k);
+}
+const waveHTML = (t) => `<div class="wave" data-wave="${esc(t.path)}" data-v="${t.mtime || 0}" role="img" aria-label="Waveform"><span class="skel"></span></div>`;
+function waveSVG(bars) {
+  const n = bars.length;
+  return `<svg viewBox="0 0 ${n * 3} 100" preserveAspectRatio="none" aria-hidden="true">${bars.map((b, i) => {
+    const h = Math.max(3, b);
+    return `<rect x="${i * 3}" y="${(100 - h) / 2}" width="2" height="${h}" rx="1" style="animation-delay:${Math.round(i * 300 / n)}ms"/>`;
+  }).join('')}</svg>`;
+}
+// Fill every waveform placeholder on screen (details panel or the phone dialog).
+function fillWaves() {
+  $$('[data-wave]:not([data-done])').forEach((el) => {
+    el.dataset.done = '1';
+    waveBars(el.dataset.wave, el.dataset.v).then((bars) => { el.innerHTML = waveSVG(bars); },
+      (e) => { el.classList.add('err'); el.innerHTML = `${ic('graphic_eq', '', 'font-size:18px')}<span>Couldn’t draw the waveform${e.message ? ': ' + esc(e.message) : ''}</span>`; });
+  });
 }
 
 function libAsideHTML() {
@@ -1283,7 +1311,7 @@ A.focus = (el) => {
   const prev = S.lib.focus; S.lib.focus = el.dataset.id; S.lib.focusT = trackOf(S.lib.focus) || null;
   if (window.innerWidth < 1100) {
     const t = trackOf(S.lib.focus);
-    if (t) { dialog('Song details', `<div class="col" style="gap:16px">${detailHTML(t, true)}</div>`, [{ key: 'close', label: 'Close' }]).then(() => clearTint($('#dlg'))); tintEl($('#dlg'), t); }
+    if (t) { dialog('Song details', `<div class="col" style="gap:16px">${detailHTML(t, true)}</div>`, [{ key: 'close', label: 'Close' }]).then(() => clearTint($('#dlg'))); tintEl($('#dlg'), t); fillWaves(); }
     return;
   }
   if (S.route !== 'library' || !$('#lib-aside')) return render();

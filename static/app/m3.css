@@ -148,6 +148,13 @@ input[type=checkbox],input[type=radio]{width:18px;height:18px;margin:0}
 .props{display:flex;flex-direction:column}
 .props .p{display:flex;align-items:center;gap:16px;min-height:40px}
 .cover{aspect-ratio:1;border-radius:20px;background:var(--md-tertiary-container);color:var(--md-on-tertiary-container);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px}
+.wave{height:48px;display:flex;align-items:center;color:var(--md-primary)}
+.wave .skel{width:100%;height:100%;border-radius:8px;opacity:.6}
+.wave svg{width:100%;height:100%;display:block;overflow:visible}
+.wave rect{fill:currentColor;transform-box:fill-box;transform-origin:center;animation:wavein .45s cubic-bezier(.2,0,0,1) both}
+.wave.err{height:auto;gap:8px;font-size:12px;color:var(--md-on-surface-variant)}
+@keyframes wavein{from{transform:scaleY(.08);opacity:0}}
+@media (prefers-reduced-motion:reduce){.wave rect{animation:none}}
 .pathbox{font-size:12px;line-height:18px;background:var(--md-sc-high);color:var(--md-on-surface-variant);border-radius:12px;padding:10px 12px;word-break:break-all}
 
 /* ── Health ───────────────────────────────────────────────────────── */
