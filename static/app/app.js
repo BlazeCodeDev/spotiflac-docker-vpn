@@ -305,6 +305,13 @@ function busyTask() {
   return { label: t.label, pct, text: pct == null ? `${t.label}…` : `${t.label} · ${Math.round(pct)}%` };
 }
 const runningTasks = () => S.tasks.filter((x) => x.running);
+// The running library scan specifically (the corner chip shows whichever task is first).
+function scanInfo() {
+  const t = S.tasks.find((x) => x.running && x.id.startsWith('scan-'));
+  if (!t) return null;
+  const pct = t.progress_total ? Math.min(100, (t.progress_done / t.progress_total) * 100) : null;
+  return { pct, text: t.detail || 'Scanning…' };
+}
 function scanChip() {
   const b = busyTask();
   if (!b) return '';
@@ -316,11 +323,15 @@ function scanChip() {
     <span data-scan-text>${esc(b.text)}</span>${n > 1 ? `<span class="tag primary" style="height:20px;padding:0 8px">+${n - 1}</span>` : ''}</button>`;
 }
 function patchScan() {
+  const sc = scanInfo();
+  if (sc) {
+    $$('[data-scan-health]').forEach((e) => { e.textContent = sc.text; });
+    $$('[data-scan-bar] .a').forEach((e) => { e.style.width = (sc.pct == null ? 30 : sc.pct) + '%'; });
+  }
   const b = busyTask();
   if (!b) return;
   $$('[data-scan-text]').forEach((e) => { e.textContent = b.text; });
   $$('[data-scan-arc]').forEach((e) => e.setAttribute('stroke-dasharray', `${((b.pct == null ? 25 : b.pct) / 100) * 47.12} 47.12`));
-  $$('[data-scan-bar] .a').forEach((e) => { e.style.width = (b.pct == null ? 30 : b.pct) + '%'; });
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -519,7 +530,8 @@ async function refreshTasks() {
     if (!t.running) continue;
     const now = tasks.find((x) => x.id === t.id);
     if (now && now.running) continue;
-    if (t.id === 'scan-dups') loadScan('dups');
+    if (t.id === 'scan-library') { loadScan('dups'); loadScan('mistag'); loadTracks(true); }
+    else if (t.id === 'scan-dups') loadScan('dups');
     else if (t.id === 'scan-mistag') loadScan('mistag');
     else if (t.id === 'lib-index' || t.id === 'lib-enrich') loadTracks(true);
   }
@@ -759,7 +771,10 @@ async function loadScan(kind) {
     render();
   } catch { /* leave what we have */ }
 }
-const scanRunning = (kind) => !!(S.tasks.find((t) => t.id === 'scan-' + kind) || {}).running;
+// One scan finds duplicates and mistagged songs together.
+// The server patches stored scan results when files change, so just fetch them again (no rescan needed).
+function refreshScans() { if (S.h.dups !== null) loadScan('dups'); if (S.h.mis !== null) loadScan('mistag'); }
+const scanRunning = () => S.tasks.some((t) => t.running && t.id.startsWith('scan-'));
 const keepOf = (g) => S.h.keep[g.id] ?? g.keepIdx;
 
 function dupPlan() {
@@ -783,11 +798,11 @@ function fileRowDup(g, f, i) {
 // A scan that hasn't produced a result yet: running, never run, or the library changed since.
 function scanPending(kind, what, hint) {
   const info = kind === 'dups' ? S.h.dupsInfo : S.h.misInfo;
-  if (scanRunning(kind) || (info && info.running)) return emptyState('hourglass_top', `Scanning for ${what}…`, 'You can leave this page. The result is kept.');
+  if (scanRunning() || (info && info.running)) return emptyState('hourglass_top', 'Scanning your library…', 'One scan finds duplicates and mistagged songs. You can leave this page; the result is kept.');
   if (info && info.error) return emptyState('error', 'The scan failed', info.error);
   const stale = info && info.summary && /changed/i.test(info.summary);
   return `${emptyState(stale ? 'refresh' : 'radar', stale ? 'The library changed since the last scan' : `Not scanned yet`, hint)}
-    <div class="row" style="justify-content:center"><button class="btn filled" data-act="scan">${ic('radar')}Scan now</button></div>`;
+    <div class="row" style="justify-content:center"><button class="btn filled" data-act="scan">${ic('radar')}Scan library</button></div>`;
 }
 
 function healthDups() {
@@ -859,13 +874,12 @@ function viewHealth() {
   const tabs = [['dups', 'content_copy', 'Duplicates', S.h.dups ? S.h.dups.length : '–'], ['mis', 'graphic_eq', 'Mistagged', S.h.mis ? S.h.mis.length : '–'],
     ['name', 'text_fields', 'Misnamed', S.lib.loaded && S.lib.ready ? misnamed().length : '–'], ['miss', 'label_off', 'Missing tags', S.lib.loaded && S.lib.ready ? missingList().length : '–']];
   const body = { dups: healthDups, mis: healthMis, name: healthNames, miss: healthMissing }[S.h.tab]();
-  const kind = { dups: 'dups', mis: 'mistag' }[S.h.tab];
-  const busy = kind ? scanRunning(kind) : false;
-  const b = busy ? busyTask() : null;
+  const b = scanInfo();
+  const busy = !!b;
   return `<section class="pane" style="padding:24px 28px 20px;display:flex;flex-direction:column;gap:16px" aria-labelledby="h-health">
     <header class="row wrap" style="align-items:flex-end;gap:16px"><div class="grow col" style="gap:4px"><h1 id="h-health" class="hl-m">Library health</h1>
-      <span class="b-m v">Duplicates and mistagged songs come from a scan you start. Misnamed files and missing tags are read live from your library.</span></div>
-      <button class="btn tonal" data-act="scan" ${busy ? 'disabled' : ''}>${busy ? `<span class="ms spin" aria-hidden="true">progress_activity</span><span data-scan-text>${esc(b ? b.text : 'Scanning…')}</span>` : `${ic('refresh')}${kind ? 'Scan now' : 'Rescan library'}`}</button></header>
+      <span class="b-m v">One scan finds duplicates and mistagged songs. Misnamed files and missing tags are read live from your library.</span></div>
+      <button class="btn tonal" data-act="scan" ${busy ? 'disabled' : ''}>${busy ? `<span class="ms spin" aria-hidden="true">progress_activity</span><span data-scan-health>${esc(b ? b.text : 'Scanning…')}</span>` : `${ic('radar')}Scan library`}</button></header>
     ${busy ? `<div class="lp ${b && b.pct != null ? '' : 'ind'}" role="progressbar" aria-label="Scan progress" data-scan-bar><span class="a" style="width:${b && b.pct != null ? b.pct : 30}%"></span><span class="t"></span></div>` : ''}
     <div class="tabs" role="tablist" aria-label="Issue type">${tabs.map(([k, i, l, n]) => `<button class="tab" role="tab" aria-selected="${S.h.tab === k}" data-act="htab" data-k="${k}">${ic(i, S.h.tab === k ? 'f' : '')}<span class="t-s">${l}</span><span class="tag ${S.h.tab === k ? 'primary' : 'neutral'}" style="height:20px;padding:0 8px">${n}</span></button>`).join('')}</div>
     ${body}</section>`;
@@ -1138,7 +1152,7 @@ async function renamePaths(paths) {
     }
     const n = Object.entries(map).filter(([f, t]) => f !== t).length;
     snack(firstError(d) ? `Renamed ${n}. ${firstError(d)}` : `Renamed ${plural(n, 'file')} from their tags`);
-    render(); later();
+    refreshScans(); render(); later();
   } catch (e) { oops('Couldn’t rename')(e); }
 }
 A.renamesel = () => renamePaths([...S.lib.sel]);
@@ -1157,7 +1171,7 @@ A.movesel = async () => {
     } catch (e) { err = e.message; }
   }
   snack(err ? `Moved ${moved} of ${paths.length}. ${err}` : `Moved ${plural(moved, 'file')} to ${dest}`);
-  render(); later();
+  refreshScans(); render(); later();
 };
 A.dlsel = async () => {
   const paths = [...S.lib.sel];
@@ -1174,7 +1188,7 @@ A.delsel = async () => {
   }
   rebuildDirCovers();
   snack(err ? `Deleted ${gone} of ${paths.length}. ${err}` : `Deleted ${plural(gone, 'file')}`);
-  render(); later();
+  refreshScans(); render(); later();
 };
 
 // Health
@@ -1190,15 +1204,13 @@ A.applydups = async () => {
   try {
     const d = await api('/api/library/duplicates/apply', { method: 'POST', body: { groups } });
     snack(d.errors && d.errors.length ? `Removed ${d.removed}. ${d.errors[0]}` : `Removed ${plural(d.removed, 'file')} · ${fmtMB((d.freed || 0) / MB)} freed`);
-    S.h.dups = null; S.h.keep = {}; S.h.dupsInfo = { summary: 'Library changed — rescan' };
-    loadScan('dups'); later();
+    refreshScans(); later();
   } catch (e) { oops('Couldn’t remove the files')(e); }
 };
 A.scan = async () => {
-  const kind = { dups: 'dups', mis: 'mistag' }[S.h.tab];
   try {
-    if (kind) { await api(`/api/library/scan/${kind}`, { method: 'POST' }); snack(kind === 'dups' ? 'Scanning for duplicates…' : 'Scanning for mistagged songs…'); }
-    else { await api('/api/library/rescan', { method: 'POST' }); snack('Rescanning your library…'); }
+    const d = await api('/api/library/scan/library', { method: 'POST' });
+    snack(d.started === false ? 'A scan is already running' : 'Scanning your library for duplicates and mistagged songs…');
     refreshTasks();
   } catch (e) { oops('Couldn’t start the scan')(e); }
 };
@@ -1212,7 +1224,7 @@ A.repair = async () => {
   try {
     const d = await api('/api/library/repair', { method: 'POST', body: { files } });
     snack(d.errors && d.errors.length ? `Queued ${d.queued}. ${d.errors[0]}` : `Re-downloading ${plural(d.queued, 'song')} from their tags`, { label: 'View queue', fn: () => go('download') });
-    S.h.sel.mis.clear(); loadScan('mistag'); refreshJobs(); later();
+    S.h.sel.mis.clear(); refreshScans(); refreshJobs(); later();
   } catch (e) { oops('Couldn’t repair')(e); }
 };
 A.hdelete = async () => {
@@ -1221,7 +1233,7 @@ A.hdelete = async () => {
   try {
     const d = await api('/api/library/mistag/delete', { method: 'POST', body: { files } });
     snack(firstError(d) ? `Deleted ${(d.removed || []).length}. ${firstError(d)}` : `Deleted ${plural((d.removed || []).length, 'file')}`);
-    S.h.sel.mis.clear(); loadScan('mistag'); later();
+    S.h.sel.mis.clear(); refreshScans(); later();
   } catch (e) { oops('Couldn’t delete')(e); }
 };
 A.renamenames = () => {
@@ -1260,7 +1272,7 @@ A.lbsync = async () => {
   try { await api('/api/listenbrainz/sync', { method: 'POST' }); snack('Syncing ListenBrainz recommendations…'); refreshTasks(); } catch (e) { oops('Couldn’t sync')(e); }
 };
 // Background tasks: everything /api/tasks reports, live while the dialog is open.
-const STOPPABLE = { 'scan-dups': ['/api/library/scan/dups', 'Scan'], 'scan-mistag': ['/api/library/scan/mistag', 'Scan'], 'lib-enrich': ['/api/library/enrich', 'Enrichment'] };
+const STOPPABLE = { 'scan-library': ['/api/library/scan/library', 'Scan'], 'scan-dups': ['/api/library/scan/dups', 'Scan'], 'scan-mistag': ['/api/library/scan/mistag', 'Scan'], 'lib-enrich': ['/api/library/enrich', 'Enrichment'] };
 function tasksBody() {
   const list = S.tasks.slice().sort((x, y) => Number(y.running) - Number(x.running));
   if (!list.length) return emptyState('task_alt', 'No background tasks');
