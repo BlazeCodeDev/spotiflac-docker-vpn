@@ -275,21 +275,34 @@ class Songs:
                 if g not in s["cursor"]:
                     s["cursor"][g] = random.choice((0, 6, 12, 18, 24))
                 added = 0
-                for _page in range(4):   # skip pages whose artists were all offered already
-                    off = s["cursor"][g]
+                plain = False   # fall back to a plain text search when Spotify knows no artists under that genre tag
+                for _page in range(5):   # skip pages whose artists were all offered already, or that are past the end
+                    off = 0 if plain else s["cursor"][g]
+                    q = g if plain else f'genre:"{g}"'
                     try:
-                        found = self.client._get("/search", params={"q": f'genre:"{g}"', "type": "artist", "limit": 6,
+                        found = self.client._get("/search", params={"q": q, "type": "artist", "limit": 6,
                                                                     "offset": off}).get("artists", {}).get("items") or []
                     except Exception as exc:
                         log.info("Discover: genre %s search failed (%s)", g, exc)
                         break
-                    s["cursor"][g] = off + 6 if len(found) == 6 else 0
+                    if not found:
+                        if plain:
+                            break
+                        if off > 0:             # past the last page of this genre: start over
+                            s["cursor"][g] = 0
+                            continue
+                        plain = True            # nothing under the genre tag at all
+                        continue
+                    if not plain:
+                        s["cursor"][g] = off + 6 if len(found) == 6 else 0
                     before = len(cands)
                     for a in found:
                         take(a, g.title() if g.islower() else g, "genres")
                     added += len(cands) - before
                     if added >= 3 or len(found) < 6:
                         break
+                if not added:
+                    log.info("Discover: nothing new for genre %r", g)
 
             def tracks(c):
                 try:
