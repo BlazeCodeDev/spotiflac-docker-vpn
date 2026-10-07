@@ -1404,20 +1404,29 @@ def _run(job_id: str) -> None:
             fail_count    = new_fail
             total_count   = full_total or len(track_results)
 
+            # Complete failure (every track failed, or nothing was resolved at all,
+            # e.g. metadata fetch failed) is an error, not "done" — also keeps it
+            # from showing as done when auto-retry is off. Partial success is done.
+            if not track_results:
+                job_error = "No tracks were downloaded (metadata could not be fetched, or the source was empty)"
+            elif new_success == 0:
+                job_error = next((r.get("error") for r in track_results if r.get("error")), None) or "All tracks failed"
+            else:
+                job_error = None
+
             _update(
                 job_id,
-                status        = "done",
+                status        = "error" if job_error else "done",
                 finished_at   = _now(),
-                error         = None,
+                error         = job_error,
                 progress      = success_count if total_count > 1 else None,
                 total         = total_count   if total_count > 1 else None,
                 track_results = track_results if track_results else None,
                 success_count = success_count if track_results else None,
                 fail_count    = fail_count    if track_results else None,
             )
-            # Treat complete failure (all tracks failed) same as an exception so
-            # auto-retry kicks in.  Partial success (at least one track OK) is done.
-            succeeded = (new_success > 0) or not track_results
+            # Complete failure goes through the same auto-retry path as an exception.
+            succeeded = job_error is None
             if total_count > 1:
                 applog.event("downloads", f"Finished     {_jobname(job_id)} · {success_count} of {total_count} downloaded"
                              + (f" · {fail_count} failed" if fail_count else ""),
