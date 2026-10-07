@@ -1286,7 +1286,7 @@ function relCard(r, i) {
     <div class="col" style="gap:2px;min-width:0"><span class="t-m ell">${esc(r.title)}</span><span class="b-m v ell">${esc(r.artist)}</span></div>
     <div class="row" style="justify-content:space-between;gap:8px">${have}<button class="ib tonal" data-act="ddl" data-k="releases" data-i="${i}" aria-label="Download ${esc(r.title)}">${ic('download')}</button></div></div>`;
 }
-function artistCard(a, i) {
+function discArtistCard(a, i) {
   return `<div class="rel" style="width:140px"><div class="cv" style="width:140px;height:140px"><span class="coverthumb" style="width:140px;height:140px;border-radius:50%;background:${coverGradient(a.name)}" aria-hidden="true">${ic('person', '', 'font-size:56px')}${coverImg(a.cover_url)}</span>
       <button class="ib" style="top:0;right:0" data-act="dhide" data-k="artists" data-i="${i}" aria-label="Not interested in ${esc(a.name)}" title="Not interested">${ic('close')}</button></div>
     <div class="col" style="gap:2px;min-width:0;text-align:center"><span class="t-m ell">${esc(a.name)}</span><span class="b-s v ell">${esc(a.genres.length ? a.genres.join(', ') : a.reason)}</span></div>
@@ -1350,7 +1350,7 @@ function viewDiscover() {
     const relN = Math.min(sh.releases.length, D.relShown);
     body = `<div class="disc"><div class="disc-main">
       ${sh.releases.length ? `<div class="col" style="gap:14px">${discSec('New from artists you collect', 'Releases by artists in your library that you don’t own yet')}<div class="rel-row">${sh.releases.slice(0, relN).map(relCard).join('')}</div>${sh.releases.length > relN ? `<button class="btn text" style="align-self:flex-start" data-act="drelmore">Show ${Math.min(10, sh.releases.length - relN)} more</button>` : ''}</div>` : ''}
-      ${sh.artists.length ? `<div class="col" style="gap:14px">${discSec('Artists you might like', D.flavour ? 'In this flavour' : 'New names from similar artists and your genres')}<div class="rel-row">${sh.artists.map(artistCard).join('')}</div></div>` : ''}
+      ${sh.artists.length ? `<div class="col" style="gap:14px">${discSec('Artists you might like', D.flavour ? 'In this flavour' : 'New names from similar artists and your genres')}<div class="rel-row">${sh.artists.map(discArtistCard).join('')}</div></div>` : ''}
       ${sh.songs.length ? `<div class="col" style="gap:8px">${discSec('Songs you might like', d.similar === false ? 'Artists in your top genres' : 'Similar artists and genres from your library', `<button class="btn tonal" data-act="ddlall">${ic('download')}Download all ${sh.songs.length}</button>`)}<div class="col" style="gap:2px;margin-top:6px">${sh.songs.map(songRow).join('')}</div></div>` : ''}
       ${any || D.flavour ? `<div class="row wrap" style="gap:12px;align-items:center"><button class="btn tonal" data-act="dmore" ${D.more ? 'disabled' : ''}>${D.more ? '<span class="ms spin" aria-hidden="true">progress_activity</span>Looking…' : `${ic('add')}Load more songs and artists`}</button><span class="b-m v">${D.flavour === '~surprise' && D.label ? `Surprise picks: ${esc(D.label)}` : 'Not your taste? Pick another flavour above.'}</span></div>` : ''}
       ${sh.gaps.length ? `<div class="col" style="gap:14px">${discSec('Complete your albums', 'You own most of these. Download what’s missing.')}<div class="col" style="gap:10px">${sh.gaps.map(gapRow).join('')}</div></div>` : ''}
