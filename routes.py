@@ -3567,7 +3567,8 @@ def api_lb_sync():
     state = _lb.get_state()
     if state.get("running"):
         return jsonify(error="Sync already in progress"), 409
-    _lb.sync_now_bg(username)
+    force = bool((request.get_json(silent=True) or {}).get("force"))
+    _lb.sync_now_bg(username, force=force)
     return jsonify(ok=True)
 
 

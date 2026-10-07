@@ -142,7 +142,7 @@ def _fetch_playlist_tracks(mbid: str) -> list[dict]:
     return playlist.get("track", [])
 
 
-def _do_sync(username: str, cancel: threading.Event | None = None) -> dict:
+def _do_sync(username: str, cancel: threading.Event | None = None, force: bool = False) -> dict:
     """Fetch and process recommendation playlists. Returns a result summary dict."""
     url  = f"{_LB_API}/user/{urllib.parse.quote(username)}/playlists/recommendations"
     data = _http_get(url, headers={"User-Agent": _MB_UA})
@@ -177,7 +177,7 @@ def _do_sync(username: str, cancel: threading.Event | None = None) -> dict:
             continue
 
         known_mod = prev.get(mbid, {}).get("last_modified")
-        if known_mod and known_mod == last_mod:
+        if known_mod and known_mod == last_mod and not force:
             # Unchanged — carry forward previous stats
             p = prev[mbid]
             processed.append({
@@ -246,7 +246,7 @@ def _do_sync(username: str, cancel: threading.Event | None = None) -> dict:
 _sync_cancel = threading.Event()
 
 
-def _run_sync(username: str) -> None:
+def _run_sync(username: str, force: bool = False) -> None:
     """Run a full sync in the calling thread; updates _state throughout."""
     with _lock:
         _state["running"]    = True
@@ -254,7 +254,7 @@ def _run_sync(username: str) -> None:
     _sync_cancel.clear()
 
     try:
-        result = _do_sync(username, _sync_cancel)
+        result = _do_sync(username, _sync_cancel, force)
         now    = _now_utc()
         with _lock:
             _state["running"]        = False
@@ -275,8 +275,9 @@ def _run_sync(username: str) -> None:
         _save()
 
 
-def sync_now_bg(username: str = "") -> None:
-    """Start an immediate sync in a background daemon thread."""
+def sync_now_bg(username: str = "", force: bool = False) -> None:
+    """Start an immediate sync in a background daemon thread. `force` re-processes
+    playlists even if unchanged since the last sync."""
     import settings as _settings
     u = username or _settings.load().get("listenbrainz_username", "").strip()
     if not u:
@@ -284,7 +285,7 @@ def sync_now_bg(username: str = "") -> None:
     with _lock:
         if _state.get("running"):
             return
-    threading.Thread(target=_run_sync, args=(u,), daemon=True, name="lb-sync").start()
+    threading.Thread(target=_run_sync, args=(u, force), daemon=True, name="lb-sync").start()
 
 
 def _next_run(days, time_str) -> datetime:

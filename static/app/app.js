@@ -1492,7 +1492,7 @@ const SETTINGS = {
     ${field('ListenBrainz username', 'lb.user', { id: 'lbuser', help: 'Whose recommendation playlists to follow' })}
     <div class="col" style="gap:8px"><span class="t-s">Sync on</span><div class="row wrap" role="group" aria-label="Days" style="gap:8px">${DAYS.map((d, i) => `<button class="chip ${S.set.lb.days.includes(i) ? 'on' : ''}" aria-pressed="${S.set.lb.days.includes(i)}" data-act="day" data-d="${i}">${S.set.lb.days.includes(i) ? ic('check') : ''}${d}</button>`).join('')}</div></div>
     <div style="max-width:200px">${field('At', 'lb.time', { type: 'time', id: 'lbtime' })}</div>
-    <div class="li" style="background:var(--md-sc-low);border-radius:20px">${ic('sync', 'v')}<span class="grow col"><span class="b-l">Last sync</span><span class="b-m v">${esc(taskDetail('lb-sync') || 'No sync yet')}</span></span><button class="btn tonal" data-act="lbsync">${ic('sync')}Sync now</button></div></section>`,
+    <div class="li" style="background:var(--md-sc-low);border-radius:20px">${ic('sync', 'v')}<span class="grow col"><span class="b-l">Last sync</span><span class="b-m v">${esc(taskDetail('lb-sync') || 'No sync yet')}</span></span><button class="btn tonal" data-act="lbsync">${ic('sync')}Sync now</button><button class="btn tonal" data-act="lbsync" data-force="1" title="Re-process every playlist, even ones already synced">${ic('sync')}Force resync</button></div></section>`,
   network: () => `<section class="section" aria-labelledby="h-set"><h2 id="h-set" class="t-l">Network &amp; VPN</h2>
     <div class="li vpn-card ${S.vpn.known ? (S.vpn.on ? 'on' : 'off') : ''}" style="border-radius:20px">${ic(S.vpn.on ? 'vpn_lock' : 'vpn_key_off', 'f')}<span class="grow col"><span class="b-l">${!S.vpn.known ? 'Checking VPN…' : S.vpn.on ? 'VPN connected' : 'VPN not connected'}</span><span class="b-m">${S.vpn.on && S.vpn.since ? 'Up for ' + span(Date.now() / 1000 - S.vpn.since) : S.vpn.known && !S.vpn.on ? 'Using your normal connection' : ''}</span></span><button class="btn tonal" data-act="vpn">Details</button></div>
     ${field('Reconnect the VPN after', 'reconnect', { type: 'number', min: 0, suffix: 'failures', help: 'Consecutive downloads where every source failed. 0 = never.' })}</section>`,
@@ -2011,8 +2011,9 @@ A.tidalrefresh = async () => {
 };
 A.resetstats = async () => { try { await api('/api/providers', { method: 'DELETE' }); snack('Provider stats reset'); loadExt(); } catch (e) { oops('Couldn’t reset')(e); } };
 A.reindex = A.libreload;
-A.lbsync = async () => {
-  try { await api('/api/listenbrainz/sync', { method: 'POST' }); snack('Syncing ListenBrainz recommendations…'); refreshTasks(); } catch (e) { oops('Couldn’t sync')(e); }
+A.lbsync = async (el) => {
+  const force = !!el?.dataset?.force;
+  try { await api('/api/listenbrainz/sync', { method: 'POST', body: force ? { force: true } : undefined }); snack(force ? 'Force-resyncing ListenBrainz playlists…' : 'Syncing ListenBrainz recommendations…'); refreshTasks(); } catch (e) { oops('Couldn’t sync')(e); }
 };
 // Background tasks: everything /api/tasks reports, live while the dialog is open.
 const STOPPABLE = { 'scan-library': ['/api/library/scan/library', 'Scan'], 'scan-dups': ['/api/library/scan/dups', 'Scan'], 'scan-mistag': ['/api/library/scan/mistag', 'Scan'], 'lib-enrich': ['/api/library/enrich', 'Enrichment'] };
