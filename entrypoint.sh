@@ -31,7 +31,7 @@ LOG_LEVEL="${LOG_LEVEL:-info}"
 # is now a compat facade; DownloadWorker = LegacyDownloadWorker) but kept the
 # _run_worker_async signature. 5.0.x annotated signed_session_mono.py, which
 # broke Patch F's old 3-line anchor (now a single-line anchor).
-SPOTIFLAC_PINNED="5.0.1"
+SPOTIFLAC_PINNED="5.0.3"
 
 # Log lines share the app's layout (see applog.py):
 #   21:35:09  INFO   VPN       Connecting · OpenVPN

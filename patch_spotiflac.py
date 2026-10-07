@@ -43,7 +43,7 @@ NOTE for version bumps / rollbacks:
   not just a `SPOTIFLAC_PINNED` change. Prior porting history for reference:
   1.2.0->1.3.1, 1.3.1->1.4.5, 1.4.5->1.7.8, 1.7.8->3.0.4 (the provider-
   architecture cutover — bundled providers/*.py deleted, replaced by
-  operator-installed extensions), 3.0.5->3.8.0, 3.8.0->4.1.0 (A/B/E retired), 4.1.2->5.0.1 (Patch F anchor).
+  operator-installed extensions), 3.0.5->3.8.0, 3.8.0->4.1.0 (A/B/E retired), 4.1.2->5.0.1 (Patch F anchor), 5.0.1->5.0.3 (no patch changes).
 """
 import importlib.util
 import pathlib
