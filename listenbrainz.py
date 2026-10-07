@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.parse
@@ -122,6 +123,17 @@ def _now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _in_library(title: str, artist: str) -> bool:
+    """Same artist+title already in the library (full credit or first artist).
+    Title-only matching is used only when the track has no artist, since common
+    titles otherwise collide with other artists' songs."""
+    if not artist:
+        return lib_index.check([title])[0]
+    first = re.split(r"\s*(?:,|&|;|\bfeat\.?|\bft\.?|\bx\b)\s*", artist, maxsplit=1, flags=re.I)[0].strip()
+    return bool(lib_index.find_by_artist_title(artist, title)
+                or (first and lib_index.find_by_artist_title(first, title)))
+
+
 def _fetch_playlist_tracks(mbid: str) -> list[dict]:
     """Fetch the full playlist and return its track list."""
     url  = f"{_LB_API}/playlist/{urllib.parse.quote(mbid)}"
@@ -198,7 +210,7 @@ def _do_sync(username: str, cancel: threading.Event | None = None) -> dict:
                 log.debug("LB: no Spotify URL for '%s'", track.get("title", "?"))
                 continue
             track_title = track.get("title") or ""
-            if track_title and lib_index.check([track_title])[0]:
+            if track_title and _in_library(track_title, track.get("creator") or ""):
                 skipped += 1
                 log.debug("LB: already in library '%s'", track_title)
                 continue
