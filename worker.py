@@ -1411,6 +1411,9 @@ def _run(job_id: str) -> None:
                 job_error = "No tracks were downloaded (metadata could not be fetched, or the source was empty)"
             elif new_success == 0:
                 job_error = next((r.get("error") for r in track_results if r.get("error")), None) or "All tracks failed"
+            elif new_fail and not ev.is_set():
+                first_err = next((r.get("error") for r in track_results if not r["success"] and r.get("error")), None)
+                job_error = f"{new_fail} of {len(track_results)} tracks failed" + (f": {first_err}" if first_err else "")
             else:
                 job_error = None
 
@@ -1431,7 +1434,7 @@ def _run(job_id: str) -> None:
                 applog.event("downloads", f"Finished     {_jobname(job_id)} · {success_count} of {total_count} downloaded"
                              + (f" · {fail_count} failed" if fail_count else ""),
                              logging.INFO if new_success else logging.ERROR)
-            _update_fail_streak(succeeded and bool(track_results))
+            _update_fail_streak(new_success > 0)
         except Exception as exc:
             applog.event("downloads", f"Failed       {_jobname(job_id)}: {exc}", logging.ERROR)
             _update(job_id, status="error", error=str(exc), finished_at=_now(),
@@ -1441,7 +1444,7 @@ def _run(job_id: str) -> None:
 
         if succeeded or ev.is_set():
             _cancel.pop(job_id, None)
-            if succeeded and track_results:
+            if track_results:
                 try:
                     ok_titles = [r["title"] for r in track_results if r.get("success") and r.get("title")]
                     if ok_titles:
