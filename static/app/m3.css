@@ -311,10 +311,9 @@ html[data-scheme=neutral][data-mode=light]{--md-primary:#546069;--md-on-primary:
 #bg .chip{background:var(--md-sc-high);border-color:transparent;box-shadow:0 1px 3px rgba(0,0,0,.25);height:36px}
 @media (max-width:840px){#bg{padding:4px 12px 0}}
 
-/* Phone: with nothing typed, the Results card is just a hint, so give the queue the space. Tapping the search box brings it back. */
+/* Phone: with nothing typed, hide the Results card so the queue gets the space. */
 @media (max-width:840px){
   .res-pane.idle{display:none !important}
-  #view:has(#q:focus) .res-pane.idle{display:flex !important}
 }
 
 /* Settings appears twice in the markup: bottom of the desktop rail, and in the phone's bottom bar */
