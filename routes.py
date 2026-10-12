@@ -395,6 +395,12 @@ def api_extensions_refresh():
         return jsonify(ok=False, error=str(exc)), 502
 
 
+@bp.get("/api/debug/fds")
+def api_debug_fds():
+    import fdwatch
+    return jsonify(fdwatch.snapshot())
+
+
 @bp.get("/api/vpn")
 def api_vpn():
     status = vpn.tunnel_status()

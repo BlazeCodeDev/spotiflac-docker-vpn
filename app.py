@@ -31,6 +31,8 @@ worker.init(_cfg["max_workers"])
 lib_index.start(lambda: Config.OUTPUT_DIR)
 _lb.start()
 vpn.start_watch()
+import fdwatch
+fdwatch.start()
 
 import audiofp as _afp
 _log = logging.getLogger("startup")
