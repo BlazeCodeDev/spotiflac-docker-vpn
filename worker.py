@@ -301,10 +301,16 @@ def _save() -> None:
             d = os.path.dirname(os.path.abspath(_STATE_FILE))
             if d:
                 os.makedirs(d, exist_ok=True)
-            tmp = _STATE_FILE + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(snapshot, f)
-            os.replace(tmp, _STATE_FILE)
+            tmp = "%s.%d.%d.tmp" % (_STATE_FILE, os.getpid(), threading.get_ident())
+            try:
+                with open(tmp, "w") as f:
+                    json.dump(snapshot, f)
+                os.replace(tmp, _STATE_FILE)
+            finally:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
     except Exception as exc:
         log.warning("State save failed: %s", exc)
 
@@ -820,6 +826,26 @@ class _TrackingWorker(DownloadWorker):
         return base
 
     def run(self):
+        try:
+            return self._run_inner()
+        finally:
+            self._release_providers()
+
+    async def run_async(self):
+        try:
+            return await self._run_async_inner()
+        finally:
+            self._release_providers()
+
+    def _release_providers(self) -> None:
+        # The overrides below never reach DownloadWorker's own cleanup, so every job leaked
+        # its extension Node processes (3 pipes + 2 threads each) until fds ran out.
+        try:
+            self._close_providers()
+        except Exception as exc:
+            log.warning("Provider close failed: %s", exc)
+
+    def _run_inner(self):
         from SpotiFLAC.core.models import build_filename
         from pathlib import Path as _Path
 
@@ -965,7 +991,7 @@ class _TrackingWorker(DownloadWorker):
         self._print_summary(elapsed)
         return self._failed
 
-    async def run_async(self):
+    async def _run_async_inner(self):
         """Async version of run() for SpotiFLAC 1.2.9+ (fully async API)."""
         try:
             from SpotiFLAC.downloader import download_one_async as _dl_one_async
