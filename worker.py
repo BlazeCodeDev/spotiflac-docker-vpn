@@ -288,17 +288,23 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+_save_lock = threading.Lock()
+
+
 def _save() -> None:
     try:
-        with _lock:
-            snapshot = {"seq": _seq, "jobs": {jid: dict(j) for jid, j in _jobs.items()}}
-        d = os.path.dirname(os.path.abspath(_STATE_FILE))
-        if d:
-            os.makedirs(d, exist_ok=True)
-        tmp = _STATE_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(snapshot, f)
-        os.replace(tmp, _STATE_FILE)
+        # One writer at a time: they share one tmp file, so concurrent saves made os.replace
+        # fail with ENOENT. Snapshot inside the lock so the last writer holds the newest state.
+        with _save_lock:
+            with _lock:
+                snapshot = {"seq": _seq, "jobs": {jid: dict(j) for jid, j in _jobs.items()}}
+            d = os.path.dirname(os.path.abspath(_STATE_FILE))
+            if d:
+                os.makedirs(d, exist_ok=True)
+            tmp = _STATE_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(snapshot, f)
+            os.replace(tmp, _STATE_FILE)
     except Exception as exc:
         log.warning("State save failed: %s", exc)
 
