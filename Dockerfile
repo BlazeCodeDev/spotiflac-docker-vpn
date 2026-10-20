@@ -18,11 +18,11 @@ FROM python:3.12-alpine
 # chromaprint: provides `fpcalc`, used by audiofp.py for the library's
 # mistag finder (audio fingerprints). Without it that feature falls back to
 # unverified same-length matching.
-# nodejs: as of 1.8.0 SpotiFLAC bundles no download providers at all — every
+# nodejs: Mornye (like SpotiFLAC >= 1.8.0) bundles no download providers — every
 # provider is an externally-installed "extension" (see worker.refresh_extensions),
-# and the default/legacy-aliased ones (tidal-web, qobuz-web, ytmusic-spotiflac,
+# and the default/legacy-aliased ones (tidal-web, qobuz-web, ytmusic-mornye,
 # ...) run as JavaScript extensions via a Node.js bridge (extensions/runtime.py).
-# Baked in at build time rather than relying on SpotiFLAC's own runtime
+# Baked in at build time rather than relying on Mornye's own runtime
 # auto-install, which would otherwise hit the network for the first time from
 # inside the iptables kill-switch on first extension use.
 # xvfb + chromium: several extensions (qobuz-web, amazon, deezer, and Tidal's
@@ -44,7 +44,7 @@ FROM python:3.12-alpine
 # pango, fontconfig, freetype, at-spi2, dbus-libs) — call it ~290MiB, close
 # to a third of the whole image. INSTALL_BROWSER_SOLVER lets that be skipped
 # for a build that only ever uses extensions with no Cloudflare challenge in
-# their path (e.g. ytmusic-spotiflac) — defaults to "true" so a plain
+# their path (e.g. ytmusic-mornye) — defaults to "true" so a plain
 # `docker build .` is unchanged; opt out with
 # `--build-arg INSTALL_BROWSER_SOLVER=false`. Opting out means every
 # Cloudflare-gated extension attempt fails with the same
@@ -76,35 +76,36 @@ RUN apk add --no-cache \
 ENV CHROME_PATH=/usr/bin/chromium-browser
 
 # App runs as an unprivileged user (entrypoint drops root via su-exec) so a
-# compromised SpotiFLAC can't touch the NET_ADMIN kill-switch. The uid/gid are
+# compromised Mornye can't touch the NET_ADMIN kill-switch. The uid/gid are
 # re-created at runtime from PUID/PGID; this just seeds the home directory.
 RUN mkdir -p /home/appuser && chmod 755 /home/appuser
 
-# App dependencies (SpotiFLAC is installed separately for easy in-place upgrades)
+# App dependencies (Mornye is installed separately for easy in-place upgrades)
 RUN pip install --no-cache-dir flask python-dotenv gunicorn pillow
 
-# SpotiFLAC goes to /spotiflac so it can be upgraded via a named volume without
+# Mornye is the download/metadata library. It is SpotiFLAC renamed (same
+# author and code base); the SpotiFLAC package was taken down after a cease and
+# desist, so 5.0.6 was the last SpotiFLAC and Mornye 1.0.0 picks up from there.
+# Mornye goes to /mornye so it can be upgraded via a named volume without
 # rebuilding the image.  Docker copies this directory into a fresh named volume
 # on first run, and subsequent pip upgrades via the UI persist there.
-# Pinned to a FIXED version (kept in lockstep with entrypoint.sh SPOTIFLAC_PINNED
-# and with patch_spotiflac.py, whose matches are version-specific). Not
+# Pinned to a FIXED version (kept in lockstep with entrypoint.sh MORNYE_PINNED
+# and with patch_mornye.py, whose matches are version-specific). Not
 # auto-upgraded on boot. Bump only after re-verifying the patches apply.
-# requests is declared as a real dependency by SpotiFLAC itself (kept explicit
-# here so a future downgrade of the pin doesn't silently reopen the packaging
-# gap that existed before 1.4.5 declared it). typing_extensions is pulled in
-# transitively via pydantic — confirmed with a bare `import SpotiFLAC` during
-# the 3.0.4 bump; not pinned explicitly unless that stops being true.
+# requests is a declared dependency of Mornye itself (kept explicit as a
+# guard against the packaging gap old SpotiFLAC releases had).
+# typing_extensions is pulled in transitively via pydantic.
 #
 # 4.0 made textual (~7 MB), numpy (~70 MB), fastapi/uvicorn/starlette (~4 MB)
 # and pyacoustid mandatory dependencies — ~90 MB the app itself never touches
-# (--tui, --web, verify_hires, SpotiFLAC's own dedup; we run gunicorn + our
+# (--tui, --web, verify_hires, Mornye's own dedup; we run gunicorn + our
 # own Flask, and our own dedup). A `--no-deps` slim install was tried and
 # works (135 MB vs 256 MB site-packages) but needs the full transitive dep
-# list hand-maintained in lockstep here AND in entrypoint.sh's update_spotiflac
+# list hand-maintained in lockstep here AND in entrypoint.sh's update_mornye
 # — a silent-breakage risk this project has been bitten by before — so the
 # full resolve is kept. Revisit if image size becomes the pressing problem.
-RUN pip install --no-cache-dir --target /spotiflac "SpotiFLAC==5.0.6" requests
-ENV PYTHONPATH=/spotiflac
+RUN pip install --no-cache-dir --target /mornye "mornye==1.0.0" requests
+ENV PYTHONPATH=/mornye
 
 RUN mkdir -p /vpn /downloads /app/templates && \
     chmod 700 /vpn && \
@@ -118,16 +119,16 @@ ENV PYTHONUNBUFFERED=1
 RUN apk add --no-cache netcat-openbsd
 
 COPY entrypoint.sh /entrypoint.sh
-COPY patch_spotiflac.py /app/patch_spotiflac.py
+COPY patch_mornye.py /app/patch_mornye.py
 COPY app.py config.py worker.py applog.py vpn.py routes.py settings.py lib_index.py listenbrainz.py audiofp.py tagcache.py discover.py fdwatch.py /app/
 COPY templates/ /app/templates/
 COPY static/ /app/static/
 COPY --from=gitinfo /GIT_COMMIT /app/GIT_COMMIT
 RUN chmod +x /entrypoint.sh
 
-# Apply patches to the build-time SpotiFLAC install.  The entrypoint re-runs
+# Apply patches to the build-time Mornye install.  The entrypoint re-runs
 # this on every startup so upgrades via the UI are patched automatically.
-RUN python3 /app/patch_spotiflac.py
+RUN python3 /app/patch_mornye.py
 
 VOLUME ["/downloads"]
 

@@ -23,7 +23,7 @@ _log = logging.getLogger(__name__)
 
 try:
     import numpy as np
-except Exception:  # pragma: no cover — numpy ships with SpotiFLAC
+except Exception:  # pragma: no cover — numpy ships with Mornye
     np = None
 
 FP_SECONDS = 120          # fingerprint the first two minutes — plenty to match

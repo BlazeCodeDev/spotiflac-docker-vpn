@@ -1550,8 +1550,8 @@ const SETTINGS = {
     const v = S.ver;
     const installed = v ? (v.installed === 'unknown' ? 'Unknown' : v.installed) : (S.verError ? '—' : 'Checking…');
     return `<section class="section" aria-labelledby="h-set"><h2 id="h-set" class="t-l">Info</h2>
-    <div class="li" style="background:var(--md-sc-low);border-radius:20px">${ic('info', 'v')}<span class="grow col"><span class="b-l">SpotiFLAC version</span><span class="b-m v mono">${esc(installed)}</span></span></div>
-    ${v && v.update_available ? `<div class="li" style="background:var(--md-primary-container);color:var(--md-on-primary-container);border-radius:20px">${ic('system_update', 'f')}<span class="grow col"><span class="b-l">Update available</span><span class="b-m">SpotiFLAC <span class="mono">${esc(v.latest)}</span> is out. You have <span class="mono">${esc(v.installed)}</span>.</span></span></div>`
+    <div class="li" style="background:var(--md-sc-low);border-radius:20px">${ic('info', 'v')}<span class="grow col"><span class="b-l">Mornye version</span><span class="b-m v mono">${esc(installed)}</span><span class="b-s v">Download engine, formerly SpotiFLAC</span></span></div>
+    ${v && v.update_available ? `<div class="li" style="background:var(--md-primary-container);color:var(--md-on-primary-container);border-radius:20px">${ic('system_update', 'f')}<span class="grow col"><span class="b-l">Update available</span><span class="b-m">Mornye <span class="mono">${esc(v.latest)}</span> is out. You have <span class="mono">${esc(v.installed)}</span>.</span></span></div>`
       : v ? `<span class="b-m v">${ic('check_circle', 'v', 'font-size:18px;vertical-align:-4px')} You’re on the latest version.</span>` : ''}</section>`;
   },
 };
@@ -2215,7 +2215,7 @@ async function loadVpn() {
   } catch { /* keep the last known state */ } finally { vpnBusy = false; }
 }
 async function loadVersion() {
-  try { S.ver = await api('/api/spotiflac/version'); S.verError = false; } catch { S.verError = true; }
+  try { S.ver = await api('/api/mornye/version'); S.verError = false; } catch { S.verError = true; }
   if (S.route === 'settings' && S.section === 'info') render();
 }
 function enterRoute() {

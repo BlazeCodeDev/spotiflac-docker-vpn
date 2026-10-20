@@ -6,7 +6,7 @@
 
 Warnings and errors always print. Information lines print when their category is switched on
 (Settings → Logging); the default is the short list in DEFAULT. Code that wants a clean line calls
-`event(category, text)`. Everything else that is merely logged (library chatter, SpotiFLAC's own
+`event(category, text)`. Everything else that is merely logged (library chatter, Mornye's own
 output through `logging`) belongs to the "detail" category and stays hidden until it is enabled.
 entrypoint.sh applies the same switches to its own lines by reading the same settings file.
 """

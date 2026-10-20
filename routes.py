@@ -74,7 +74,7 @@ _VALID_QUALITIES  = {"high", "lossless", "hires"}
 
 # Module-level client so the OAuth token is cached and reused across requests.
 try:
-    from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient as _SpotifyClient
+    from mornye.core.spotify_metadata import SpotifyMetadataClient as _SpotifyClient
     _spotify = _SpotifyClient(timeout_s=15)
 except Exception:
     _spotify = None
@@ -555,7 +555,7 @@ def _name_key(s: str) -> str:
 def _search_client():
     if _spotify is not None:
         return _spotify
-    from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient
+    from mornye.core.spotify_metadata import SpotifyMetadataClient
     return _patch_spotify_client(SpotifyMetadataClient(timeout_s=15))
 
 
@@ -1739,9 +1739,9 @@ def _norm_album(name: str) -> str:
 def _org_main_artist(audio_easy) -> str:
     """Return the primary artist, matching the first_artist_only=True download behaviour.
 
-    SpotiFLAC stores artists as a single comma-joined string in the ARTIST/ALBUMARTIST
+    Mornye stores artists as a single comma-joined string in the ARTIST/ALBUMARTIST
     tag when first_artist_only=False (the old default), e.g. "Artist A, Artist B".
-    We mirror SpotiFLAC's own first_artist property — split on "," and take element 0 —
+    We mirror Mornye's own first_artist property — split on "," and take element 0 —
     so existing and future files resolve to the same folder.
     """
     for key in ("albumartist", "artist"):
@@ -1790,11 +1790,11 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
 
 
-_SOURCE_COMMENT_RE = re.compile(r"^\s*https?://github\.com/[^\s/]+/SpotiFLAC[\w.-]*/?\s*$", re.I)
+_SOURCE_COMMENT_RE = re.compile(r"^\s*https?://github\.com/[^\s/]+/(?:SpotiFLAC|Mornye)[\w.-]*/?\s*$", re.I)
 
 
 def _strip_source_comment(abs_path: str) -> bool:
-    """Remove the comment SpotiFLAC stamps on every file (a bare link to its
+    """Remove the comment SpotiFLAC/Mornye stamps on every file (a bare link to its
     GitHub repo). Only a comment that is exactly that link is removed — any
     real comment the user wrote is left alone. Returns True if the file changed."""
     ext = os.path.splitext(abs_path)[1].lower()
@@ -2851,7 +2851,7 @@ def _find_mistagged_groups(rel_paths: list[str], root: str, progress=None, cance
 
 
 def _read_source_url(abs_path: str) -> str:
-    """The Spotify URL SpotiFLAC embedded when it downloaded this file, if any."""
+    """The Spotify URL SpotiFLAC/Mornye embedded when it downloaded this file, if any."""
     ext = os.path.splitext(abs_path)[1].lower()
     try:
         if ext == ".flac":
@@ -2875,7 +2875,7 @@ def _resolve_track_url(title: str, artist: str, isrc: str) -> str:
     guesses — returns "" when nothing matches cleanly."""
     client = _spotify
     if client is None:
-        from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient
+        from mornye.core.spotify_metadata import SpotifyMetadataClient
         client = _patch_spotify_client(SpotifyMetadataClient(timeout_s=15))
     queries = []
     if isrc:
@@ -3139,20 +3139,20 @@ _single_enrich_active_lock = threading.Lock()
 
 
 def _enrich_setup(use_mb: bool):
-    """Resolve (enrich_fn, mb_lookup, mb_to_tags) against the installed SpotiFLAC.
+    """Resolve (enrich_fn, mb_lookup, mb_to_tags) against the installed Mornye.
 
     enrich_fn is None when metadata enrichment isn't available at all. Shared by
     the batch enricher and the single-song SSE endpoint so both agree on exactly
-    which SpotiFLAC APIs they're calling.
+    which Mornye APIs they're calling.
     """
     try:
-        from SpotiFLAC.core.metadata_enrichment import enrich_metadata as enrich_fn
+        from mornye.core.metadata_enrichment import enrich_metadata as enrich_fn
     except ImportError:
         try:
             # SpotiFLAC 1.3+ exposes only the async enricher — wrap it on the
             # worker's persistent event loop so a threaded/streamed caller is
             # otherwise unchanged.
-            from SpotiFLAC.core.metadata_enrichment import enrich_metadata_async as _ea
+            from mornye.core.metadata_enrichment import enrich_metadata_async as _ea
             from worker import _run_coro_sync
             def enrich_fn(*a, **k):
                 return _run_coro_sync(_ea(*a, **k))
@@ -3163,7 +3163,7 @@ def _enrich_setup(use_mb: bool):
     if use_mb:
         try:
             import inspect as _inspect
-            from SpotiFLAC.core.musicbrainz import (
+            from mornye.core.musicbrainz import (
                 fetch_mb_metadata, mb_result_to_tags as mb_to_tags,
             )
             if "title" in _inspect.signature(fetch_mb_metadata).parameters:
@@ -3178,7 +3178,7 @@ def _enrich_setup(use_mb: bool):
                 # patch_spotiflac.py's fetch_mb_metadata_smart (retired at the
                 # 3.8.0 -> 4.1.0 bump). Use it if present, else ISRC-only.
                 try:
-                    from SpotiFLAC.core.musicbrainz import fetch_mb_metadata_smart
+                    from mornye.core.musicbrainz import fetch_mb_metadata_smart
                     mb_lookup = lambda isrc, title, artist: fetch_mb_metadata_smart(
                         isrc, title, artist
                     )
@@ -3413,7 +3413,7 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
         with _enrich_lock:
             _enrich_state["running"] = False
             _enrich_state["elapsed"] = 0.0
-        log.warning("Metadata enrichment not available — upgrade SpotiFLAC")
+        log.warning("Metadata enrichment not available — upgrade Mornye")
         return
 
     total    = len(rel_paths)
@@ -3569,7 +3569,7 @@ def api_library_enrich_one():
             enrich_fn, mb_lookup, mb_to_tags = _enrich_setup(use_mb)
             if enrich_fn is None:
                 yield _sse({"type": "error",
-                            "msg": "Metadata enrichment isn't available in this SpotiFLAC build"})
+                            "msg": "Metadata enrichment isn't available in this Mornye build"})
                 return
             for ev in _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
                                        enrich_fn, mb_lookup, mb_to_tags):
@@ -3717,7 +3717,7 @@ def api_lb_sync():
 @bp.get("/api/providers")
 def api_providers():
     try:
-        from SpotiFLAC.core.provider_stats import ProviderScorer
+        from mornye.core.provider_stats import ProviderScorer
         scorer = ProviderScorer()
 
         async def _read_stats():
@@ -3727,7 +3727,7 @@ def api_providers():
         # _stats_lock is an asyncio.Lock — needs `async with`, not a plain
         # `with`, which raises "'Lock' object does not support the context
         # manager protocol". Run it on the shared persistent loop like every
-        # other SpotiFLAC async call (see worker._run_coro_sync).
+        # other Mornye async call (see worker._run_coro_sync).
         stats_items = worker._run_coro_sync(_read_stats())
     except Exception as exc:
         log.warning("Provider stats unavailable: %s", exc)
@@ -3765,7 +3765,7 @@ def api_providers():
 @bp.delete("/api/providers")
 def api_providers_reset():
     try:
-        from SpotiFLAC.core.provider_stats import ProviderScorer
+        from mornye.core.provider_stats import ProviderScorer
         ProviderScorer().reset()
         return jsonify(ok=True)
     except Exception as exc:
@@ -3900,14 +3900,14 @@ def _ver_tuple(v: str) -> tuple:
 
 
 def _sf_installed_version() -> str:
-    """Read version from /spotiflac dist-info, returning the highest found.
+    """Read version from /mornye dist-info, returning the highest found.
 
     pip install --upgrade --target can leave old dist-info dirs alongside the
     new one; taking the max ensures we always report the installed version.
     """
     import glob
     found: list[str] = []
-    for di in glob.glob("/spotiflac/SpotiFLAC-*.dist-info") + glob.glob("/spotiflac/spotiflac-*.dist-info"):
+    for di in glob.glob("/mornye/mornye-*.dist-info") + glob.glob("/mornye/Mornye-*.dist-info"):
         try:
             with open(os.path.join(di, "METADATA")) as f:
                 for line in f:
@@ -3920,13 +3920,13 @@ def _sf_installed_version() -> str:
         return max(found, key=_ver_tuple)
     try:
         from importlib.metadata import version as _imv
-        return _imv("SpotiFLAC")
+        return _imv("mornye")
     except Exception:
         return "unknown"
 
 
-@bp.get("/api/spotiflac/version")
-def api_spotiflac_version():
+@bp.get("/api/mornye/version")
+def api_mornye_version():
     import urllib.request as _ureq
 
     installed = _sf_installed_version()
@@ -3937,7 +3937,7 @@ def api_spotiflac_version():
     else:
         try:
             req = _ureq.Request(
-                "https://pypi.org/pypi/SpotiFLAC/json",
+                "https://pypi.org/pypi/mornye/json",
                 headers={"User-Agent": "spotiflac-ui/1.0"},
             )
             with _ureq.urlopen(req, timeout=8) as resp:

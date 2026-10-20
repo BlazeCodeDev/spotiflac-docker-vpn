@@ -15,7 +15,7 @@ def _defaults() -> dict:
     return {
         # Download behaviour
         "services":    [s.strip() for s in os.environ.get("SPOTIFLAC_SERVICES", "tidal,qobuz,amazon,youtube").split(",") if s.strip()],
-        # Extension registry URLs (SpotiFLAC >= 1.8.0 ships no download
+        # Extension registry URLs (Mornye, like SpotiFLAC >= 1.8.0, ships no download
         # providers at all — these must be installed at runtime from a
         # registry the operator supplies and trusts themselves; see
         # worker.refresh_extensions and the "Extensions" settings group).
@@ -34,11 +34,11 @@ def _defaults() -> dict:
         # Performance
         "track_delay_s": float(os.environ.get("TRACK_DELAY_SECONDS", "4.0")),
         "max_workers":   int(os.environ.get("MAX_WORKERS",           "3")),
-        # Per-extension-attempt timeout passed to SpotiFLAC's DownloadOptions.
+        # Per-extension-attempt timeout passed to Mornye's DownloadOptions.
         # Extensions that solve a Cloudflare Turnstile challenge via a real
         # browser (core/solver.py) can legitimately take 90-150s+ per attempt
-        # — SpotiFLAC's own JSExtensionProvider default (120s) is too short
-        # for that in practice. 0 = don't override (use SpotiFLAC's 120s).
+        # — Mornye's own JSExtensionProvider default (120s) is too short
+        # for that in practice. 0 = don't override (use Mornye's 120s).
         "download_timeout_s": int(os.environ.get("DOWNLOAD_TIMEOUT_SECONDS", "300")),
         # VPN rotation: reconnect after this many consecutive all-provider failures
         # (0 = disabled)

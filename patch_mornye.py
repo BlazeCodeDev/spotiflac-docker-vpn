@@ -1,6 +1,8 @@
 """
-Build-time patches for SpotiFLAC (targets the pinned version — see
-entrypoint.sh SPOTIFLAC_PINNED / Dockerfile). Every patch is a guarded,
+Build-time patches for Mornye (targets the pinned version — see
+entrypoint.sh MORNYE_PINNED / Dockerfile). Mornye is SpotiFLAC renamed (same
+author and code base; the SpotiFLAC package was taken down after a cease and
+desist), so the porting history below still applies. Every patch is a guarded,
 idempotent string replacement: if the anchor text isn't found (e.g. a version
 bump reformatted it) the patch reports and skips rather than corrupting a file.
 
@@ -40,18 +42,19 @@ NOTE for version bumps / rollbacks:
 
 * Rolling the pin back below 4.0 needs the pre-4.x version of THIS file
   restored from git (it carried Patches A/B/E, which 3.x genuinely needed),
-  not just a `SPOTIFLAC_PINNED` change. Prior porting history for reference:
+  not just a pin change. Prior porting history for reference:
   1.2.0->1.3.1, 1.3.1->1.4.5, 1.4.5->1.7.8, 1.7.8->3.0.4 (the provider-
   architecture cutover — bundled providers/*.py deleted, replaced by
-  operator-installed extensions), 3.0.5->3.8.0, 3.8.0->4.1.0 (A/B/E retired), 4.1.2->5.0.1 (Patch F anchor), 5.0.1->5.0.3 (no patch changes), 5.0.3->5.0.6 (no patch changes).
+  operator-installed extensions), 3.0.5->3.8.0, 3.8.0->4.1.0 (A/B/E retired), 4.1.2->5.0.1 (Patch F anchor), 5.0.1->5.0.3 (no patch changes), 5.0.3->5.0.6 (no patch changes), SpotiFLAC 5.0.6->Mornye 1.0.0 (package
+  rename; F/G anchors identical, H's SOURCE_TAG URL changed).
 """
 import importlib.util
 import pathlib
 import sys
 
-_spec = importlib.util.find_spec("SpotiFLAC")
+_spec = importlib.util.find_spec("mornye")
 if _spec is None or _spec.origin is None:
-    print("[patch] SpotiFLAC not found — aborting")
+    print("[patch] mornye not found — aborting")
     sys.exit(1)
 _BASE = pathlib.Path(_spec.origin).parent
 
@@ -101,7 +104,7 @@ _CROSS_LOOP_LOCK_CLASS = '''class _CrossLoopLock:
     asyncio.Lock is unsafe here: its uncontended fast path never binds
     `_loop`, so a later cross-thread contended acquire can silently adopt the
     wrong loop and deadlock on release (Future.set_result isn't thread-safe
-    cross-loop). See patch_spotiflac.py Patch F."""
+    cross-loop). See patch_mornye.py Patch F."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -186,7 +189,7 @@ for _old, _new in (
     )
 
 # ---------------------------------------------------------------------------
-# Patch H: core/tagger.py — don't stamp the SpotiFLAC repo link as a comment
+# Patch H: core/tagger.py — don't stamp the Mornye repo link as a comment
 # ---------------------------------------------------------------------------
 # The tagger writes SOURCE_TAG (a bare GitHub URL) into every downloaded file:
 # ID3 COMM for MP3, the DESCRIPTION Vorbis tag for FLAC (which the M4A map
@@ -208,10 +211,14 @@ _apply(
     "FLAC/M4A: no source-link DESCRIPTION tag",
     already_marker='    if SOURCE_TAG:\n        tags["DESCRIPTION"]',
 )
-_apply(
-    "core/tagger.py",
-    'SOURCE_TAG = "https://github.com/BartolomeoRusso9/SpotiFLAC-Module-Version"\n',
-    'SOURCE_TAG = ""  # patched out (see patch_spotiflac.py Patch H)\n',
-    "SOURCE_TAG emptied",
-    already_marker='SOURCE_TAG = ""',
-)
+for _url in (
+    "https://github.com/BartolomeoRusso9/Mornye-Python",
+    "https://github.com/BartolomeoRusso9/SpotiFLAC-Module-Version",
+):
+    _apply(
+        "core/tagger.py",
+        f'SOURCE_TAG = "{_url}"\n',
+        'SOURCE_TAG = ""  # patched out (see patch_mornye.py Patch H)\n',
+        "SOURCE_TAG emptied",
+        already_marker='SOURCE_TAG = ""',
+    )

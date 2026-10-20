@@ -6,32 +6,20 @@ set -e
 # LOG_LEVEL=debug           — iptables, network, env vars, app status
 LOG_LEVEL="${LOG_LEVEL:-info}"
 
-# Pinned SpotiFLAC version — single source of truth. Kept in lockstep with the
-# Dockerfile build install and with patch_spotiflac.py (whose string matches are
+# Pinned Mornye version — single source of truth. Kept in lockstep with the
+# Dockerfile build install and with patch_mornye.py (whose string matches are
 # version-specific). Bump only after re-verifying the patches against the new
-# release. Set the SPOTIFLAC_VERSION env to override at runtime.
+# release. Set the MORNYE_VERSION env to override at runtime.
 #
-# 1.8.0 (the release right after 1.7.8) deleted the whole providers/ package —
-# Tidal/Qobuz/Amazon/Deezer/etc. are no longer bundled at all, only installable
-# at runtime as operator-supplied "extensions" from a registry URL configured
-# in Settings → System (see worker.refresh_extensions). 4.0 made textual /
-# numpy / fastapi / uvicorn / pyacoustid mandatory deps and moved MusicBrainz
-# title/artist fallback + the mobile cross-loop lock in-tree (so
-# patch_spotiflac.py Patches A/B/E were retired). Rolling back below 4.0 needs
-# the pre-4.x patch_spotiflac.py restored from git, not just a pin change —
-# see its module docstring. 4.1.1 was never published (version skipped);
-# 4.1.2 fixed a real bug in the mobile signed-session refresh (a body/
-# signature mismatch meant the session was never actually renewed) and added
-# a backoff after a failed Turnstile auth so repeated failures stop hammering
-# the gateway — relevant to the "Turnstile token not obtained" issue seen
-# live. None of it touches our patch targets (musicbrainz.py,
-# signed_session_mono.py, _bridge.js, provider.py — all byte-identical
-# 4.1.0->4.1.2) or the _run_worker_async call shape worker.py overrides.
-# 5.0.0 moved download orchestration into SpotiFLAC/application/ (downloader.py
-# is now a compat facade; DownloadWorker = LegacyDownloadWorker) but kept the
-# _run_worker_async signature. 5.0.x annotated signed_session_mono.py, which
-# broke Patch F's old 3-line anchor (now a single-line anchor).
-SPOTIFLAC_PINNED="5.0.6"
+# Mornye is SpotiFLAC renamed (same author and code base; the SpotiFLAC package
+# was taken down after a cease and desist). Mornye 1.0.0 is SpotiFLAC 5.0.6
+# under the new package name `mornye`, plus small fixes; patch_mornye.py's
+# anchors carried over. Like SpotiFLAC >= 1.8.0 it bundles no download
+# providers — Tidal/Qobuz/Amazon/Deezer/etc. are installed at runtime as
+# operator-supplied "extensions" from a registry URL configured in
+# Settings → System (see worker.refresh_extensions). Earlier porting history
+# (SpotiFLAC 1.x -> 5.0.6) is in patch_mornye.py's module docstring.
+MORNYE_PINNED="1.0.0"
 
 # Log lines share the app's layout (see applog.py):
 #   21:35:09  INFO   VPN       Connecting · OpenVPN
@@ -71,8 +59,8 @@ if ! chmod 711 "$CREDS_DIR" 2>/dev/null; then
 fi
 
 # ── Unprivileged app user + writable app-state dir ─────────────────────────────
-# The web app / SpotiFLAC must NOT run as root: this container holds NET_ADMIN,
-# so a root-run app (or a compromised SpotiFLAC pulled from PyPI) could flush the
+# The web app / Mornye must NOT run as root: this container holds NET_ADMIN,
+# so a root-run app (or a compromised Mornye pulled from PyPI) could flush the
 # kill-switch and leak the real IP. Running as an unprivileged user without
 # NET_ADMIN makes the kill-switch actually enforcing against the app.
 #
@@ -120,8 +108,8 @@ lock_down_creds() {
 }
 
 # Run a command as the unprivileged app user (drops root + NET_ADMIN). HOME is
-# injected explicitly because su-exec does not set it, and SpotiFLAC writes its
-# cache under $HOME/.cache.
+# injected explicitly because su-exec does not set it, and Mornye writes its
+# state and cache under $HOME/.mornye.
 run_as_app() {
     su-exec "$PUID:$PGID" env "HOME=$APP_HOME" "$@"
 }
@@ -520,28 +508,28 @@ wait_for_tunnel() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Update SpotiFLAC — runs after tunnel is up so pip can reach PyPI.
+# Update Mornye — runs after tunnel is up so pip can reach PyPI.
 # ─────────────────────────────────────────────────────────────────────────────
-update_spotiflac() {
-    # SpotiFLAC is pinned to a FIXED version, never auto-upgraded to "latest".
+update_mornye() {
+    # Mornye is pinned to a FIXED version, never auto-upgraded to "latest".
     # Rationale:
     #   * Reproducibility — the same code runs on every boot.
-    #   * Supply chain — SpotiFLAC is pulled from PyPI and phones home at import
+    #   * Supply chain — Mornye is pulled from PyPI and phones home at import
     #     time; auto-chasing latest would silently ingest unreviewed releases.
-    #   * Patch compatibility — patch_spotiflac.py (the mbid fixes etc.) matches
+    #   * Patch compatibility — patch_mornye.py (lock/bridge/tag fixes) matches
     #     this version's source; a newer release can reformat those lines and
     #     silently skip the patches.
-    # Override with SPOTIFLAC_VERSION only after re-verifying the patches apply.
-    SPOTIFLAC_VERSION="${SPOTIFLAC_VERSION:-$SPOTIFLAC_PINNED}"
+    # Override with MORNYE_VERSION only after re-verifying the patches apply.
+    MORNYE_VERSION="${MORNYE_VERSION:-$MORNYE_PINNED}"
 
-    # What's actually on disk right now? /spotiflac is a named volume seeded
+    # What's actually on disk right now? /mornye is a named volume seeded
     # once from the image, so after a pin bump it still holds the OLD version's
     # source until we replace it here. Read the highest version across any
     # *.dist-info dirs (a prior interrupted upgrade can leave more than one).
     _have=$(python3 - <<'PY' 2>/dev/null || true
 import glob, os
 vs = []
-for di in glob.glob("/spotiflac/SpotiFLAC-*.dist-info") + glob.glob("/spotiflac/spotiflac-*.dist-info"):
+for di in glob.glob("/mornye/mornye-*.dist-info") + glob.glob("/mornye/Mornye-*.dist-info"):
     try:
         for line in open(os.path.join(di, "METADATA")):
             if line.lower().startswith("version:"):
@@ -556,10 +544,10 @@ print(max(vs, key=key) if vs else "")
 PY
 )
 
-    if [ -n "$_have" ] && [ "$_have" = "$SPOTIFLAC_VERSION" ]; then
-        log "SpotiFLAC already at pinned version $SPOTIFLAC_VERSION — re-patching only"
-        python3 /app/patch_spotiflac.py 2>&1 | _quiet || true
-        chmod -R a+rX /spotiflac 2>/dev/null || true
+    if [ -n "$_have" ] && [ "$_have" = "$MORNYE_VERSION" ]; then
+        log "Mornye already at pinned version $MORNYE_VERSION — re-patching only"
+        python3 /app/patch_mornye.py 2>&1 | _quiet || true
+        chmod -R a+rX /mornye 2>/dev/null || true
         return
     fi
 
@@ -570,26 +558,25 @@ PY
     # reinstalls every dependency on every boot. So instead: wipe the dir and
     # do one clean install of the pinned version.
     if [ -n "$_have" ]; then
-        slog "SpotiFLAC $_have is installed, $SPOTIFLAC_VERSION is pinned · reinstalling"
+        slog "Mornye $_have is installed, $MORNYE_VERSION is pinned · reinstalling"
     else
-        slog "Installing SpotiFLAC $SPOTIFLAC_VERSION"
+        slog "Installing Mornye $MORNYE_VERSION"
     fi
-    find /spotiflac -mindepth 1 -delete 2>/dev/null || true
+    find /mornye -mindepth 1 -delete 2>/dev/null || true
 
-    # requests: see Dockerfile — declared as a real SpotiFLAC dependency as of
-    # 1.7.8, kept explicit here in case the pin is ever rolled back to 1.4.5.
-    if _out=$(pip install --no-cache-dir --target /spotiflac "SpotiFLAC==$SPOTIFLAC_VERSION" requests 2>&1); then
+    # requests: see Dockerfile — a declared Mornye dependency, kept explicit.
+    if _out=$(pip install --no-cache-dir --target /mornye "mornye==$MORNYE_VERSION" requests 2>&1); then
         _rc=0
     else
         _rc=$?
     fi
     if [ "$_rc" -ne 0 ]; then
-        err "SpotiFLAC install failed: $(echo "$_out" | tail -1)"
+        err "Mornye install failed: $(echo "$_out" | tail -1)"
         return
     fi
     _ver=$(python3 - <<'PY' 2>/dev/null || true
 import glob, os
-for di in glob.glob("/spotiflac/SpotiFLAC-*.dist-info") + glob.glob("/spotiflac/spotiflac-*.dist-info"):
+for di in glob.glob("/mornye/mornye-*.dist-info") + glob.glob("/mornye/Mornye-*.dist-info"):
     try:
         for line in open(os.path.join(di, "METADATA")):
             if line.lower().startswith("version:"):
@@ -598,11 +585,11 @@ for di in glob.glob("/spotiflac/SpotiFLAC-*.dist-info") + glob.glob("/spotiflac/
         pass
 PY
 )
-    slog "SpotiFLAC ${_ver:-$SPOTIFLAC_VERSION} installed"
-    python3 /app/patch_spotiflac.py 2>&1 | _quiet || true
+    slog "Mornye ${_ver:-$MORNYE_VERSION} installed"
+    python3 /app/patch_mornye.py 2>&1 | _quiet || true
 
-    # /spotiflac is written as root; make sure the app user can import it.
-    chmod -R a+rX /spotiflac 2>/dev/null || true
+    # /mornye is written as root; make sure the app user can import it.
+    chmod -R a+rX /mornye 2>/dev/null || true
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -620,7 +607,7 @@ start_app() {
     export PYTHONUNBUFFERED=1
 
     # Drop root (and thus NET_ADMIN/NET_RAW): the app can no longer alter the
-    # kill-switch even if SpotiFLAC is compromised.
+    # kill-switch even if Mornye is compromised.
     run_as_app sh -c "$APP_CMD" 2>&1 &
     APP_PID=$!
     log "App PID: $APP_PID"
@@ -781,10 +768,10 @@ monitor_tunnel() {
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
-# Re-apply SpotiFLAC patches on every startup so in-place pip upgrades via the
+# Re-apply Mornye patches on every startup so in-place pip upgrades via the
 # UI are automatically patched before the app starts.
-log "Applying SpotiFLAC patches..."
-python3 /app/patch_spotiflac.py 2>&1 | _quiet || true
+log "Applying Mornye patches..."
+python3 /app/patch_mornye.py 2>&1 | _quiet || true
 
 # Snapshot Docker's embedded resolver BEFORE we start swapping DNS, so it can
 # be restored during reconnects (see restore_docker_dns).
@@ -802,6 +789,6 @@ start_vpn
 wait_for_tunnel
 setup_return_routing
 set_vpn_dns            # route DNS through the tunnel (fixes ISP DNS leak)
-update_spotiflac
+update_mornye
 start_app
 monitor_tunnel

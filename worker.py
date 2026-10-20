@@ -14,26 +14,26 @@ import asyncio as _asyncio
 import applog
 import lib_index
 
-from SpotiFLAC.downloader import SpotiflacDownloader, DownloadWorker, DownloadOptions
+from mornye.downloader import MornyeDownloader, DownloadWorker, DownloadOptions
 try:
-    from SpotiFLAC.downloader import download_one  # SpotiFLAC ≤ 1.2.x sync API
+    from mornye.downloader import download_one  # SpotiFLAC ≤ 1.2.x sync API
 except ImportError:
-    from SpotiFLAC.downloader import download_one_async as _dl_async  # SpotiFLAC 1.2.7+ async
+    from mornye.downloader import download_one_async as _dl_async  # SpotiFLAC 1.2.7+ async
     def download_one(metadata, output_dir, providers, opts, position=1, is_album=False):
         return _run_coro_sync(_dl_async(metadata, output_dir, providers, opts, position, is_album))
 
-from SpotiFLAC.core.progress import DownloadManager
+from mornye.core.progress import DownloadManager
 
 # Cached Spotify client — reuses OAuth token across jobs instead of re-fetching
 # on every _fetch_metadata call. SpotifyMetadataClient handles token refresh.
 try:
-    from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient as _SpotifyClient
+    from mornye.core.spotify_metadata import SpotifyMetadataClient as _SpotifyClient
     _spotify_client = _SpotifyClient(timeout_s=15)
 except Exception:
     _spotify_client = None
 
 # ── Persistent event loop ────────────────────────────────────────────────────
-# SpotiFLAC's asyncio.Queue (progress.py) binds to the first event loop it is
+# Mornye's asyncio.Queue (progress.py) binds to the first event loop it is
 # awaited from. Repeated asyncio.run() calls each produce a new loop, so the
 # queue raises "bound to a different event loop" on every job after the first.
 # Keeping a single loop alive for the process lifetime avoids this entirely.
@@ -51,7 +51,7 @@ def _get_spf_loop() -> _asyncio.AbstractEventLoop:
             _spf_thread = threading.Thread(
                 target=_spf_loop.run_forever,
                 daemon=True,
-                name="spotiflac-loop",
+                name="mornye-loop",
             )
             _spf_thread.start()
     return _spf_loop
@@ -71,14 +71,14 @@ def _run_coro_sync(coro) -> object:
         # (job hangs at "running" forever). Fail loudly so the job errors instead.
         coro.close()
         raise RuntimeError(
-            "_run_coro_sync called from the spotiflac loop thread — "
+            "_run_coro_sync called from the mornye loop thread — "
             "would deadlock; await the coroutine directly instead"
         )
     return _asyncio.run_coroutine_threadsafe(coro, loop).result()
 
 
 def _run_coro(result) -> None:
-    """If result is an unawaited coroutine (async SpotiFLAC API), execute it synchronously."""
+    """If result is an unawaited coroutine (async Mornye API), execute it synchronously."""
     if _asyncio.iscoroutine(result):
         _run_coro_sync(result)
 
@@ -136,7 +136,7 @@ def _dispatcher() -> None:
 
 
 def refresh_tidal_api_list(force: bool = False) -> list:
-    """Refreshes SpotiFLAC's Tidal proxy-API URL list (gist fetch + cache).
+    """Refreshes Mornye's Tidal proxy-API URL list (gist fetch + cache).
 
     As of 1.8.0, SpotiFLAC.providers.tidal no longer exists — the whole
     providers/ package was removed in favor of operator-installed extensions
@@ -151,7 +151,7 @@ def refresh_tidal_api_list(force: bool = False) -> list:
     it's a harmless no-op returning an empty list.
     """
     try:
-        from SpotiFLAC.extensions.manager import ExtensionManager
+        from mornye.extensions.manager import ExtensionManager
     except ImportError:
         return []
     mgr = ExtensionManager(auto_install_downloads=False)
@@ -164,14 +164,14 @@ def refresh_tidal_api_list(force: bool = False) -> list:
         log.info("Tidal API refresh: no Python-style 'tidal' extension installed — skipping")
         return []
     import sys
-    mod = sys.modules.get(f"SpotiFLAC.extensions_plugins.{ext_name.replace('-', '_')}")
+    mod = sys.modules.get(f"mornye.extensions_plugins.{ext_name.replace('-', '_')}")
     if mod is None or not hasattr(mod, "refresh_tidal_api_list"):
         log.info("Tidal API refresh: extension '%s' has no refresh_tidal_api_list — skipping", ext_name)
         return []
     return mod.refresh_tidal_api_list(force=force)
 
 
-# Legacy service-name aliases this app relies on (see SpotiFLAC's
+# Legacy service-name aliases this app relies on (see Mornye's
 # extensions/catalog.py SERVICE_ALIASES) — keys mirror _VALID_SERVICES in
 # routes.py / ALL_SERVICES in the frontend; apple-music (added separately
 # below) backs the "apple" enrich_provider only, not a download service.
@@ -180,7 +180,7 @@ _EXT_ID_TO_SERVICE = {
     "qobuz-web": "qobuz",
     "amazon": "amazon",
     "deezer": "deezer",
-    "ytmusic-spotiflac": "youtube",
+    "ytmusic-mornye": "youtube",  # "ytmusic-spotiflac" before the Mornye rename
 }
 _DOWNLOAD_EXT_IDS = tuple(_EXT_ID_TO_SERVICE)
 _ALL_TARGET_EXT_IDS = _DOWNLOAD_EXT_IDS + ("apple-music",)
@@ -192,7 +192,7 @@ def extensions_status() -> dict:
     load, for the 'no extensions installed' banner and to filter the
     Settings "Download sources" list down to services that actually work."""
     try:
-        from SpotiFLAC.extensions.manager import ExtensionManager
+        from mornye.extensions.manager import ExtensionManager
     except ImportError:
         return {"any_installed": False, "installed": [], "missing": list(_DOWNLOAD_EXT_IDS), "installed_services": []}
     mgr = ExtensionManager(auto_install_downloads=False)
@@ -209,11 +209,11 @@ def extensions_status() -> dict:
 
 def refresh_extensions(force: bool = False) -> dict:
     """Installs/refreshes the extensions this app relies on for downloading
-    (tidal-web, qobuz-web, amazon, deezer, ytmusic-spotiflac) and for metadata
+    (tidal-web, qobuz-web, amazon, deezer, ytmusic-mornye) and for metadata
     enrichment (apple-music), from every registry URL configured in Settings.
 
-    SpotiFLAC >= 1.8.0 bundles no download providers at all — see
-    patch_spotiflac.py's module docstring. Returns {ext_id: True} on success,
+    Mornye (like SpotiFLAC >= 1.8.0 before it) bundles no download providers
+    at all — see patch_mornye.py's module docstring. Returns {ext_id: True} on success,
     {ext_id: "error message"} on failure, per extension, so the UI can show
     exactly which ones worked. Returns {} if no registry is configured yet.
     """
@@ -222,7 +222,7 @@ def refresh_extensions(force: bool = False) -> dict:
     if not registries:
         return {}
     try:
-        from SpotiFLAC.extensions.manager import ExtensionManager
+        from mornye.extensions.manager import ExtensionManager
     except ImportError as exc:
         return {"_error": f"extensions module unavailable: {exc}"}
 
@@ -736,7 +736,7 @@ def _update(job_id: str, **kwargs) -> None:
 
 def _fetch_metadata(url: str) -> tuple[str | None, str | None, str | None]:
     try:
-        from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient, parse_spotify_url
+        from mornye.core.spotify_metadata import SpotifyMetadataClient, parse_spotify_url
         info   = parse_spotify_url(url)
         kind   = info["type"]
         sid    = info["id"]
@@ -792,7 +792,7 @@ def _fetch_metadata(url: str) -> tuple[str | None, str | None, str | None]:
 
 
 def _explain_validation(ok: bool, msg: str, expected_s: int) -> tuple[bool, str]:
-    """Translate SpotiFLAC's (Italian) validation result to (valid, english_reason)."""
+    """Translate Mornye's (Italian) validation result to (valid, english_reason)."""
     if ok:
         return True, ""
     import re
@@ -808,20 +808,20 @@ def _explain_validation(ok: bool, msg: str, expected_s: int) -> tuple[bool, str]
 
 
 def _validate_track(filepath: str, expected_s: int) -> tuple[bool, str]:
-    """Call SpotiFLAC download validation; returns (valid, english_reason).
+    """Call Mornye download validation; returns (valid, english_reason).
 
-    Sync-path only: must never run on the spotiflac loop thread, because the
+    Sync-path only: must never run on the mornye loop thread, because the
     async fallback blocks on that loop (use _validate_track_async there).
     """
     if not filepath or expected_s <= 0:
         return True, ""
     try:
         try:
-            from SpotiFLAC.core.download_validation import validate_downloaded_track
+            from mornye.core.download_validation import validate_downloaded_track
             ok, msg = validate_downloaded_track(filepath, expected_s)
         except ImportError:
             # SpotiFLAC 1.3+ exposes only the async validator.
-            from SpotiFLAC.core.download_validation import validate_downloaded_track_async
+            from mornye.core.download_validation import validate_downloaded_track_async
             ok, msg = _run_coro_sync(validate_downloaded_track_async(filepath, expected_s))
         return _explain_validation(ok, msg, expected_s)
     except ImportError:
@@ -829,15 +829,15 @@ def _validate_track(filepath: str, expected_s: int) -> tuple[bool, str]:
 
 
 async def _validate_track_async(filepath: str, expected_s: int) -> tuple[bool, str]:
-    """Async twin of _validate_track for code already running on the spotiflac loop."""
+    """Async twin of _validate_track for code already running on the mornye loop."""
     if not filepath or expected_s <= 0:
         return True, ""
     try:
-        from SpotiFLAC.core.download_validation import validate_downloaded_track_async
+        from mornye.core.download_validation import validate_downloaded_track_async
         ok, msg = await validate_downloaded_track_async(filepath, expected_s)
     except ImportError:
         try:
-            from SpotiFLAC.core.download_validation import validate_downloaded_track
+            from mornye.core.download_validation import validate_downloaded_track
             ok, msg = validate_downloaded_track(filepath, expected_s)
         except ImportError:
             return True, ""
@@ -855,10 +855,10 @@ def _write_m3u(output_dir: str, name: str, entries: list[dict]) -> str | None:
     directory. Paths inside the M3U stay relative to the M3U's own location
     (one level up to reach the tracks), so the pair stays portable together.
 
-    Mirrors upstream SpotiFLAC's own playlist_sync.py rendering (paths relative
+    Mirrors upstream Mornye's own playlist_sync.py rendering (paths relative
     to the playlist file, #EXTINF duration + "artist - title"), but written
-    independently rather than importing that module — it's SpotiFLAC-internal
-    and not something patch_spotiflac.py's version-locked patches cover.
+    independently rather than importing that module — it's Mornye-internal
+    and not something patch_mornye.py's version-locked patches cover.
     """
     usable = [e for e in entries if e.get("file_path") and os.path.exists(e["file_path"])]
     if not usable:
@@ -1004,7 +1004,7 @@ class _TrackingWorker(DownloadWorker):
             log.warning("Provider close failed: %s", exc)
 
     def _run_inner(self):
-        from SpotiFLAC.core.models import build_filename
+        from mornye.core.models import build_filename
         from pathlib import Path as _Path
 
         manager  = DownloadManager()
@@ -1157,11 +1157,11 @@ class _TrackingWorker(DownloadWorker):
     async def _run_async_inner(self):
         """Async version of run() for SpotiFLAC 1.2.9+ (fully async API)."""
         try:
-            from SpotiFLAC.downloader import download_one_async as _dl_one_async
+            from mornye.downloader import download_one_async as _dl_one_async
         except ImportError:
             _dl_one_async = None
 
-        from SpotiFLAC.core.models import build_filename
+        from mornye.core.models import build_filename
         from pathlib import Path as _Path
 
         total    = len(self._tracks)
@@ -1319,8 +1319,8 @@ class _TrackingWorker(DownloadWorker):
         return self._failed
 
 
-class _TrackingDownloader(SpotiflacDownloader):
-    """SpotiflacDownloader that reports on_progress(done, total) and per-track results."""
+class _TrackingDownloader(MornyeDownloader):
+    """MornyeDownloader that reports on_progress(done, total) and per-track results."""
 
     def __init__(self, opts, on_progress, on_track_result=None, on_track_start=None, cancel=None, upgrade=False):
         super().__init__(opts)
@@ -1331,7 +1331,7 @@ class _TrackingDownloader(SpotiflacDownloader):
         self._cancel          = cancel
 
     def _run_once(self, spotify_url, target_tracks=None):
-        from SpotiFLAC.core.errors import SpotiflacError
+        from mornye.core.errors import MornyeError
 
         if target_tracks is not None:
             tracks          = target_tracks
@@ -1342,7 +1342,7 @@ class _TrackingDownloader(SpotiflacDownloader):
             # SpotiFLAC 0.4.7+ sync API
             try:
                 collection_name, tracks, info = self._resolve_metadata(spotify_url)
-            except SpotiflacError as exc:
+            except MornyeError as exc:
                 log.error("Metadata fetch failed: %s", exc)
                 return []
             if not tracks:
@@ -1364,7 +1364,7 @@ class _TrackingDownloader(SpotiflacDownloader):
             is_playlist = info.get("type") in ("playlist", "artist", "artist_discography")
         else:
             # SpotiFLAC 0.3.x fallback
-            from SpotiFLAC.core.spotify_metadata import parse_spotify_url
+            from mornye.core.spotify_metadata import parse_spotify_url
             if hasattr(self._client, 'get_url'):
                 collection_name, tracks = self._client.get_url(spotify_url)
             else:
@@ -1404,7 +1404,7 @@ class _TrackingDownloader(SpotiflacDownloader):
 
     def run(self, url: str) -> None:
         """Sync entry point: delegates to run_async for 1.2.9+, sync run for older."""
-        if hasattr(SpotiflacDownloader, 'run_async'):
+        if hasattr(MornyeDownloader, 'run_async'):
             _run_coro_sync(self.run_async(url))
         else:
             super().run(url)
@@ -1528,7 +1528,7 @@ def _run(job_id: str) -> None:
             if "enrich_metadata" in _do_fields and cfg.get("enrich_metadata"):
                 _enrich_kwargs["enrich_metadata"]  = True
                 _enrich_kwargs["enrich_providers"] = cfg.get("enrich_providers", ["deezer", "apple"])
-            # 0 = leave SpotiFLAC's own default (120s) alone; see settings.py.
+            # 0 = leave Mornye's own default (120s) alone; see settings.py.
             if "timeout_s" in _do_fields and cfg.get("download_timeout_s"):
                 _enrich_kwargs["timeout_s"] = cfg["download_timeout_s"]
             opts = DownloadOptions(
@@ -1577,7 +1577,7 @@ def _run(job_id: str) -> None:
                 _update(job_id, track_results=list(track_results))
 
             if batch_urls:
-                from SpotiFLAC.core.spotify_metadata import SpotifyMetadataClient, parse_spotify_url
+                from mornye.core.spotify_metadata import SpotifyMetadataClient, parse_spotify_url
                 client = SpotifyMetadataClient()
                 tracks = []
                 for burl in batch_urls:
