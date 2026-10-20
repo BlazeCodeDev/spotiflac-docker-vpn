@@ -6,6 +6,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
@@ -119,6 +120,71 @@ def _spotify_url_for_track(track: dict) -> str | None:
     return None
 
 
+_LABS_API     = "https://labs.api.listenbrainz.org"
+_SIMILAR_ALGO = "session_based_days_9000_session_300_contribution_5_threshold_15_limit_50_skip_30"
+
+
+def recent_listens(username: str, seeds: int = 10) -> list[dict]:
+    """The user's most recent distinct listens that ListenBrainz could map to a
+    MusicBrainz recording: [{mbid, title, artist}], newest first."""
+    url  = f"{_LB_API}/user/{urllib.parse.quote(username)}/listens?count=50"
+    data = _http_get(url, headers={"User-Agent": _MB_UA})
+    out, seen = [], set()
+    for l in data.get("payload", {}).get("listens", []):
+        tm   = l.get("track_metadata") or {}
+        mbid = (tm.get("mbid_mapping") or {}).get("recording_mbid") \
+            or (tm.get("additional_info") or {}).get("recording_mbid")
+        if not mbid or mbid in seen:
+            continue
+        seen.add(mbid)
+        out.append({"mbid": mbid, "title": tm.get("track_name") or "", "artist": tm.get("artist_name") or ""})
+        if len(out) >= seeds:
+            break
+    return out
+
+
+def similar_recordings(listens: list[dict], limit: int = 30) -> list[dict]:
+    """Recordings that listeners of the given listens also play, best match first:
+    [{mbid, title, artist, album, score, seed}]. `seed` is the listen it matched best."""
+    if not listens:
+        return []
+    by_mbid = {l["mbid"]: l for l in listens}
+
+    def fetch(mbid):    # the endpoint takes one recording per request
+        qs = urllib.parse.urlencode({"recording_mbids": mbid, "algorithm": _SIMILAR_ALGO})
+        try:
+            rows = _http_get(f"{_LABS_API}/similar-recordings/json?{qs}", headers={"User-Agent": _MB_UA})
+        except Exception as exc:
+            log.debug("LB similar-recordings failed for %s: %s", mbid, exc)
+            return None
+        return (rows.get("data") or rows.get("payload") or []) if isinstance(rows, dict) else rows
+
+    with ThreadPoolExecutor(4) as pool:
+        got = list(pool.map(fetch, by_mbid))
+    if all(g is None for g in got):
+        raise RuntimeError("ListenBrainz similar-recordings unavailable")
+    rows = [r for g in got for r in g or []]
+    best: dict[str, dict] = {}
+    for r in rows:
+        mbid = r.get("recording_mbid")
+        if not mbid or mbid in by_mbid or not r.get("recording_name"):
+            continue
+        cur = best.get(mbid)
+        if cur is None:
+            cur = best[mbid] = {"mbid": mbid, "title": r["recording_name"], "artist": r.get("artist_credit_name") or "",
+                                "album": r.get("release_name") or "", "score": 0, "seed": "", "_top": -1}
+        score = r.get("score") or 0
+        cur["score"] += score        # appearing under several listens makes it a stronger match
+        if score > cur["_top"]:
+            cur["_top"] = score
+            seed = by_mbid.get(r.get("reference_mbid"))
+            cur["seed"] = seed["title"] if seed else ""
+    out = sorted(best.values(), key=lambda x: x["score"], reverse=True)[:limit]
+    for x in out:
+        x.pop("_top", None)
+    return out
+
+
 def _now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -127,6 +193,7 @@ def _in_library(title: str, artist: str) -> bool:
     """Same artist+title already in the library (full credit or first artist).
     Title-only matching is used only when the track has no artist, since common
     titles otherwise collide with other artists' songs."""
+    import lib_index
     if not artist:
         return lib_index.check([title])[0]
     first = re.split(r"\s*(?:,|&|;|\bfeat\.?|\bft\.?|\bx\b)\s*", artist, maxsplit=1, flags=re.I)[0].strip()

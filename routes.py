@@ -654,7 +654,8 @@ def api_discover():
     try:
         return jsonify(discover.snapshot(
             records, _search_client, _artist_releases, _track_in_lib, lib_index.album_count, lib_index.check_album,
-            recent=request.args.get("recent") == "1", refresh=request.args.get("refresh") == "1"))
+            recent=request.args.get("recent") == "1", refresh=request.args.get("refresh") == "1",
+            lb_user=_settings.load().get("listenbrainz_username", "").strip()))
     except Exception as exc:
         log.warning("Discover failed: %s", exc)
         return jsonify(error="Couldn’t build suggestions"), 500
