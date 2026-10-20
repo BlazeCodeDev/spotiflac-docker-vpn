@@ -1,10 +1,8 @@
 import hashlib
 import logging
 import os
-import queue
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import threading
@@ -308,7 +306,16 @@ def api_download():
 
 @bp.get("/api/jobs")
 def api_jobs():
-    return jsonify(worker.get_jobs())
+    # Polled every 2.5 s with every job's track list: answer 304 while nothing changed.
+    # The browser revalidates on its own and hands the cached body to fetch().
+    tag = f'"j{worker.version()}"'
+    if tag in request.headers.get("If-None-Match", ""):
+        resp = Response(status=304)
+    else:
+        resp = jsonify(worker.get_jobs())
+    resp.headers["ETag"] = tag
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
 
 
 @bp.delete("/api/jobs")
@@ -454,6 +461,7 @@ def api_search():
             results.append({
                 "type":        "track",
                 "title":       t["name"],
+                "artist":      artists,
                 "subtitle":    f"{artists} · {album.get('name', '')}" if artists else album.get("name", ""),
                 "cover_url":   imgs[-1]["url"] if imgs else None,
                 "url":         f"https://open.spotify.com/track/{t['id']}",
@@ -484,6 +492,7 @@ def api_search():
             results.append({
                 "type":        "album",
                 "title":       a["name"],
+                "artist":      artists,
                 "subtitle":    artists,
                 "cover_url":   imgs[-1]["url"] if imgs else None,
                 "url":         f"https://open.spotify.com/album/{a['id']}",
@@ -551,12 +560,10 @@ def _search_client():
 
 
 def _track_in_lib(title: str, artists: str) -> bool:
-    """Same song already downloaded: artist+title from the tags (full credit or first
-    artist), else the title-from-filename index the search badges use."""
-    first = (artists or "").split(",")[0].strip()
-    if lib_index.find_by_artist_title(artists, title) or lib_index.find_by_artist_title(first, title):
-        return True
-    return lib_index.check([title])[0]
+    """Same song already downloaded: artist+title from the tags (any credited artist). The
+    title-only filename index is used only when there is no artist, since common titles
+    ("Intro", "Home") otherwise match other artists' songs."""
+    return lib_index.check_track(title, artists or "")
 
 
 def _artist_releases_rest(client, artist_id: str) -> list[dict]:
@@ -831,6 +838,8 @@ def api_library_delete():
         target = _safe_lib_path(rel)
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
+    if target == _lib_root():   # "/" or "." resolve to the root: never delete the whole library
+        return jsonify(error="Can’t delete the library folder itself"), 400
     if not os.path.exists(target):
         return jsonify(error="Not found"), 404
     try:
@@ -854,12 +863,14 @@ def api_library_rename():
     new_name = body.get("name", "").strip()
     if not rel or not new_name:
         return jsonify(error="Missing path or name"), 400
-    if "/" in new_name or "\\" in new_name:
+    if "/" in new_name or "\\" in new_name or new_name in (".", ".."):
         return jsonify(error="Name must not contain path separators"), 400
     try:
         target = _safe_lib_path(rel)
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
+    if target == _lib_root():
+        return jsonify(error="Can’t rename the library folder itself"), 400
     if not os.path.exists(target):
         return jsonify(error="Not found"), 404
     dest = os.path.join(os.path.dirname(target), new_name)
@@ -888,6 +899,10 @@ def api_library_move():
         dst_dir = _safe_lib_path(rel_dst)
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
+    if src == _lib_root():
+        return jsonify(error="Can’t move the library folder itself"), 400
+    if dst_dir == src or dst_dir.startswith(src + os.sep):
+        return jsonify(error="Can’t move a folder into itself"), 400
     if not os.path.exists(src):
         return jsonify(error="Source not found"), 404
     try:
@@ -980,12 +995,12 @@ def api_library_check_items():
     albums  = [i for i in items if i.get("type") in ("album", "playlist")]
 
     if tracks:
-        hits = lib_index.check([t.get("title", "") for t in tracks])
-        for item, hit in zip(tracks, hits):
+        for item in tracks:
+            hit = lib_index.check_track(item.get("title", ""), str(item.get("artist") or ""))
             result[item.get("url", "")] = "full" if hit else "none"
 
     for item in albums:
-        status = lib_index.check_album(item.get("title", ""), item.get("track_count"))
+        status = lib_index.check_album(item.get("title", ""), item.get("track_count"), str(item.get("artist") or ""))
         result[item.get("url", "")] = status
 
     return jsonify(result)
@@ -1191,7 +1206,6 @@ def _library_rows(fresh: bool = False):
     if got is None:
         return None
     abs_by_rel, recs, missing = got
-    root = _lib_root()
     fmt = _settings.load().get("filename_fmt") or "{artist}/{album}/{track} {title}"
     name_fmt = fmt.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or "{title}"
     with _rows_lock:
@@ -2966,7 +2980,6 @@ def api_mistag_rename():
     from mutagen import File as MFile
     import audiofp
     body = request.get_json(silent=True) or {}
-    root = _lib_root()
     fmt  = _settings.load().get("filename_fmt") or "{artist}/{album}/{track} {title}"
     name_fmt = fmt.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or "{title}"
     targets, errors = _mistag_audio_paths(body.get("files"))
@@ -3234,7 +3247,6 @@ def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
 def _run_enrich_bg(rel_paths: list, root: str, providers: list,
                    use_mb: bool, fmt: str, enrich_all: bool = False) -> None:
     """Background thread: enriches files and updates _enrich_state."""
-    global _enrich_state
 
     if enrich_all:
         rel_paths = []
@@ -3353,7 +3365,6 @@ def _run_enrich_bg(rel_paths: list, root: str, providers: list,
 
 @bp.post("/api/library/enrich")
 def api_library_enrich():
-    global _enrich_state
 
     with _enrich_lock:
         if _enrich_state["running"]:

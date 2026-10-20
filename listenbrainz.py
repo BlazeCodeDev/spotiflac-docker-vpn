@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import re
 import threading
 import time
 import urllib.parse
@@ -190,15 +189,11 @@ def _now_utc() -> str:
 
 
 def _in_library(title: str, artist: str) -> bool:
-    """Same artist+title already in the library (full credit or first artist).
+    """Same artist+title already in the library (any credited artist).
     Title-only matching is used only when the track has no artist, since common
     titles otherwise collide with other artists' songs."""
     import lib_index
-    if not artist:
-        return lib_index.check([title])[0]
-    first = re.split(r"\s*(?:,|&|;|\bfeat\.?|\bft\.?|\bx\b)\s*", artist, maxsplit=1, flags=re.I)[0].strip()
-    return bool(lib_index.find_by_artist_title(artist, title)
-                or (first and lib_index.find_by_artist_title(first, title)))
+    return lib_index.check_track(title, artist)
 
 
 def _fetch_playlist_tracks(mbid: str) -> list[dict]:
@@ -220,7 +215,6 @@ def _do_sync(username: str, cancel: threading.Event | None = None, force: bool =
 
     import settings as _settings
     import worker
-    import lib_index
     from config import Config
 
     processed   = []

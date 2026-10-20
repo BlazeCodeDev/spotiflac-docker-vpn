@@ -1,3 +1,4 @@
+import atexit
 import heapq
 import json
 import logging
@@ -83,6 +84,7 @@ def _run_coro(result) -> None:
 
 log       = logging.getLogger(__name__)
 _jobs:    dict[str, dict]            = {}
+_seq = 0   # before _load(), which restores it
 _cancel:  dict[str, threading.Event] = {}
 _lock     = threading.Lock()
 _semaphore = threading.BoundedSemaphore(3)  # replaced by init()
@@ -289,22 +291,44 @@ def _now() -> str:
 
 
 _save_lock = threading.Lock()
+_save_soon_ev = threading.Event()
+_boot = uuid.uuid4().hex[:8]   # so a version from before a restart never matches
+_ver = 0
+
+
+def version() -> str:
+    """Changes whenever any job changes (every change goes through _save or _save_soon)."""
+    return f"{_boot}.{_ver}"
+
+
+def _bump() -> None:
+    global _ver
+    with _lock:
+        _ver += 1
+_SAVE_EVERY_S = 1.0
 
 
 def _save() -> None:
+    _bump()
+    _write()
+
+
+def _write() -> None:
     try:
         # One writer at a time: they share one tmp file, so concurrent saves made os.replace
-        # fail with ENOENT. Snapshot inside the lock so the last writer holds the newest state.
+        # fail with ENOENT. Serialised inside _lock so a job changing mid-dump can't break it
+        # ("dictionary changed size during iteration") and the last writer holds the newest state.
         with _save_lock:
+            _save_soon_ev.clear()
             with _lock:
-                snapshot = {"seq": _seq, "jobs": {jid: dict(j) for jid, j in _jobs.items()}}
+                text = json.dumps({"seq": _seq, "jobs": _jobs})
             d = os.path.dirname(os.path.abspath(_STATE_FILE))
             if d:
                 os.makedirs(d, exist_ok=True)
             tmp = "%s.%d.%d.tmp" % (_STATE_FILE, os.getpid(), threading.get_ident())
             try:
                 with open(tmp, "w") as f:
-                    json.dump(snapshot, f)
+                    f.write(text)
                 os.replace(tmp, _STATE_FILE)
             finally:
                 try:
@@ -313,6 +337,26 @@ def _save() -> None:
                     pass
     except Exception as exc:
         log.warning("State save failed: %s", exc)
+
+
+def _save_soon() -> None:
+    """Coalesced save for frequent updates (per-track progress): at most one write per
+    _SAVE_EVERY_S. Rewriting the whole job file several times per track was slow with a
+    long history, and it ran on the shared download event loop, stalling every job."""
+    _bump()
+    _save_soon_ev.set()
+
+
+def _saver() -> None:
+    while True:
+        _save_soon_ev.wait()
+        time.sleep(_SAVE_EVERY_S)
+        if _save_soon_ev.is_set():
+            _write()
+
+
+threading.Thread(target=_saver, daemon=True, name="job-saver").start()
+atexit.register(lambda: _save_soon_ev.is_set() and _write())
 
 
 def _load() -> None:
@@ -357,7 +401,31 @@ def get_jobs() -> list[dict]:
     return [{k: v for k, v in j.items() if not k.startswith("_")} for j in jobs]
 
 
+_cleanup_lock = threading.Lock()
+_cleanup_again = threading.Event()
+
+
 def _cleanup_empty_dirs() -> None:
+    """Remove empty folders in the background. Walks the whole library, which over network
+    storage took seconds and used to block the cancel/remove/clear request."""
+    _cleanup_again.set()
+    if not _cleanup_lock.acquire(blocking=False):
+        return        # the running pass picks the request up when it finishes
+
+    def run():
+        try:
+            while _cleanup_again.is_set():
+                _cleanup_again.clear()
+                try:
+                    _cleanup_empty_dirs_now()
+                except Exception as exc:
+                    log.warning("Empty folder cleanup failed: %s", exc)
+        finally:
+            _cleanup_lock.release()
+    threading.Thread(target=run, daemon=True, name="dir-cleanup").start()
+
+
+def _cleanup_empty_dirs_now() -> None:
     from config import Config
     root = os.path.normpath(os.path.abspath(Config.OUTPUT_DIR))
     if not os.path.isdir(root):
@@ -500,8 +568,6 @@ def retry_job_partial(job_id: str, batch_urls: list, pre_success_count: int,
     return True
 
 
-_seq = 0
-
 def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
             qobuz_token: str,
             quality: str = "lossless",
@@ -582,7 +648,11 @@ def _update(job_id: str, **kwargs) -> None:
         j = _jobs.get(job_id)
         if j:
             j.update(kwargs)
-    _save()
+    # Status changes are written at once; progress and live track lists are batched.
+    if "status" in kwargs:
+        _save()
+    else:
+        _save_soon()
 
 
 def _fetch_metadata(url: str) -> tuple[str | None, str | None, str | None]:
@@ -803,11 +873,18 @@ def _find_existing_track(
 class _TrackingWorker(DownloadWorker):
     """DownloadWorker that fires callbacks after each track."""
 
-    def __init__(self, *args, on_track_done, on_track_result=None, on_track_start=None, **kwargs):
+    def __init__(self, *args, on_track_done, on_track_result=None, on_track_start=None, cancel=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._on_track_done   = on_track_done
         self._on_track_result = on_track_result
         self._on_track_start  = on_track_start
+        self._cancel          = cancel
+
+    def _cancelled(self) -> bool:
+        if self._cancel is not None and self._cancel.is_set():
+            log.info("Job cancelled, stopping before the next track")
+            return True
+        return False
 
     def _resolve_output_dir(self) -> str:
         # The filename_format already encodes the full directory structure
@@ -902,6 +979,8 @@ class _TrackingWorker(DownloadWorker):
             )
 
         for i, track in enumerate(self._tracks):
+            if self._cancelled():
+                break
             _run_coro(manager.start_download(track.id))
             existing = pre_existing[i]
             track_start = time.perf_counter()
@@ -985,7 +1064,10 @@ class _TrackingWorker(DownloadWorker):
             self._on_track_done(done)
 
             if i < total - 1:
-                time.sleep(self._opts.inter_track_delay_s)
+                if self._cancel is not None:
+                    self._cancel.wait(self._opts.inter_track_delay_s)
+                else:
+                    time.sleep(self._opts.inter_track_delay_s)
 
         elapsed = time.perf_counter() - start
         self._print_summary(elapsed)
@@ -1046,6 +1128,8 @@ class _TrackingWorker(DownloadWorker):
             )
 
         for i, track in enumerate(self._tracks):
+            if self._cancelled():
+                break
             coro = DownloadManager().start_download(track.id)
             if _asyncio.iscoroutine(coro):
                 await coro
@@ -1143,7 +1227,11 @@ class _TrackingWorker(DownloadWorker):
             self._on_track_done(done)
 
             if i < total - 1:
-                await _asyncio.sleep(self._opts.inter_track_delay_s)
+                slept = 0.0
+                while slept < self._opts.inter_track_delay_s and not (self._cancel and self._cancel.is_set()):
+                    step = min(0.5, self._opts.inter_track_delay_s - slept)
+                    await _asyncio.sleep(step)
+                    slept += step
 
         elapsed = time.perf_counter() - start
         self._print_summary(elapsed)
@@ -1153,11 +1241,12 @@ class _TrackingWorker(DownloadWorker):
 class _TrackingDownloader(SpotiflacDownloader):
     """SpotiflacDownloader that reports on_progress(done, total) and per-track results."""
 
-    def __init__(self, opts, on_progress, on_track_result=None, on_track_start=None):
+    def __init__(self, opts, on_progress, on_track_result=None, on_track_start=None, cancel=None):
         super().__init__(opts)
         self._on_progress     = on_progress
         self._on_track_result = on_track_result
         self._on_track_start  = on_track_start
+        self._cancel          = cancel
 
     def _run_once(self, spotify_url, target_tracks=None):
         from SpotiFLAC.core.errors import SpotiflacError
@@ -1225,6 +1314,7 @@ class _TrackingDownloader(SpotiflacDownloader):
             on_track_done   = lambda done: self._on_progress(done, total),
             on_track_result = self._on_track_result,
             on_track_start  = self._on_track_start,
+            cancel          = self._cancel,
         )
         worker.run()
         return []
@@ -1281,9 +1371,16 @@ class _TrackingDownloader(SpotiflacDownloader):
             on_track_done   = lambda done: self._on_progress(done, total),
             on_track_result = self._on_track_result,
             on_track_start  = self._on_track_start,
+            cancel          = self._cancel,
         )
         await worker.run_async()
         return []
+
+
+def _drop_cancel(job_id: str, ev: threading.Event) -> None:
+    """Forget a job's cancel event, unless a retry already gave the job a new one."""
+    if _cancel.get(job_id) is ev:
+        _cancel.pop(job_id, None)
 
 
 def _run(job_id: str) -> None:
@@ -1294,7 +1391,7 @@ def _run(job_id: str) -> None:
     try:
         if ev.is_set():
             _update(job_id, status="cancelled", finished_at=_now())
-            _cancel.pop(job_id, None)
+            _drop_cancel(job_id, ev)
             return
 
         with _lock:
@@ -1307,7 +1404,6 @@ def _run(job_id: str) -> None:
         services          = j["services"]
         filename_fmt      = j["filename_fmt"]
         quality           = j.get("quality") or "lossless"
-        qobuz_token       = j.get("_qobuz_token") or ""
         pre_success_count = j.get("pre_success_count") or 0
         full_total        = j.get("full_total") or 0
         batch_urls        = j.get("_batch_urls") or []
@@ -1330,7 +1426,7 @@ def _run(job_id: str) -> None:
         try:
             if ev.is_set():
                 _update(job_id, status="cancelled", finished_at=_now())
-                _cancel.pop(job_id, None)
+                _drop_cancel(job_id, ev)
                 return
 
             _update(job_id, status="running", started_at=_now(),
@@ -1414,10 +1510,11 @@ def _run(job_id: str) -> None:
                     on_track_done=lambda done: _on_progress(done, len(tracks)),
                     on_track_result=_on_track_result,
                     on_track_start=_on_track_start,
+                    cancel=ev,
                 ).run()
             else:
                 downloader = _TrackingDownloader(
-                    opts, _on_progress, _on_track_result, on_track_start=_on_track_start,
+                    opts, _on_progress, _on_track_result, on_track_start=_on_track_start, cancel=ev,
                 )
                 downloader.run(url)
 
@@ -1449,33 +1546,40 @@ def _run(job_id: str) -> None:
             else:
                 job_error = None
 
-            _update(
-                job_id,
-                status        = "error" if job_error else "done",
-                finished_at   = _now(),
-                error         = job_error,
+            final = dict(
                 progress      = success_count if total_count > 1 else None,
                 total         = total_count   if total_count > 1 else None,
                 track_results = track_results if track_results else None,
                 success_count = success_count if track_results else None,
                 fail_count    = fail_count    if track_results else None,
             )
+            if ev.is_set():
+                # Cancelled mid-run: cancel_job already set the status. Keep it, and leave the
+                # job alone entirely if it was retried meanwhile (a new run owns it now).
+                if _cancel.get(job_id) is ev:
+                    _update(job_id, status="cancelled", **final)
+            else:
+                _update(job_id, status="error" if job_error else "done", finished_at=_now(), error=job_error, **final)
             # Complete failure goes through the same auto-retry path as an exception.
             succeeded = job_error is None
             if total_count > 1:
                 applog.event("downloads", f"Finished     {_jobname(job_id)} · {success_count} of {total_count} downloaded"
                              + (f" · {fail_count} failed" if fail_count else ""),
                              logging.INFO if new_success else logging.ERROR)
-            _update_fail_streak(new_success > 0)
+            if not ev.is_set():   # a cancelled run says nothing about the VPN
+                _update_fail_streak(new_success > 0)
         except Exception as exc:
             applog.event("downloads", f"Failed       {_jobname(job_id)}: {exc}", logging.ERROR)
+            if ev.is_set():
+                _drop_cancel(job_id, ev)
+                return
             _update(job_id, status="error", error=str(exc), finished_at=_now(),
                     track_results=track_results if track_results else None,
                     success_count=sum(1 for r in track_results if r["success"]) if track_results else None,
                     fail_count=sum(1 for r in track_results if not r["success"]) if track_results else None)
 
         if succeeded or ev.is_set():
-            _cancel.pop(job_id, None)
+            _drop_cancel(job_id, ev)
             if track_results:
                 try:
                     ok_titles = [r["title"] for r in track_results if r.get("success") and r.get("title")]
@@ -1492,7 +1596,7 @@ def _run(job_id: str) -> None:
         max_retries  = cfg["retry_max_count"]
 
         if not interval_min:
-            _cancel.pop(job_id, None)
+            _drop_cancel(job_id, ev)
             return
 
         retry_count = (j.get("retry_count") or 0) + 1
@@ -1501,7 +1605,7 @@ def _run(job_id: str) -> None:
             applog.event("downloads", f"Gave up      {_jobname(job_id)} after {max_retries} retr{'y' if max_retries == 1 else 'ies'}", logging.ERROR)
             _update(job_id, status="error", finished_at=_now(),
                     error=f"Failed after {max_retries} auto-retr{'y' if max_retries == 1 else 'ies'}")
-            _cancel.pop(job_id, None)
+            _drop_cancel(job_id, ev)
             return
 
         next_retry_at = (
@@ -1535,7 +1639,7 @@ def _run(job_id: str) -> None:
 
         if ev.is_set():
             _update(job_id, status="cancelled", finished_at=_now())
-            _cancel.pop(job_id, None)
+            _drop_cancel(job_id, ev)
             return
 
         _update(job_id, next_retry_at=None)

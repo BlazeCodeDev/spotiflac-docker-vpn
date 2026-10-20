@@ -439,7 +439,7 @@ async function runSearch(q, offset) {
 }
 async function checkLibrary(items) {
   const list = items.filter((r) => r.type === 'track' || r.type === 'album' || r.type === 'playlist')
-    .map((r) => ({ type: r.type, url: r.url, title: r.title, track_count: r.track_count }));
+    .map((r) => ({ type: r.type, url: r.url, title: r.title, artist: r.artist || '', track_count: r.track_count }));
   if (!list.length) return;
   try { Object.assign(S.inLib, await api('/api/library/check-items', { method: 'POST', body: { items: list } })); renderResults(); } catch { /* the badge just doesn't show */ }
 }

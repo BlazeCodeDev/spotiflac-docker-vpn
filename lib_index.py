@@ -16,6 +16,8 @@ _PAREN_RE     = re.compile(r'\s*[\(\[].*?[\)\]]\s*$')
 
 _index:           set[str]        = set()
 _album_counts:    dict            = {}   # normalised album name → track count
+_artist_albums:   dict            = {}   # folded "artist|album" → track count (folder and tags)
+_artist_titles:   set[str]        = set()  # folded "artist|title" for every credited artist, for title checks
 _by_artist_title: dict[str, str]  = {}   # folded "artist|title" → absolute path
 _files:           list | None     = None # [(rel_dir, filename)] of every audio file, for search
 _index_lock:      threading.RLock = threading.RLock()
@@ -57,7 +59,25 @@ def _artist_title_key(artist: str, title: str) -> str:
     return f"{_fold(artist)}|{_fold(title)}"
 
 
-def _build_index(root: str) -> tuple[set[str], dict, dict[str, str], list]:
+_SPLIT_RE = re.compile(r"\s*(?:,|;|&|/|(?i:\bfeat\.?|\bft\.?|\bwith\b))\s*|\s+x\s+")
+
+
+def _artists(*credits: str) -> set[str]:
+    """Every artist named in these credits, folded ("A feat. B, C" → a, b, c), plus each full credit."""
+    out = set()
+    for c in credits:
+        if c:
+            out.add(_fold(c))
+            out.update(_fold(p) for p in _SPLIT_RE.split(c) if p and p.strip())
+    out.discard("")
+    return out
+
+
+def _album_key(artist: str, album: str) -> str:
+    return f"{artist}|{_normalise_title(album)}"
+
+
+def _build_index(root: str) -> tuple[set[str], dict, dict[str, str], list, dict, set]:
     """Full library scan. Also reads each audio file's embedded artist/title
     tags (see _read_artist_title) to build an identity index that's robust to
     album metadata varying between provider results for the same song — this
@@ -69,6 +89,9 @@ def _build_index(root: str) -> tuple[set[str], dict, dict[str, str], list]:
     stems:            set[str]        = set()
     album_counts:     dict            = {}
     by_artist_title:  dict[str, str]  = {}
+    folder_albums:    dict            = {}
+    tag_albums:       dict            = {}
+    artist_titles:    set[str]        = set()
     paths:            list[str]       = []
     file_list:        list            = []
     _progress.update(phase="Listing files", done=0, total=0)
@@ -94,6 +117,10 @@ def _build_index(root: str) -> tuple[set[str], dict, dict[str, str], list]:
             if parts:
                 key = _normalise_title(parts[-1])
                 album_counts[key] = album_counts.get(key, 0) + len(audio)
+                if len(parts) >= 2:   # {artist}/{album}/… layouts
+                    for a in _artists(parts[-2]):
+                        k = _album_key(a, parts[-1])
+                        folder_albums[k] = folder_albums.get(k, 0) + len(audio)
 
         # Tags come from the persistent cache (tagcache): unchanged files cost a
         # stat, only new/changed ones are opened — in parallel.
@@ -106,14 +133,26 @@ def _build_index(root: str) -> tuple[set[str], dict, dict[str, str], list]:
             artist, title = rec.get("artist", ""), rec.get("title", "")
             if artist and title:
                 by_artist_title[_artist_title_key(artist, title)] = full
+            names = _artists(artist, rec.get("albumartist", ""))
+            if title:
+                artist_titles.update(f"{a}|{_fold(title)}" for a in names)
+                b = _fold(_base(title))
+                artist_titles.update(f"{a}|{b}" for a in names)
+            if rec.get("album"):
+                for a in names:
+                    k = _album_key(a, rec["album"])
+                    tag_albums[k] = tag_albums.get(k, 0) + 1
         tagcache.prune(paths)
     except Exception as exc:
         _log.warning("lib_index scan error: %s", exc)
-    return stems, album_counts, by_artist_title, file_list
+    # Folder and tag counts can disagree (untagged files, a various-artists folder); trust the larger.
+    artist_albums = {k: max(folder_albums.get(k, 0), tag_albums.get(k, 0)) for k in folder_albums.keys() | tag_albums.keys()}
+    return stems, album_counts, by_artist_title, file_list, artist_albums, artist_titles
 
 
 def _worker():
     global _index, _album_counts, _by_artist_title, _files, _ready, _scanning, _last_elapsed, _last_scanned
+    global _artist_albums, _artist_titles
     while True:
         _scan_event.wait()
         _scan_event.clear()
@@ -125,7 +164,7 @@ def _worker():
 
         _scanning = True
         t0            = time.monotonic()
-        stems, ac, at, fl = _build_index(root)
+        stems, ac, at, fl, aa, ats = _build_index(root)
         elapsed       = time.monotonic() - t0
 
         with _index_lock:
@@ -133,6 +172,8 @@ def _worker():
             _album_counts    = ac
             _by_artist_title = at
             _files           = fl
+            _artist_albums   = aa
+            _artist_titles   = ats
         _scanning     = False
         _ready        = True
         _last_elapsed = elapsed
@@ -210,6 +251,7 @@ def add_track(artist: str, title: str, path: str) -> None:
     with _index_lock:
         if artist and title:
             _by_artist_title[_artist_title_key(artist, title)] = path
+            _artist_titles.update(f"{a}|{_fold(title)}" for a in _artists(artist))
         if _files is not None and root and path:
             rel = os.path.relpath(path, root).replace(os.sep, "/")
             if not rel.startswith(".."):
@@ -217,19 +259,32 @@ def add_track(artist: str, title: str, path: str) -> None:
                 _files.append((d, f))
 
 
-def album_count(album: str) -> int:
-    """How many songs of this album are in the library."""
-    norm = _normalise_title(album)
+def check_track(title: str, artists: str = "") -> bool:
+    """True if this song is in the library. With `artists` ("A, B"), only that artist's song counts:
+    title-only matching made every "Intro" or "Home" look owned."""
+    if not artists:
+        return check([title])[0]
+    t, b = _fold(title), _fold(_base(title))
     with _index_lock:
-        return _album_counts.get(norm) or _album_counts.get(_base(norm)) or 0
+        idx = _artist_titles
+    return any(f"{a}|{t}" in idx or f"{a}|{b}" in idx for a in _artists(artists))
 
 
-def check_album(album: str, total: int | None) -> str:
-    """Returns 'full', 'partial', or 'none'."""
+def album_count(album: str, artists: str = "") -> int:
+    """How many songs of this album are in the library. With `artists`, only that artist's album counts
+    (otherwise one "Greatest Hits" folder matches every artist's)."""
     norm = _normalise_title(album)
     base = _base(norm)
     with _index_lock:
-        count = _album_counts.get(norm) or _album_counts.get(base) or 0
+        if artists:
+            names = _artists(artists)
+            return max((_artist_albums.get(f"{a}|{n}", 0) for a in names for n in (norm, base)), default=0)
+        return _album_counts.get(norm) or _album_counts.get(base) or 0
+
+
+def check_album(album: str, total: int | None, artists: str = "") -> str:
+    """Returns 'full', 'partial', or 'none'."""
+    count = album_count(album, artists)
     if not count:
         return "none"
     if total and count < total:

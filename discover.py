@@ -155,6 +155,13 @@ def _song(t: dict, reason: str, source: str) -> dict:
             "reason": reason, "source": source}
 
 
+def _core(title: str) -> str:
+    """A title without remaster/live/feat decorations, for comparing the same song across catalogues."""
+    t = re.sub(r"\s*[\(\[][^)\]]*[\)\]]", "", str(title or ""))
+    t = re.split(r"\s+[-–—]\s+", t, maxsplit=1)[0]
+    return _norm(t) or _norm(title)
+
+
 def listen_songs(client, track_owned, username: str, want: int = 12) -> dict:
     """Songs similar to what the user listened to lately, from ListenBrainz, matched to Spotify.
     Returns {"status": off|ok|error, "songs": [...]}; never raises."""
@@ -168,19 +175,24 @@ def listen_songs(client, track_owned, username: str, want: int = 12) -> dict:
         log.info("Discover: ListenBrainz unavailable (%s)", exc)
         return {"status": "error", "songs": []}
 
+    failed, searched = [], []
+
     def find(c):
         if track_owned(c["title"], c["artist"]):
             return None
+        q = lambda x: str(x).replace('"', " ")
+        searched.append(1)
         try:
-            items = client._get("/search", params={"q": f'track:"{c["title"]}" artist:"{c["artist"]}"', "type": "track",
+            items = client._get("/search", params={"q": f'track:"{q(c["title"])}" artist:"{q(c["artist"])}"', "type": "track",
                                                    "limit": 5}).get("tracks", {}).get("items") or []
         except Exception as exc:
             log.info("Discover: Spotify match for %s failed (%s)", c["title"], exc)
+            failed.append(exc)
             return None
-        want_t, want_a = _norm(c["title"]), _norm(c["artist"])
+        want_t, want_a = _core(c["title"]), _norm(c["artist"])
         for t in items:
             names = [_norm(a.get("name")) for a in t.get("artists") or []]
-            if _norm(t.get("name")) == want_t and (not want_a or any(n and (n in want_a or want_a in n) for n in names)):
+            if _core(t.get("name")) == want_t and (not want_a or any(n and (n in want_a or want_a in n) for n in names)):
                 if track_owned(t.get("name", ""), ", ".join(a["name"] for a in t.get("artists") or [])):
                     return None
                 return _song(t, f"Similar to {c['seed']}" if c["seed"] else "Similar to your recent listens", "listenbrainz")
@@ -188,6 +200,9 @@ def listen_songs(client, track_owned, username: str, want: int = 12) -> dict:
 
     with ThreadPoolExecutor(4) as pool:
         found = [x for x in pool.map(find, cands) if x]
+    if searched and len(failed) == len(searched):
+        log.warning("Discover: every Spotify lookup for ListenBrainz suggestions failed (%s)", failed[0])
+        return {"status": "error", "songs": []}
     uniq = list({x["url"]: x for x in found}.values())
     return {"status": "ok", "songs": uniq[:want]}
 
@@ -195,8 +210,11 @@ def listen_songs(client, track_owned, username: str, want: int = 12) -> dict:
 # ── Building ──────────────────────────────────────────────────────────────────
 def _build(records, client, releases_of, track_owned, album_have, album_status, recent: bool, rnd: int, lb_user: str = "") -> dict:
     prof = library_profile(records, 30 if recent else 0)
-    lb = listen_songs(client, track_owned, lb_user)
+    lb_pool = ThreadPoolExecutor(1)   # runs alongside the artist work below
+    lb_job = lb_pool.submit(listen_songs, client, track_owned, lb_user)
+    lb_pool.shutdown(wait=False)
     if not prof["artists"]:
+        lb = lb_job.result()
         return {"state": "empty", "taste": [], "releases": [], "gaps": [], "songs": [], "artists": [], "seeds": [],
                 "listens": lb["songs"], "lb_status": lb["status"]}
     top_g = prof["genres"]
@@ -218,13 +236,13 @@ def _build(records, client, releases_of, track_owned, album_have, album_status, 
     for name, _aid, rels in per_artist:
         for r in rels:
             tc = r["track_count"]
-            st = album_status(r["title"], tc)
+            st = album_status(r["title"], tc, name)
             if st == "full" or (tc <= 3 and track_owned(r["title"], name)):
                 continue
             item = {"title": r["title"], "artist": name, "type": r["type"], "year": r["year"], "url": r["url"],
                     "cover_url": r["cover_url"], "track_count": tc, "date": r.get("date", "")}
             if st == "partial":
-                have = album_have(r["title"])
+                have = album_have(r["title"], name)
                 item.update(have=have)
                 if tc >= 4 and have * 2 >= tc:
                     gaps.append(item)
@@ -238,6 +256,7 @@ def _build(records, client, releases_of, track_owned, album_have, album_status, 
 
     finder = Songs(client, [(n, aid) for n, aid, _ in per_artist], top_g, prof["known"], track_owned)
     songs, _label, artists = finder.next("", reset=True)
+    lb = lb_job.result()
     return {"state": "ready", "taste": taste, "releases": releases[:MAX_RELEASES], "gaps": gaps[:MAX_GAPS],
             "songs": songs, "artists": artists, "seeds": [a for a, _ in prof["artists"]], "listens": lb["songs"], "lb_status": lb["status"], "similar": finder.similar_ok, "_finder": finder}
 
@@ -384,14 +403,14 @@ def snapshot(get_records, client_fn, releases_of, track_owned, album_have, album
     """The cached suggestions (building them in the background when missing, stale or `refresh`)."""
     key = "recent" if recent else "all"
     with _lock:
-        c = _cache.setdefault(key, {"data": None, "at": 0.0, "building": False, "error": "", "round": 0})
-        stale = not c["data"] or time.time() - c["at"] > _TTL
+        c = _cache.setdefault(key, {"data": None, "at": 0.0, "building": False, "error": "", "round": 0, "lb": lb_user})
+        stale = not c["data"] or time.time() - c["at"] > _TTL or c.get("lb") != lb_user
         if (stale or refresh) and not c["building"]:
             records = get_records()
             if records is None:
                 return {"state": "building", "building": True, "why": "library", "taste": [], "releases": [], "gaps": [],
                         "songs": [], "artists": [], "hidden": [], "error": ""}
-            c["building"], c["error"] = True, ""
+            c["building"], c["error"], c["lb"] = True, "", lb_user
             if refresh:
                 c["round"] += 1
             rnd = c["round"]

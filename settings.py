@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 import os
@@ -57,7 +58,21 @@ def _defaults() -> dict:
     }
 
 
+_loaded: tuple | None = None   # (file stamp, settings) of the last read
+
+
 def load() -> dict:
+    """The current settings. Called on hot paths (every job, every poll), so the file is
+    only re-read when its size or mtime changed; callers get their own copy."""
+    global _loaded
+    try:
+        st = os.stat(_SETTINGS_FILE)
+        stamp = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        stamp = None
+    hit = _loaded
+    if stamp is not None and hit and hit[0] == stamp:
+        return copy.deepcopy(hit[1])
     d = _defaults()
     try:
         with open(_SETTINGS_FILE) as f:
@@ -67,7 +82,9 @@ def load() -> dict:
         pass
     except Exception as exc:
         _log.warning("Settings load failed: %s", exc)
-    return d
+        return d
+    _loaded = (stamp, d) if stamp is not None else None
+    return copy.deepcopy(d)
 
 
 def save(updates: dict) -> None:
@@ -86,6 +103,8 @@ def save(updates: dict) -> None:
 
 
 def _persist(data: dict) -> None:
+    global _loaded
+    _loaded = None   # coarse mtimes could otherwise hide a same-size rewrite
     try:
         d = os.path.dirname(os.path.abspath(_SETTINGS_FILE))
         if d:
@@ -94,5 +113,6 @@ def _persist(data: dict) -> None:
         with open(tmp, "w") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp, _SETTINGS_FILE)
+        _loaded = None
     except Exception as exc:
         _log.warning("Settings save failed: %s", exc)

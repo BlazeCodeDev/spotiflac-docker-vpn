@@ -84,7 +84,10 @@ def _parse(path: str) -> dict:
     codec = str(getattr(info, "codec", "") or "")
     if codec:
         rec["codec"] = codec
-    rec["cover"] = _has_cover(path)
+    # FLAC (most of a lossless library) lists its pictures on the easy object too, which saves
+    # opening and parsing the file a second time; that open is a network round trip on a NAS.
+    from mutagen.flac import FLAC
+    rec["cover"] = bool(audio.pictures) if isinstance(audio, FLAC) else _has_cover(path)
     return rec
 
 
