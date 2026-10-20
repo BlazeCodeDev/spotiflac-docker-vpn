@@ -201,7 +201,8 @@ const S = {
   h: {
     tab: 'dups', filters: new Set(['id', 'tags']),
     dups: null, dupsInfo: null, keep: {}, mis: null, misInfo: null,
-    sel: { mis: new Set(), name: new Set(), miss: new Set(), bad: new Set() },
+    sel: { mis: new Set(), name: new Set(), miss: new Set(), bad: new Set(), up: new Set() },
+    up: null,   // /api/library/upgrade: songs being looked up or queued, and the ones not found
     org: { fmt: '{artist}/{album}/{track} {title}', phase: 'idle', done: 0, total: 0, moved: 0, errors: 0, ops: [], msg: '' },
   },
   disc: { data: null, error: '', basis: new Set(['artists', 'genres', 'similar']), recent: false, hiddenOpen: false, flavour: '', label: '', busy: false, more: false, relShown: 10 },
@@ -221,6 +222,10 @@ const brokenWhy = (t) => (t.bytes === 0 ? 'Empty file' : t.unreadable ? 'Can’t
 const brokenList = () => S.lib.tracks.filter((t) => brokenWhy(t));
 const dupGroups = () => S.h.dups || [];
 const dupFor = (t) => dupGroups().find((g) => g.files.some((f) => f.path === t.path));
+// Lossy files that could be lossless. One with a lossless duplicate needs no download, just the Duplicates tab.
+const lossyAll = () => S.lib.tracks.filter((t) => !t.lossless && !brokenWhy(t));
+const hasLosslessCopy = (t) => { const g = dupFor(t); return !!g && g.files.some((f) => f.lossless); };
+const upgradeList = () => lossyAll().filter((t) => !hasLosslessCopy(t));
 const queueJobs = () => {
   const rank = { running: 0, queued: 1, error: 2, cancelled: 3 };
   return S.jobs.filter((j) => j.status in rank).slice().reverse().sort((a, b) => rank[a.status] - rank[b.status]);
@@ -767,7 +772,10 @@ async function refreshTasks() {
     else if (t.id === 'scan-dups') loadDups(true);
     else if (t.id === 'scan-mistag') loadScan('mistag');
     else if (t.id === 'lib-index' || t.id === 'lib-enrich') loadTracks(true);
+    else if (t.id === 'lib-upgrade') loadUpgrade();
   }
+  // Follow a running upgrade, and drop "Queued" marks once its downloads have replaced the files.
+  if (S.route === 'health' && S.h.tab === 'up' && (S.h.up?.running || S.h.up?.pending?.length || tasks.some((t) => t.id === 'lib-upgrade' && t.running))) loadUpgrade();
   const tb = $('#tasks-body');
   if (tb) tb.innerHTML = tasksBody();
   if (sig !== tasksSig) { tasksSig = sig; renderChrome(); if (S.route === 'health') render(); } else patchScan();
@@ -1119,6 +1127,13 @@ async function loadScan(kind) {
   } catch { /* leave what we have */ }
 }
 function refreshScans() { loadDups(true); if (S.h.mis !== null) loadScan('mistag'); }
+async function loadUpgrade() {
+  try {
+    const d = await api('/api/library/upgrade');
+    if (JSON.stringify(d) === JSON.stringify(S.h.up)) return;
+    S.h.up = d; if (S.route === 'health' && S.h.tab === 'up') render();
+  } catch { /* keep what we have */ }
+}
 const scanRunning = () => S.tasks.some((t) => t.running && t.id.startsWith('scan-'));
 const keepOf = (g) => S.h.keep[g.id] ?? g.keepIdx;
 
@@ -1224,6 +1239,26 @@ function healthBroken() {
       : emptyState('task_alt', 'No broken songs', 'Every file in your library has audio in it.')}
     ${list.length ? `<div class="dock"><span class="b-l grow">${sel.size ? plural(sel.size, 'file') + ' selected' : plural(list.length, 'broken file')}</span>
       <button class="btn outlined danger" data-act="hdeletebad" ${sel.size ? '' : 'disabled'}>${ic('delete')}Delete${sel.size ? ' ' + sel.size : ''}</button></div>` : ''}`;
+  });
+}
+
+function healthUpgrade() {
+  return libGate(() => {
+    const list = upgradeList(); const sel = S.h.sel.up; const up = S.h.up || {};
+    const pending = new Set(up.pending || []);
+    const covered = lossyAll().length - list.length;
+    const notFound = (up.errors || []).filter((e) => e.path);
+    const mb = list.reduce((a, t) => a + t.size, 0);
+    return `<span class="b-m v">Lossy files (MP3, AAC, Ogg…) that could be lossless. Upgrade looks each song up on Spotify and downloads it again in lossless. The old file is deleted only once the lossless copy has arrived; if no source has the song in lossless, the old file stays.</span>
+    ${covered ? `<span class="b-m v">${plural(covered, 'more lossy file')} already ${covered === 1 ? 'has' : 'have'} a lossless copy. <button class="btn text" style="height:auto;padding:0;vertical-align:baseline" data-act="htab" data-k="dups">Remove ${covered === 1 ? 'it' : 'them'} under Duplicates</button>.</span>` : ''}
+    ${up.running ? `<div class="row b-m" style="gap:12px;background:var(--md-secondary-container);color:var(--md-on-secondary-container);border-radius:16px;padding:10px 16px"><span class="ms spin" aria-hidden="true">progress_activity</span><span class="grow">Looking up songs on Spotify · ${up.done} of ${up.total} · ${plural(up.queued, 'download')} queued</span></div>` : ''}
+    ${!up.running && notFound.length ? `<details class="b-m" style="background:var(--md-error-container);color:var(--md-on-error-container);border-radius:16px;padding:10px 16px"><summary>${plural(notFound.length, 'song')} couldn’t be queued</summary>
+      <div class="col" style="gap:2px;margin-top:8px">${notFound.slice(0, 50).map((e) => `<span class="ell"><span class="mono" style="font-size:12px">${esc(e.path)}</span> · ${esc(e.error)}</span>`).join('')}</div></details>` : ''}
+    ${list.length ? listRows('up', list, (t) => `<span class="col grow" style="min-width:0"><span class="b-l ell">${esc(t.title)}</span><span class="b-m v ell">${esc(t.artist || 'No artist tag')} · ${esc(t.album)}</span></span>
+      <span class="row" style="gap:8px;justify-content:flex-end">${pending.has(t.path) ? `<span class="tag primary">${ic('downloading')}Queued</span>` : ''}<span class="mono l-m hide-sm">${esc((t.fmt || '').toUpperCase())}</span><span class="tag neutral">${t.kbps ? t.kbps + ' kbps' : 'Lossy'}</span></span>`)
+      : emptyState('task_alt', 'Everything is lossless', covered ? 'The remaining lossy files have lossless duplicates.' : 'No MP3 or other lossy files in your library.')}
+    ${list.length ? `<div class="dock"><span class="b-l grow">${sel.size ? plural(sel.size, 'file') + ' selected' : `${plural(list.length, 'lossy file')}<span class="v"> · ${fmtMB(mb)}</span>`}</span>
+      <button class="btn filled" data-act="upgrade" ${up.running ? 'disabled' : ''}>${ic('high_quality')}${sel.size ? 'Upgrade selected' : 'Upgrade all'}</button></div>` : ''}`;
   });
 }
 
@@ -1377,13 +1412,14 @@ const discDrop = (k, urls) => { const d = S.disc.data; d[k] = d[k].filter((x) =>
 function viewHealth() {
   const tabs = [['dups', 'content_copy', 'Duplicates', S.h.dups ? S.h.dups.length : '–'], ['mis', 'graphic_eq', 'Mistagged', S.h.mis ? S.h.mis.length : '–'],
     ['name', 'text_fields', 'Misnamed', S.lib.loaded && S.lib.ready ? misnamed().length : '–'], ['miss', 'label_off', 'Missing tags', S.lib.loaded && S.lib.ready ? missingList().length : '–'],
-    ['bad', 'broken_image', 'Broken', S.lib.loaded && S.lib.ready ? brokenList().length : '–'], ['org', 'folder_managed', 'Folders', '']];
-  const body = { dups: healthDups, mis: healthMis, name: healthNames, miss: healthMissing, bad: healthBroken, org: healthOrganize }[S.h.tab]();
+    ['bad', 'broken_image', 'Broken', S.lib.loaded && S.lib.ready ? brokenList().length : '–'], ['up', 'high_quality', 'Upgrade', S.lib.loaded && S.lib.ready ? upgradeList().length : '–'],
+    ['org', 'folder_managed', 'Folders', '']];
+  const body = { dups: healthDups, mis: healthMis, name: healthNames, miss: healthMissing, bad: healthBroken, up: healthUpgrade, org: healthOrganize }[S.h.tab]();
   const b = scanInfo();
   const busy = !!b;
   return `<section class="pane" style="padding:24px 28px 20px;display:flex;flex-direction:column;gap:16px" aria-labelledby="h-health">
     <header class="row wrap" style="align-items:flex-end;gap:16px"><div class="grow col" style="gap:4px"><h1 id="h-health" class="hl-m">Library health</h1>
-      <span class="b-m v">Duplicates, misnamed files, missing tags and broken files are read live from your library. Mistagged songs need a scan, because the audio has to be fingerprinted.</span></div>
+      <span class="b-m v">Duplicates, misnamed files, missing tags, broken and lossy files are read live from your library. Mistagged songs need a scan, because the audio has to be fingerprinted.</span></div>
       <button class="btn tonal" data-act="scan" ${busy ? 'disabled' : ''}>${busy ? `<span class="ms spin" aria-hidden="true">progress_activity</span><span data-scan-health>${esc(b ? b.text : 'Scanning…')}</span>` : `${ic('radar')}Scan audio`}</button></header>
     ${busy ? `<div class="lp ${b && b.pct != null ? '' : 'ind'}" role="progressbar" aria-label="Scan progress" data-scan-bar><span class="a" style="width:${b && b.pct != null ? b.pct : 30}%"></span><span class="t"></span></div>` : ''}
     <div class="tabs" role="tablist" aria-label="Issue type">${tabs.map(([k, i, l, n]) => `<button class="tab" role="tab" aria-selected="${S.h.tab === k}" data-act="htab" data-k="${k}">${ic(i, S.h.tab === k ? 'f' : '')}<span class="t-s">${l}</span>${n === '' ? '' : `<span class="tag ${S.h.tab === k ? 'primary' : 'neutral'}" style="height:20px;padding:0 8px">${n}</span>`}</button>`).join('')}</div>
@@ -1898,7 +1934,7 @@ A.delsel = async () => {
 };
 
 // Health
-A.htab = (el) => { S.h.tab = el.dataset.k; render(); };
+A.htab = (el) => { S.h.tab = el.dataset.k; if (S.h.tab === 'up') loadUpgrade(); render(); };
 A.hfilter = (el) => { const f = S.h.filters; f.has(el.dataset.k) ? f.delete(el.dataset.k) : f.add(el.dataset.k); render(); };
 A.keep = (el) => { S.h.keep[el.dataset.g] = +el.dataset.i; render(); };
 A.keepall = (el) => { const g = el.dataset.g; if (S.h.keep[g] === 'all') delete S.h.keep[g]; else S.h.keep[g] = 'all'; render(); };
@@ -1922,7 +1958,7 @@ A.scan = async () => {
 };
 A.hsel = (el) => { const s = S.h.sel[el.dataset.set]; const id = el.dataset.id; el.checked ? s.add(id) : s.delete(id); render(); };
 A.hselall = (el) => {
-  const set = el.dataset.set; const list = { name: misnamed, miss: missingList, bad: brokenList }[set]();
+  const set = el.dataset.set; const list = { name: misnamed, miss: missingList, bad: brokenList, up: upgradeList }[set]();
   list.forEach((t) => (el.checked ? S.h.sel[set].add(t.id) : S.h.sel[set].delete(t.id))); render();
 };
 A.repair = async () => {
@@ -1932,6 +1968,17 @@ A.repair = async () => {
     snack(d.errors && d.errors.length ? `Queued ${d.queued}. ${d.errors[0]}` : `Re-downloading ${plural(d.queued, 'song')} from their tags`, { label: 'View queue', fn: () => go('download') });
     S.h.sel.mis.clear(); refreshScans(); refreshJobs(); later();
   } catch (e) { oops('Couldn’t repair')(e); }
+};
+A.upgrade = async () => {
+  const sel = S.h.sel.up; const files = sel.size ? [...sel] : upgradeList().map((t) => t.path);
+  if (!files.length) return;
+  if (!sel.size && files.length > 1 && !(await confirmDlg(`Upgrade ${plural(files.length, 'file')}?`, 'Each song is looked up on Spotify and downloaded again in lossless. A lossy file is only deleted once its lossless copy has arrived.', 'Upgrade', false))) return;
+  try {
+    const d = await api('/api/library/upgrade', { method: 'POST', body: { files } });
+    if (d.started === false) { snack('An upgrade is already being queued'); return; }
+    snack(`Looking up ${plural(files.length, 'song')} for lossless downloads…`, { label: 'View queue', fn: () => go('download') });
+    sel.clear(); loadUpgrade(); refreshTasks(); refreshJobs();
+  } catch (e) { oops('Couldn’t start the upgrade')(e); }
 };
 A.hdelete = async () => {
   const files = [...S.h.sel.mis];
@@ -2022,7 +2069,7 @@ A.lbsync = async (el) => {
   try { await api('/api/listenbrainz/sync', { method: 'POST', body: force ? { force: true } : undefined }); snack(force ? 'Force-resyncing ListenBrainz playlists…' : 'Syncing ListenBrainz recommendations…'); refreshTasks(); } catch (e) { oops('Couldn’t sync')(e); }
 };
 // Background tasks: everything /api/tasks reports, live while the dialog is open.
-const STOPPABLE = { 'scan-library': ['/api/library/scan/library', 'Scan'], 'scan-dups': ['/api/library/scan/dups', 'Scan'], 'scan-mistag': ['/api/library/scan/mistag', 'Scan'], 'lib-enrich': ['/api/library/enrich', 'Enrichment'] };
+const STOPPABLE = { 'scan-library': ['/api/library/scan/library', 'Scan'], 'scan-dups': ['/api/library/scan/dups', 'Scan'], 'scan-mistag': ['/api/library/scan/mistag', 'Scan'], 'lib-enrich': ['/api/library/enrich', 'Enrichment'], 'lib-upgrade': ['/api/library/upgrade', 'Upgrade'] };
 function tasksBody() {
   const list = S.tasks.slice().sort((x, y) => Number(y.running) - Number(x.running));
   if (!list.length) return emptyState('task_alt', 'No background tasks');
@@ -2178,6 +2225,7 @@ function enterRoute() {
   if (S.route === 'health') {
     loadDups();
     if (S.h.mis === null && !S.h.misInfo) loadScan('mistag');
+    if (S.h.tab === 'up') loadUpgrade();
   }
   if (S.route === 'settings') { loadExt(); loadVersion(); }
 }

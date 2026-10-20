@@ -573,7 +573,9 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
             quality: str = "lossless",
             pre_success_count: int = 0, full_total: int = 0,
             batch_urls: list | None = None, pre_title: str = "",
-            generate_m3u: bool = False) -> str:
+            generate_m3u: bool = False, upgrade_from: list | None = None) -> str:
+    """upgrade_from: lossy library files (absolute paths) this download replaces. Such a job ignores
+    lossy copies already on disk, and deletes the old files only once a lossless copy has arrived."""
     global _seq
     jid = str(uuid.uuid4())[:8]
     with _lock:
@@ -591,10 +593,87 @@ def enqueue(url: str, output_dir: str, services: list, filename_fmt: str,
             quality=quality, _qobuz_token=qobuz_token,
             _seq=_seq,
         )
+        if upgrade_from:
+            _jobs[jid]["upgrade_from"] = list(upgrade_from)
     _cancel[jid] = threading.Event()
     _save()
     _push_pq(jid, _seq)
     return jid
+
+
+def extend_upgrade(job_id: str, abs_path: str) -> bool:
+    """Add another lossy copy of the same song to a queued upgrade job; False once it has started."""
+    with _lock:
+        j = _jobs.get(job_id)
+        if not j or j["status"] != "queued" or j.get("upgrade_from") is None or j.get("next_retry_at"):
+            return False
+        if abs_path not in j["upgrade_from"]:
+            j["upgrade_from"].append(abs_path)
+    _save_soon()
+    return True
+
+
+def active_upgrade_paths() -> set[str]:
+    """Library files a queued or running upgrade job is about to replace."""
+    with _lock:
+        return {p for j in _jobs.values() if j["status"] in ("queued", "running")
+                for p in j.get("upgrade_from") or ()}
+
+
+_LOSSLESS_EXTS = (".flac", ".wav", ".aif", ".aiff")
+
+
+def _is_lossless_file(path: str) -> bool:
+    """FLAC/WAV/AIFF, or ALAC in an .m4a (the container alone can't tell ALAC from AAC)."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in _LOSSLESS_EXTS:
+        return True
+    if ext in (".m4a", ".mp4"):
+        try:
+            import tagcache
+            return "alac" in str((tagcache.get(path) or {}).get("codec", "")).lower()
+        except Exception:
+            return False
+    return False
+
+
+def _same_file(a: str, b: str) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _apply_upgrade(r: dict, olds: list[str]) -> dict:
+    """An upgrade job's track result: delete the lossy originals once the new file is lossless. A
+    lossy result is no upgrade: it is removed again (unless it is the original) and reported as failed."""
+    new = r.get("file_path") or ""
+    if not r.get("success") or not new or not os.path.isfile(new):
+        return r
+    who = _who(r.get("artists"), r.get("title"))
+    if _is_lossless_file(new):
+        replaced = []
+        for old in olds:
+            if not os.path.exists(old) or _same_file(old, new):
+                continue
+            try:
+                os.remove(old)
+                replaced.append(old)
+            except OSError as exc:
+                log.warning("Upgrade: could not remove %s: %s", old, exc)
+        if replaced:
+            applog.event("downloads", f"Upgraded     {who} · replaced {len(replaced)} lossy file{'s' if len(replaced) != 1 else ''}")
+            _cleanup_empty_dirs()
+            lib_index.trigger_rescan()
+        return {**r, "replaced": replaced}
+    if r.get("status") == "done" and not any(_same_file(old, new) for old in olds):
+        try:
+            os.remove(new)
+            lib_index.trigger_rescan()
+        except OSError as exc:
+            log.warning("Upgrade: could not remove lossy download %s: %s", new, exc)
+    return {**r, "success": False, "status": "failed", "file_path": None, "no_lossless": True,
+            "error": "No lossless source found · kept the existing file"}
 
 
 def _jobname(job_id: str) -> str:
@@ -873,8 +952,10 @@ def _find_existing_track(
 class _TrackingWorker(DownloadWorker):
     """DownloadWorker that fires callbacks after each track."""
 
-    def __init__(self, *args, on_track_done, on_track_result=None, on_track_start=None, cancel=None, **kwargs):
+    def __init__(self, *args, on_track_done, on_track_result=None, on_track_start=None, cancel=None,
+                 upgrade=False, **kwargs):
         super().__init__(*args, **kwargs)
+        self._upgrade         = upgrade      # a quality upgrade: a lossy copy on disk doesn't count
         self._on_track_done   = on_track_done
         self._on_track_result = on_track_result
         self._on_track_start  = on_track_start
@@ -955,10 +1036,10 @@ class _TrackingWorker(DownloadWorker):
                     extension            = ext,
                 )
                 match = _find_existing_track(existing_index, out_dir, base_out, fname)
-                if match:
+                if match and (not self._upgrade or _is_lossless_file(match)):
                     found = _Path(match)
                     break
-            if found is None:
+            if found is None and not self._upgrade:
                 # Exact expected filename not found — fall back to the
                 # background-scanned artist+title index (see lib_index.py) to
                 # catch this song already existing under a different
@@ -1109,10 +1190,10 @@ class _TrackingWorker(DownloadWorker):
                     extension              = ext,
                 )
                 match = _find_existing_track(existing_index, out_dir, base_out, fname)
-                if match:
+                if match and (not self._upgrade or _is_lossless_file(match)):
                     found = _Path(match)
                     break
-            if found is None:
+            if found is None and not self._upgrade:
                 at_match = lib_index.find_by_artist_title(track.first_artist, track.title)
                 if at_match and os.path.exists(at_match):
                     found = _Path(at_match)
@@ -1241,8 +1322,9 @@ class _TrackingWorker(DownloadWorker):
 class _TrackingDownloader(SpotiflacDownloader):
     """SpotiflacDownloader that reports on_progress(done, total) and per-track results."""
 
-    def __init__(self, opts, on_progress, on_track_result=None, on_track_start=None, cancel=None):
+    def __init__(self, opts, on_progress, on_track_result=None, on_track_start=None, cancel=None, upgrade=False):
         super().__init__(opts)
+        self._upgrade         = upgrade
         self._on_progress     = on_progress
         self._on_track_result = on_track_result
         self._on_track_start  = on_track_start
@@ -1315,6 +1397,7 @@ class _TrackingDownloader(SpotiflacDownloader):
             on_track_result = self._on_track_result,
             on_track_start  = self._on_track_start,
             cancel          = self._cancel,
+            upgrade         = self._upgrade,
         )
         worker.run()
         return []
@@ -1372,6 +1455,7 @@ class _TrackingDownloader(SpotiflacDownloader):
             on_track_result = self._on_track_result,
             on_track_start  = self._on_track_start,
             cancel          = self._cancel,
+            upgrade         = self._upgrade,
         )
         await worker.run_async()
         return []
@@ -1408,6 +1492,7 @@ def _run(job_id: str) -> None:
         full_total        = j.get("full_total") or 0
         batch_urls        = j.get("_batch_urls") or []
         generate_m3u      = bool(j.get("generate_m3u"))
+        upgrade           = j.get("upgrade_from") is not None
 
         # Fetch metadata if title or cover are missing.
         # LB-sourced jobs have pre_title set so title is already known, but
@@ -1479,6 +1564,10 @@ def _run(job_id: str) -> None:
                 _update(job_id, track_results=list(track_results))
 
             def _on_track_result(r):
+                if upgrade:
+                    with _lock:   # read now: copies can join the job until it starts
+                        olds = list((_jobs.get(job_id) or {}).get("upgrade_from") or ())
+                    r = _apply_upgrade(r, olds)
                 _track_event(r)
                 idx = _track_index.get(r["track_id"])
                 if idx is not None:
@@ -1510,11 +1599,12 @@ def _run(job_id: str) -> None:
                     on_track_done=lambda done: _on_progress(done, len(tracks)),
                     on_track_result=_on_track_result,
                     on_track_start=_on_track_start,
-                    cancel=ev,
+                    cancel=ev, upgrade=upgrade,
                 ).run()
             else:
                 downloader = _TrackingDownloader(
                     opts, _on_progress, _on_track_result, on_track_start=_on_track_start, cancel=ev,
+                    upgrade=upgrade,
                 )
                 downloader.run(url)
 
@@ -1595,7 +1685,9 @@ def _run(job_id: str) -> None:
         interval_min = cfg["retry_interval_min"]
         max_retries  = cfg["retry_max_count"]
 
-        if not interval_min:
+        # An upgrade whose sources only had a lossy copy would download (and discard) it again.
+        no_lossless = bool(track_results) and all(r.get("success") or r.get("no_lossless") for r in track_results)
+        if not interval_min or no_lossless:
             _drop_cancel(job_id, ev)
             return
 

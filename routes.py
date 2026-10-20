@@ -1639,6 +1639,25 @@ def api_tasks():
             "last_error":  st["error"] or "",
         })
 
+    with _upgrade_lock:
+        us = dict(_upgrade_state)
+    if us["running"] or us["elapsed"] is not None:
+        if us["running"]:
+            detail = "Stopping…" if us["stopping"] else f"Looking up songs {us['done']}/{us['total']} · {us['queued']} queued"
+        else:
+            detail = f"{plural_n(us['queued'], 'song')} queued for lossless download"
+            if us["errors"]:
+                detail += f" · {len(us['errors'])} not queued"
+        tasks.append({
+            "id":             "lib-upgrade",
+            "label":          "Quality Upgrade",
+            "running":        us["running"],
+            "detail":         detail,
+            "cancellable":    us["running"] and not us["stopping"],
+            "progress_done":  us["done"] if us["running"] else 0,
+            "progress_total": us["total"] if us["running"] else 0,
+        })
+
     import listenbrainz as _lb
     lb  = _lb.get_state()
     cfg = _settings.load()
@@ -2935,6 +2954,109 @@ def api_library_repair():
         ) for u in urls]
     log.info("Library repair: %d file(s) queued for redownload, %d error(s)", len(repaired), len(errors))
     return jsonify(repaired=repaired, queued=len(ids), ids=ids, errors=errors[:20])
+
+
+# ── Quality upgrades ─────────────────────────────────────────────────────────
+# Lossy files (MP3, AAC, …) downloaded again in lossless. Looking each song up on Spotify is a
+# search per file, so it runs in the background and queues a download per song as it goes. The
+# download job replaces the old file only once a lossless copy has arrived (see worker._apply_upgrade).
+_upgrade_lock   = threading.Lock()
+_upgrade_cancel = threading.Event()
+_upgrade_state: dict = {"running": False, "done": 0, "total": 0, "queued": 0, "skipped": 0,
+                        "errors": [], "started_at": None, "elapsed": None, "stopping": False}
+
+
+def _upgrade_quality(cfg: dict) -> str:
+    q = cfg.get("quality")
+    return q if q in ("lossless", "hires") else "lossless"
+
+
+def _run_upgrade_bg(rels: list[str]) -> None:
+    cfg = _settings.load()
+    active = worker.active_upgrade_paths()
+    by_url: dict[str, str] = {}            # Spotify URL -> job id, so copies of one song share a download
+    queued = skipped = 0
+    errors: list[dict] = []
+    applog.event("library", f"Started      quality upgrade · {plural_n(len(rels), 'file')}")
+    try:
+        os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
+        for i, rel in enumerate(rels):
+            if _upgrade_cancel.is_set():
+                break
+            try:
+                abs_path = _safe_lib_path(rel)
+                if os.path.splitext(abs_path)[1].lower() not in _AUDIO_EXTS or not os.path.isfile(abs_path):
+                    raise ValueError("not an audio file")
+                if abs_path in active:
+                    skipped += 1
+                    continue
+                inf = _dup_read(abs_path, rel)
+                if not inf:
+                    raise ValueError("no title/artist tags to look the song up by")
+                if inf["lossless"]:
+                    skipped += 1
+                    continue
+                url = _read_source_url(abs_path) or _resolve_track_url(inf["title"], inf["artist"], inf["isrc"])
+                if not url:
+                    raise ValueError("couldn't find this song on Spotify")
+                jid = by_url.get(url)
+                if not (jid and worker.extend_upgrade(jid, abs_path)):
+                    by_url[url] = worker.enqueue(
+                        url=url, output_dir=Config.OUTPUT_DIR, services=cfg["services"],
+                        filename_fmt=cfg["filename_fmt"], qobuz_token=str(cfg["qobuz_token"]),
+                        quality=_upgrade_quality(cfg), generate_m3u=False, upgrade_from=[abs_path],
+                    )
+                queued += 1
+            except (ValueError, OSError) as exc:
+                errors.append({"path": rel, "error": str(exc)})
+            finally:
+                with _upgrade_lock:
+                    _upgrade_state.update(done=i + 1, queued=queued, skipped=skipped, errors=errors[-200:])
+    except Exception as exc:
+        log.debug("upgrade traceback", exc_info=True)
+        errors.append({"path": "", "error": str(exc)[:200]})
+    finally:
+        with _upgrade_lock:
+            _upgrade_state.update(running=False, stopping=False, queued=queued, skipped=skipped, errors=errors[-200:],
+                                  elapsed=round(time.monotonic() - _upgrade_state["started_at"], 1))
+        applog.event("library", f"{'Stopped' if _upgrade_cancel.is_set() else 'Finished'}     quality upgrade · "
+                     f"{queued} queued" + (f" · {len(errors)} not queued" if errors else ""))
+
+
+@bp.get("/api/library/upgrade")
+def api_upgrade_status():
+    root = _lib_root()
+    with _upgrade_lock:
+        st = dict(_upgrade_state)
+    # Files with an upgrade download still to come, so the list can say so instead of offering them again.
+    pending = sorted(_lib_rel(p) for p in worker.active_upgrade_paths() if p == root or p.startswith(root + os.sep))
+    return jsonify(**st, pending=pending)
+
+
+@bp.post("/api/library/upgrade")
+def api_upgrade_start():
+    """Queue lossless re-downloads of the named lossy files (library-relative paths)."""
+    rels = [str(r) for r in (request.get_json(silent=True) or {}).get("files") or [] if r]
+    if not rels:
+        return jsonify(error="No files given"), 400
+    with _upgrade_lock:
+        if _upgrade_state["running"]:
+            return jsonify(started=False)
+        _upgrade_cancel.clear()
+        _upgrade_state.update(running=True, done=0, total=len(rels), queued=0, skipped=0, errors=[],
+                              started_at=time.monotonic(), elapsed=None, stopping=False)
+    threading.Thread(target=_run_upgrade_bg, args=(rels,), daemon=True, name="lib-upgrade").start()
+    return jsonify(started=True, total=len(rels))
+
+
+@bp.delete("/api/library/upgrade")
+def api_upgrade_cancel():
+    with _upgrade_lock:
+        if not _upgrade_state["running"]:
+            return jsonify(ok=False)
+        _upgrade_state["stopping"] = True
+    _upgrade_cancel.set()
+    return jsonify(ok=True)
 
 
 def _mistag_audio_paths(files) -> tuple[list[tuple[str, str]], list[str]]:
