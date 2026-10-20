@@ -170,7 +170,7 @@ def listen_songs(client, track_owned, username: str, want: int = 12) -> dict:
     import listenbrainz
     try:
         listens = listenbrainz.recent_listens(username)
-        cands = listenbrainz.similar_recordings(listens, 40)
+        cands = listenbrainz.similar_recordings(listens, 60)
     except Exception as exc:
         log.info("Discover: ListenBrainz unavailable (%s)", exc)
         return {"status": "error", "songs": []}
@@ -195,7 +195,8 @@ def listen_songs(client, track_owned, username: str, want: int = 12) -> dict:
             if _core(t.get("name")) == want_t and (not want_a or any(n and (n in want_a or want_a in n) for n in names)):
                 if track_owned(t.get("name", ""), ", ".join(a["name"] for a in t.get("artists") or [])):
                     return None
-                return _song(t, f"Similar to {c['seed']}" if c["seed"] else "Similar to your recent listens", "listenbrainz")
+                why = "Similar to your recent listens" if c.get("seeds", 0) > 1 or not c["seed"] else f"Similar to {c['seed']}"
+                return _song(t, why, "listenbrainz")
         return None
 
     with ThreadPoolExecutor(4) as pool:

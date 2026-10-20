@@ -123,10 +123,10 @@ _LABS_API     = "https://labs.api.listenbrainz.org"
 _SIMILAR_ALGO = "session_based_days_9000_session_300_contribution_5_threshold_15_limit_50_skip_30"
 
 
-def recent_listens(username: str, seeds: int = 10) -> list[dict]:
+def recent_listens(username: str, seeds: int = 25) -> list[dict]:
     """The user's most recent distinct listens that ListenBrainz could map to a
     MusicBrainz recording: [{mbid, title, artist}], newest first."""
-    url  = f"{_LB_API}/user/{urllib.parse.quote(username)}/listens?count=50"
+    url  = f"{_LB_API}/user/{urllib.parse.quote(username)}/listens?count=100"
     data = _http_get(url, headers={"User-Agent": _MB_UA})
     out, seen = [], set()
     for l in data.get("payload", {}).get("listens", []):
@@ -171,16 +171,31 @@ def similar_recordings(listens: list[dict], limit: int = 30) -> list[dict]:
         cur = best.get(mbid)
         if cur is None:
             cur = best[mbid] = {"mbid": mbid, "title": r["recording_name"], "artist": r.get("artist_credit_name") or "",
-                                "album": r.get("release_name") or "", "score": 0, "seed": "", "_top": -1}
+                                "album": r.get("release_name") or "", "score": 0, "seed": "", "_top": -1, "_seeds": set()}
         score = r.get("score") or 0
         cur["score"] += score        # appearing under several listens makes it a stronger match
+        cur["_seeds"].add(r.get("reference_mbid"))
         if score > cur["_top"]:
             cur["_top"] = score
             seed = by_mbid.get(r.get("reference_mbid"))
             cur["seed"] = seed["title"] if seed else ""
-    out = sorted(best.values(), key=lambda x: x["score"], reverse=True)[:limit]
+    ranked = sorted(best.values(), key=lambda x: x["score"], reverse=True)
+    # Matches shared by several listens come first; the rest are dealt out round-robin across
+    # the listens (newest first) so one strong seed can't fill the list on its own.
+    out = [x for x in ranked if len(x["_seeds"]) > 1]
+    groups: dict[str, list] = {m: [] for m in by_mbid}
+    for x in ranked:
+        if len(x["_seeds"]) <= 1:
+            groups.setdefault(next(iter(x["_seeds"]), ""), []).append(x)
+    queues = [g for g in groups.values() if g]
+    while queues and len(out) < limit:
+        for g in queues:
+            out.append(g.pop(0))
+        queues = [g for g in queues if g]
+    out = out[:limit]
     for x in out:
         x.pop("_top", None)
+        x["seeds"] = len(x.pop("_seeds"))
     return out
 
 
