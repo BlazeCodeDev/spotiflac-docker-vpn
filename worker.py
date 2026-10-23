@@ -532,10 +532,15 @@ def retry_job(job_id: str) -> bool:
         j = _jobs.get(job_id)
         if not j or j["status"] not in ("error", "cancelled"):
             return False
+        # Keep the tracks that already made it, so the job resumes at e.g. 6/10 (see _run).
+        kept = [r for r in (j.get("track_results") or []) if r.get("success")]
         j.update(status="queued", started_at=_now(), finished_at=None, error=None,
-                 progress=None, total=None, track_results=None,
+                 progress=(j.get("pre_success_count") or 0) + len(kept) if kept and j.get("total") else None,
+                 track_results=kept or None,
                  success_count=None, fail_count=None,
                  retry_count=0, retry_max=None, next_retry_at=None)
+        if not kept:
+            j["total"] = None
     _cancel[job_id] = threading.Event()
     _save()
     with _lock:
@@ -1506,7 +1511,14 @@ def _run(job_id: str) -> None:
             if meta:
                 _update(job_id, **meta)
 
-        track_results: list[dict] = []
+        # A retry (manual, automatic, or after a restart) starts from the tracks the last run
+        # got: they stay in the list and in the count, and the run just re-confirms them
+        # (the pre-scan finds them on disk) instead of counting up from 0 again.
+        track_results: list[dict] = [r for r in (j.get("track_results") or []) if r.get("success")]
+        _track_index: dict[str, int] = {r["track_id"]: i for i, r in enumerate(track_results)}
+        seed_pending: set[str] = set(_track_index)
+        seen_this_run: set[str] = set()
+        prev_total = j.get("total") if track_results else None
         succeeded = False
         try:
             if ev.is_set():
@@ -1514,11 +1526,12 @@ def _run(job_id: str) -> None:
                 _drop_cancel(job_id, ev)
                 return
 
+            start_total = full_total or prev_total
             _update(job_id, status="running", started_at=_now(),
                     finished_at=None, error=None, next_retry_at=None,
-                    progress=pre_success_count if full_total else None,
-                    total=full_total if full_total else None,
-                    track_results=None, success_count=None, fail_count=None)
+                    progress=pre_success_count + len(track_results) if start_total else None,
+                    total=start_total or None,
+                    track_results=list(track_results) or None, success_count=None, fail_count=None)
 
             import dataclasses as _dc
             import settings as _settings
@@ -1544,7 +1557,8 @@ def _run(job_id: str) -> None:
 
             def _on_progress(done, total):
                 eff_total = full_total or total
-                eff_done  = pre_success_count + done
+                # Kept tracks the run hasn't reached yet already count as done.
+                eff_done  = pre_success_count + done + len(seed_pending)
                 if eff_total > 1:
                     _update(job_id, progress=eff_done, total=eff_total)
 
@@ -1555,9 +1569,9 @@ def _run(job_id: str) -> None:
             # counts below). Persisted on every start/result so the live log
             # in the UI reflects in-progress tracks between /api/jobs polls,
             # not just tracks that have already finished.
-            _track_index: dict[str, int] = {}
-
             def _on_track_start(r):
+                if r["track_id"] in seed_pending:
+                    return   # keep showing the kept success until its result replaces it
                 _track_event(r)
                 _track_index[r["track_id"]] = len(track_results)
                 track_results.append(r)
@@ -1568,6 +1582,8 @@ def _run(job_id: str) -> None:
                     with _lock:   # read now: copies can join the job until it starts
                         olds = list((_jobs.get(job_id) or {}).get("upgrade_from") or ())
                     r = _apply_upgrade(r, olds)
+                seed_pending.discard(r["track_id"])
+                seen_this_run.add(r["track_id"])
                 _track_event(r)
                 idx = _track_index.get(r["track_id"])
                 if idx is not None:
@@ -1626,7 +1642,7 @@ def _run(job_id: str) -> None:
             # Complete failure (every track failed, or nothing was resolved at all,
             # e.g. metadata fetch failed) is an error, not "done" — also keeps it
             # from showing as done when auto-retry is off. Partial success is done.
-            if not track_results:
+            if not seen_this_run:
                 job_error = "No tracks were downloaded (metadata could not be fetched, or the source was empty)"
             elif new_success == 0:
                 job_error = next((r.get("error") for r in track_results if r.get("error")), None) or "All tracks failed"
