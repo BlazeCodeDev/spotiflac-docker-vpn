@@ -104,7 +104,7 @@ RUN pip install --no-cache-dir flask python-dotenv gunicorn pillow
 # list hand-maintained in lockstep here AND in entrypoint.sh's update_mornye
 # — a silent-breakage risk this project has been bitten by before — so the
 # full resolve is kept. Revisit if image size becomes the pressing problem.
-RUN pip install --no-cache-dir --target /mornye "mornye==1.0.0" requests
+RUN pip install --no-cache-dir --target /mornye "mornye==1.0.3" requests
 ENV PYTHONPATH=/mornye
 
 RUN mkdir -p /vpn /downloads /app/templates && \
