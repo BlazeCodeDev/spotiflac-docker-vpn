@@ -171,19 +171,51 @@ def refresh_tidal_api_list(force: bool = False) -> list:
     return mod.refresh_tidal_api_list(force=force)
 
 
-# Legacy service-name aliases this app relies on (see Mornye's
-# extensions/catalog.py SERVICE_ALIASES) — keys mirror _VALID_SERVICES in
-# routes.py / ALL_SERVICES in the frontend; apple-music (added separately
-# below) backs the "apple" enrich_provider only, not a download service.
-_EXT_ID_TO_SERVICE = {
-    "tidal-web": "tidal",
-    "qobuz-web": "qobuz",
-    "amazon": "amazon",
-    "deezer": "deezer",
-    "ytmusic-mornye": "youtube",  # "ytmusic-spotiflac" before the Mornye rename
+# Download extensions this app relies on, per service — keys mirror
+# _VALID_SERVICES in routes.py / ALL_SERVICES in the frontend. Each service
+# lists the extension ids it may be published under, preferred first:
+# Mornye's catalog aliases "youtube" to "ytmusic-mornye", but the registries
+# (including Mornye's own) still publish it as "ytmusic-spotiflac", so either
+# is accepted. apple-music (added separately below) backs the "apple"
+# enrich_provider only, not a download service.
+_SERVICE_EXT_IDS = {
+    "tidal":   ("tidal-web",),
+    "qobuz":   ("qobuz-web",),
+    "amazon":  ("amazon",),
+    "deezer":  ("deezer",),
+    "youtube": ("ytmusic-mornye", "ytmusic-spotiflac"),
 }
-_DOWNLOAD_EXT_IDS = tuple(_EXT_ID_TO_SERVICE)
-_ALL_TARGET_EXT_IDS = _DOWNLOAD_EXT_IDS + ("apple-music",)
+_EXTRA_EXT_IDS = {"apple": ("apple-music",)}
+
+
+def _installed_ext_id(mgr, service: str) -> str | None:
+    """The first of a service's extension ids that is installed, if any."""
+    ids = _SERVICE_EXT_IDS.get(service) or _EXTRA_EXT_IDS.get(service) or ()
+    return next((eid for eid in ids if mgr.get_installed(eid) is not None), None)
+
+
+def download_services(services: list) -> list:
+    """Services as Mornye should be given them for a download.
+
+    A service whose Mornye alias already resolves to an installed extension is
+    passed unchanged. One installed under a different id (YouTube, see
+    _SERVICE_EXT_IDS) is passed as "ext:<id>" — otherwise Mornye looks for the
+    alias, finds nothing installed, and that source fails every track.
+    """
+    try:
+        from mornye.extensions.catalog import extension_id
+        from mornye.extensions.manager import ExtensionManager
+        mgr = ExtensionManager(auto_install_downloads=False)
+    except Exception:
+        return list(services)
+    out = []
+    for s in services:
+        if s.startswith("ext:") or mgr.get_installed(extension_id(s, mgr)) is not None:
+            out.append(s)
+            continue
+        eid = _installed_ext_id(mgr, s)
+        out.append(f"ext:{eid}" if eid else s)
+    return out
 
 
 def extensions_status() -> dict:
@@ -194,11 +226,16 @@ def extensions_status() -> dict:
     try:
         from mornye.extensions.manager import ExtensionManager
     except ImportError:
-        return {"any_installed": False, "installed": [], "missing": list(_DOWNLOAD_EXT_IDS), "installed_services": []}
+        return {"any_installed": False, "installed": [], "missing": [ids[0] for ids in _SERVICE_EXT_IDS.values()], "installed_services": []}
     mgr = ExtensionManager(auto_install_downloads=False)
-    installed = [eid for eid in _DOWNLOAD_EXT_IDS if mgr.get_installed(eid) is not None]
-    missing = [eid for eid in _DOWNLOAD_EXT_IDS if eid not in installed]
-    installed_services = [_EXT_ID_TO_SERVICE[eid] for eid in installed]
+    installed, missing, installed_services = [], [], []
+    for service, ids in _SERVICE_EXT_IDS.items():
+        eid = _installed_ext_id(mgr, service)
+        if eid:
+            installed.append(eid)
+            installed_services.append(service)
+        else:
+            missing.append(ids[0])
     return {
         "any_installed": bool(installed),
         "installed": installed,
@@ -209,8 +246,8 @@ def extensions_status() -> dict:
 
 def refresh_extensions(force: bool = False) -> dict:
     """Installs/refreshes the extensions this app relies on for downloading
-    (tidal-web, qobuz-web, amazon, deezer, ytmusic-mornye) and for metadata
-    enrichment (apple-music), from every registry URL configured in Settings.
+    (see _SERVICE_EXT_IDS) and for metadata enrichment (apple-music), from
+    every registry URL configured in Settings.
 
     Mornye (like SpotiFLAC >= 1.8.0 before it) bundles no download providers
     at all — see patch_mornye.py's module docstring. Returns {ext_id: True} on success,
@@ -228,21 +265,25 @@ def refresh_extensions(force: bool = False) -> dict:
 
     mgr = ExtensionManager(auto_install_downloads=False)
     results = {}
-    for ext_id in _ALL_TARGET_EXT_IDS:
-        if not force and mgr.get_installed(ext_id) is not None:
-            results[ext_id] = True
+    for service, ids in {**_SERVICE_EXT_IDS, **_EXTRA_EXT_IDS}.items():
+        have = _installed_ext_id(mgr, service)
+        if not force and have:
+            results[have] = True
             continue
         last_err = None
-        for registry_url in registries:
-            try:
-                mgr.install(ext_id, registry_url=registry_url)
-                results[ext_id] = True
-                last_err = None
+        for ext_id in ids:
+            for registry_url in registries:
+                try:
+                    mgr.install(ext_id, registry_url=registry_url)
+                    results[ext_id] = True
+                    last_err = None
+                    break
+                except Exception as exc:
+                    last_err = str(exc)
+            if last_err is None:
                 break
-            except Exception as exc:
-                last_err = str(exc)
         if last_err is not None:
-            results[ext_id] = last_err
+            results[ids[0]] = last_err
     return results
 
 
@@ -1466,6 +1507,23 @@ class _TrackingDownloader(MornyeDownloader):
         return []
 
 
+_PAUSE_RE = re.compile(r"verification paused.*?next try in (?:(\d+) h )?(\d+) min")
+
+
+def _verification_pause_s(errors) -> int:
+    """Longest "verification paused … next try in [H h] M min" wait in these errors, in seconds."""
+    longest = 0
+    for e in errors:
+        for h, m in _PAUSE_RE.findall(e or ""):
+            longest = max(longest, int(h or 0) * 3600 + int(m) * 60)
+    return longest
+
+
+def _fmt_wait(seconds: int) -> str:
+    minutes = (seconds + 59) // 60
+    return f"{minutes} min" if minutes < 60 else f"{minutes // 60} h {minutes % 60:02d} min"
+
+
 def _drop_cancel(job_id: str, ev: threading.Event) -> None:
     """Forget a job's cancel event, unless a retry already gave the job a new one."""
     if _cancel.get(job_id) is ev:
@@ -1546,7 +1604,7 @@ def _run(job_id: str) -> None:
                 _enrich_kwargs["timeout_s"] = cfg["download_timeout_s"]
             opts = DownloadOptions(
                 output_dir          = output_dir,
-                services            = services,
+                services            = download_services(services),
                 filename_format     = filename_fmt,
                 quality             = quality,
                 inter_track_delay_s = cfg["track_delay_s"],
@@ -1716,16 +1774,24 @@ def _run(job_id: str) -> None:
             _drop_cancel(job_id, ev)
             return
 
-        next_retry_at = (
-            datetime.now(timezone.utc) + timedelta(seconds=interval_min * 60)
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
         # Keep why it failed, so the queue can say what it's retrying (error is cleared while queued).
         with _lock:
             cur = dict(_jobs.get(job_id) or {})
         last_error = cur.get("error") or next(
             (r.get("error") for r in (cur.get("track_results") or []) if not r.get("success") and r.get("error")),
             "All tracks failed")
-        applog.event("downloads", f"Retrying     {_jobname(job_id)} in {interval_min} min · attempt {retry_count}"
+        # After a failed Turnstile verification Mornye pauses verification for every source on
+        # that gateway (5 min, growing to 4 h). Retrying inside the pause fails instantly and
+        # just uses up retries, so wait until it is over.
+        wait_s = interval_min * 60
+        pause_s = _verification_pause_s(
+            [cur.get("error")] + [r.get("error") for r in (cur.get("track_results") or []) if not r.get("success")])
+        if pause_s:
+            wait_s = max(wait_s, pause_s + 60)
+        next_retry_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=wait_s)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        applog.event("downloads", f"Retrying     {_jobname(job_id)} in {_fmt_wait(wait_s)} · attempt {retry_count}"
                      + (f" of {max_retries}" if max_retries else "") + f" · {str(last_error)[:120]}", logging.WARNING)
         _update(job_id, status="queued", finished_at=None, error=None,
                 retry_count=retry_count, retry_max=max_retries,
@@ -1739,7 +1805,7 @@ def _run(job_id: str) -> None:
 
         skip = _skip_wait.setdefault(job_id, threading.Event())
         skip.clear()
-        for _ in range(interval_min * 60):
+        for _ in range(wait_s):
             if ev.is_set() or skip.is_set():
                 break
             time.sleep(1)

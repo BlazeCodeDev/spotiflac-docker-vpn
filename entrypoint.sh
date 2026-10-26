@@ -19,7 +19,7 @@ LOG_LEVEL="${LOG_LEVEL:-info}"
 # operator-supplied "extensions" from a registry URL configured in
 # Settings → System (see worker.refresh_extensions). Earlier porting history
 # (SpotiFLAC 1.x -> 5.0.6) is in patch_mornye.py's module docstring.
-MORNYE_PINNED="1.0.3"
+MORNYE_PINNED="1.0.4"
 
 # Log lines share the app's layout (see applog.py):
 #   21:35:09  INFO   VPN       Connecting · OpenVPN
@@ -712,6 +712,10 @@ monitor_tunnel() {
             vlog "Reconnecting · downloads were being blocked"
             if reconnect_vpn; then
                 vlog "Reconnected · new server"
+                # Mornye pauses Turnstile verification per gateway after a failed attempt
+                # (up to 4 h), not per address. That pause is about the old exit IP, so
+                # clear it or the new server never gets a chance to verify.
+                rm -f "${MORNYE_DATA_DIR:-$APP_HOME/.mornye}"/signed_sessions/.*.auth-backoff.json 2>/dev/null || true
             else
                 verr "Reconnect failed · will try again"
             fi
