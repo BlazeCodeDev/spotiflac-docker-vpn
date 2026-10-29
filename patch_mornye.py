@@ -48,7 +48,7 @@ NOTE for version bumps / rollbacks:
   operator-installed extensions), 3.0.5->3.8.0, 3.8.0->4.1.0 (A/B/E retired), 4.1.2->5.0.1 (Patch F anchor), 5.0.1->5.0.3 (no patch changes), 5.0.3->5.0.6 (no patch changes), SpotiFLAC 5.0.6->Mornye 1.0.0 (package
   rename; F/G anchors identical, H's SOURCE_TAG URL changed), 1.0.0->1.0.3
   (repo moved to mornyeapp, so H's SOURCE_TAG URL changed again),
-  1.0.3->1.0.4 (no patch changes).
+  1.0.3->1.0.4 (no patch changes), 1.0.4->1.0.5 (no patch changes).
 """
 import importlib.util
 import pathlib
