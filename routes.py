@@ -1112,6 +1112,7 @@ def _track_row(rel: str, rec: dict, name_fmt: str) -> dict:
         "fmt": ext.lstrip("."), "codec": codec,
         "kbps": round((rec.get("bitrate") or 0) / 1000),
         "lossless": ext in (".flac", ".wav") or (ext == ".m4a" and "alac" in codec),
+        "bits": rec.get("bits"),
         "len": round(rec.get("dur") or 0), "size": rec["size"], "mtime": rec["mtime"],
         "genre": rec.get("genre", ""), "bpm": int(bpm.group()) if bpm else None,
         "mbid": rec.get("musicbrainz_trackid", ""), "isrc": rec.get("isrc", ""),

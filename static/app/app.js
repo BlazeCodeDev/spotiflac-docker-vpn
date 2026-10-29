@@ -879,7 +879,7 @@ function detailHTML(t, compact = false) {
   return `${head}
     ${waveHTML(t)}
     <div class="props">
-      ${prop('graphic_eq', 'Format', t.lossless ? `${t.fmt.toUpperCase()} · lossless` : `${t.fmt.toUpperCase()} · ${t.kbps} kbps`)}
+      ${prop('graphic_eq', 'Format', t.lossless ? `${t.bits ? `${t.bits}-bit ` : ''}${t.fmt.toUpperCase()} · lossless` : `${t.fmt.toUpperCase()} · ${t.kbps} kbps`)}
       ${prop('sell', 'Genre', t.genre ? t.genreName : bad('Missing'))}
       ${prop('speed', 'BPM', t.bpm ? t.bpmVal : bad('Missing'))}
       ${prop('tag', 'ISRC', t.isrc ? `<span class="mono" style="font-size:12px">${esc(t.isrc)}</span>` : bad('Missing'))}
@@ -2119,7 +2119,7 @@ A.vpn = async () => {
 function adaptTrack(r) {
   return {
     id: r.path, path: r.path, dir: r.dir, file: r.file, title: r.title, artist: r.artist, album: r.album,
-    year: r.year || '', no: r.no != null ? String(r.no).padStart(2, '0') : '', fmt: r.fmt, kbps: r.kbps, lossless: r.lossless, len: r.len,
+    year: r.year || '', no: r.no != null ? String(r.no).padStart(2, '0') : '', fmt: r.fmt, kbps: r.kbps, lossless: r.lossless, bits: r.bits || 0, len: r.len,
     size: r.size / MB, genre: !!r.genre, genreName: r.genre, mbid: !!r.mbid, bpm: !!r.bpm, bpmVal: r.bpm, cover: r.cover,
     isrc: r.isrc, unreadable: !!r.unreadable, bytes: r.size, mtime: Math.round(r.mtime || 0), addedDays: Math.max(0, Math.floor((Date.now() / 1000 - r.mtime) / 86400)), expected: r.expected,
     csrc: r.cpath ? { path: r.cpath, mtime: Math.round(r.cmtime || 0) } : null,   // the album's cover file (paged rows)

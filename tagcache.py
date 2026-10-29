@@ -22,7 +22,8 @@ _CACHE_FILE = os.path.join(
 _FIELDS = ("title", "artist", "albumartist", "album", "isrc", "genre", "bpm",
            "musicbrainz_trackid", "tracknumber", "date")
 # 2: added tracknumber/date and the "cover" flag for the library table; old entries are re-read once.
-_VERSION = 2
+# 3: added "bits" (bit depth of lossless files) for the song details.
+_VERSION = 3
 
 _lock = threading.Lock()
 _mem: dict | None = None     # {path: [stamp, record]}
@@ -84,6 +85,9 @@ def _parse(path: str) -> dict:
     codec = str(getattr(info, "codec", "") or "")
     if codec:
         rec["codec"] = codec
+    bits = int(getattr(info, "bits_per_sample", 0) or 0)
+    if bits:
+        rec["bits"] = bits
     # FLAC (most of a lossless library) lists its pictures on the easy object too, which saves
     # opening and parsing the file a second time; that open is a network round trip on a NAS.
     from mutagen.flac import FLAC
