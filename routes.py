@@ -412,6 +412,9 @@ def api_debug_fds():
 def api_vpn():
     status = vpn.tunnel_status()
     status.update(country=Config.VPN_COUNTRY, protocol=Config.VPN_PROTOCOL)
+    # Server-side elapsed time: the browser's clock can differ from the server's.
+    since = status.get("connected_since")
+    status["uptime_s"] = max(0, time.time() - since) if since else None
     return jsonify(status)
 
 

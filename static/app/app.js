@@ -142,6 +142,7 @@ function ago(ms) {
   return `${Math.floor(s / 86400)} d ago`;
 }
 function span(sec) {
+  sec = Math.max(0, sec);
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
   return h >= 24 ? `${Math.floor(h / 24)} d ${h % 24} h` : h ? `${h} h ${m} min` : `${m} min`;
 }
@@ -2208,7 +2209,8 @@ async function loadVpn() {
   vpnBusy = true;
   try {
     const d = await api('/api/vpn', { timeout: 15000 });
-    const next = { known: true, on: !!d.connected, since: d.connected_since || null };
+    // `since` on the browser's clock, from the server-measured uptime, so a clock difference can't make it negative.
+    const next = { known: true, on: !!d.connected, since: d.uptime_s != null ? Date.now() / 1000 - d.uptime_s : null };
     const changed = !S.vpn.known || S.vpn.on !== next.on;
     S.vpn = next;
     if (changed) renderChrome();
