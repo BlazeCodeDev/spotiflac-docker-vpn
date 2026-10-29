@@ -13,6 +13,8 @@ _AUDIO_EXTS   = frozenset({".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".a
 _TRACK_NUM_RE = re.compile(r'^\d+\s+')
 _SPECIAL_RE   = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _PAREN_RE     = re.compile(r'\s*[\(\[].*?[\)\]]\s*$')
+# Live/remix/acoustic/demo are left alone: those are different recordings, not the same song.
+_VERSION_RE   = re.compile(r'\s+-\s+[^-]*\b(?:remaster(?:ed)?|mono|stereo|version|edit|single|deluxe|anniversary)\b[^-]*$', re.I)
 
 _index:           set[str]        = set()
 _album_counts:    dict            = {}   # normalised album name → track count
@@ -44,8 +46,13 @@ def _normalise_title(title: str) -> str:
 
 
 def _base(s: str) -> str:
-    """Strip trailing parenthetical content: '(Remastered)', '[feat. X]', etc."""
-    return _PAREN_RE.sub("", s).strip()
+    """Strip trailing parenthetical content: '(Remastered)', '[feat. X]', etc., and
+    Spotify-style version suffixes: 'Song - Remastered 2011', 'Song - Radio Edit'."""
+    prev = None
+    while prev != s:
+        prev = s
+        s = _VERSION_RE.sub("", _PAREN_RE.sub("", s)).strip()
+    return s
 
 
 def _fold(s: str) -> str:
@@ -251,7 +258,7 @@ def add_track(artist: str, title: str, path: str) -> None:
     with _index_lock:
         if artist and title:
             _by_artist_title[_artist_title_key(artist, title)] = path
-            _artist_titles.update(f"{a}|{_fold(title)}" for a in _artists(artist))
+            _artist_titles.update(f"{a}|{t}" for a in _artists(artist) for t in (_fold(title), _fold(_base(title))))
         if _files is not None and root and path:
             rel = os.path.relpath(path, root).replace(os.sep, "/")
             if not rel.startswith(".."):
