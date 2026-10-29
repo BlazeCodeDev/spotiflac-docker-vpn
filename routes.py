@@ -1170,6 +1170,8 @@ _TRACK_SORTS = {
     "year":   lambda r: r["year"] or 0,
     "genre":  lambda r: r["genre"].lower() if r["genre"] else "~",
     "format": lambda r: r["fmt"] + str(r["kbps"]).zfill(4),
+    # lossless above lossy; higher bit depth above lower, higher bitrate above lower
+    "quality": lambda r: (r["lossless"], r.get("bits") or 0, r["kbps"]),
     "bpm":    lambda r: r["bpm"] or -1,
     "tags":   lambda r: sum(1 for k in _MISS_KEYS if r[k]),
     "size":   lambda r: r["size"],

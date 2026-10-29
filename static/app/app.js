@@ -816,6 +816,7 @@ const COLS = [
   { id: 'year', label: 'Year', w: '56px', cell: (t) => (t.year ? `<span class="mono l-m">${t.year}</span>` : dash) },
   { id: 'genre', label: 'Genre', w: '104px', cell: (t) => (t.genre ? `<span class="b-m ell">${t.genreName}</span>` : dash) },
   { id: 'format', label: 'Format', w: '150px', def: true, cell: (t) => `<span class="row" style="gap:8px"><span class="mono l-m">${t.fmt.toUpperCase()}</span>${qualityTag(t)}</span>` },
+  { id: 'quality', label: 'Quality', w: '120px', cell: (t) => (t.lossless ? `<span class="tag tertiary">${t.bits ? t.bits + '-bit' : 'Lossless'}</span>` : t.kbps ? `<span class="tag neutral">${t.kbps} kbps</span>` : dash) },
   { id: 'bpm', label: 'BPM', w: '56px', right: true, cell: (t) => (t.bpm ? `<span class="mono l-m">${t.bpmVal}</span>` : dash) },
   { id: 'tags', label: 'Tags', w: '110px', def: true, cell: (t) => { const m = missingOf(t); return `<span class="tags4" role="img" aria-label="${m.length ? 'Missing ' + m.join(', ') : 'All tags present'}">${TAG_ICONS.map(([k, i]) => `<span class="ms ${t[k] ? 'on' : 'off'}" aria-hidden="true">${i}</span>`).join('')}</span>`; } },
   { id: 'size', label: 'Size', w: '80px', right: true, cell: (t) => `<span class="mono l-m v">${fmtMB(t.size)}</span>` },
