@@ -23,7 +23,8 @@ _FIELDS = ("title", "artist", "albumartist", "album", "isrc", "genre", "bpm",
            "musicbrainz_trackid", "tracknumber", "date")
 # 2: added tracknumber/date and the "cover" flag for the library table; old entries are re-read once.
 # 3: added "bits" (bit depth of lossless files) for the song details.
-_VERSION = 3
+# 4: added "rate" (sample rate in Hz).
+_VERSION = 4
 
 _lock = threading.Lock()
 _mem: dict | None = None     # {path: [stamp, record]}
@@ -88,6 +89,9 @@ def _parse(path: str) -> dict:
     bits = int(getattr(info, "bits_per_sample", 0) or 0)
     if bits:
         rec["bits"] = bits
+    rate = int(getattr(info, "sample_rate", 0) or 0)
+    if rate:
+        rec["rate"] = rate
     # FLAC (most of a lossless library) lists its pictures on the easy object too, which saves
     # opening and parsing the file a second time; that open is a network round trip on a NAS.
     from mutagen.flac import FLAC

@@ -1112,7 +1112,7 @@ def _track_row(rel: str, rec: dict, name_fmt: str) -> dict:
         "fmt": ext.lstrip("."), "codec": codec,
         "kbps": round((rec.get("bitrate") or 0) / 1000),
         "lossless": ext in (".flac", ".wav") or (ext == ".m4a" and "alac" in codec),
-        "bits": rec.get("bits"),
+        "bits": rec.get("bits"), "rate": rec.get("rate"),
         "len": round(rec.get("dur") or 0), "size": rec["size"], "mtime": rec["mtime"],
         "genre": rec.get("genre", ""), "bpm": int(bpm.group()) if bpm else None,
         "mbid": rec.get("musicbrainz_trackid", ""), "isrc": rec.get("isrc", ""),
@@ -1157,6 +1157,9 @@ _rows_lock = threading.Lock()   # one request builds the rows; the others wait a
 _MISS_KEYS = ("genre", "mbid", "bpm", "cover")
 _TRACK_CHIPS = {
     "lossless": lambda r: r["lossless"],
+    "lossy":    lambda r: not r["lossless"] and not r["unreadable"],
+    # Hi-Res: more than CD quality (16-bit / 44.1-48 kHz)
+    "hires":    lambda r: r["lossless"] and ((r.get("bits") or 0) > 16 or (r.get("rate") or 0) > 48000),
     "missing":  lambda r: any(not r[k] for k in _MISS_KEYS),
     "mbid":     lambda r: not r["mbid"],
     "cover":    lambda r: not r["cover"],
@@ -1171,7 +1174,7 @@ _TRACK_SORTS = {
     "genre":  lambda r: r["genre"].lower() if r["genre"] else "~",
     "format": lambda r: r["fmt"] + str(r["kbps"]).zfill(4),
     # lossless above lossy; higher bit depth above lower, higher bitrate above lower
-    "quality": lambda r: (r["lossless"], r.get("bits") or 0, r["kbps"]),
+    "quality": lambda r: (r["lossless"], r.get("bits") or 0, r.get("rate") or 0, r["kbps"]),
     "bpm":    lambda r: r["bpm"] or -1,
     "tags":   lambda r: sum(1 for k in _MISS_KEYS if r[k]),
     "size":   lambda r: r["size"],
@@ -2301,6 +2304,7 @@ def _dup_info(abs_path: str, rel: str, rec: dict):
         "dur": rec.get("dur", 0.0), "bitrate": rec.get("bitrate", 0),
         "ext": ext.lstrip("."), "size": rec["size"], "mtime": rec["mtime"],
         "lossless": ext in (".flac", ".wav") or (ext == ".m4a" and "alac" in codec),
+        "bits": rec.get("bits") or 0, "rate": rec.get("rate") or 0,
         "tkey": _dup_title_key(title),
         "artists": _dup_artists(artist, title),
         # Same signals as _metadata_score, read from the cached tags instead of opening the file.
@@ -2410,7 +2414,9 @@ def _group_infos(infos: list[dict], lossless_first: bool = True, cancel=None) ->
         if len(members) < 2:
             continue
         files = [infos[i] for i in members]
+        # Among lossless copies the higher resolution wins (24-bit/96 kHz over 16-bit/44.1 kHz).
         files.sort(key=lambda f: ((f["lossless"] if lossless_first else 0),
+                                  (f["bits"] * 1_000_000 + f["rate"] if lossless_first and f["lossless"] else 0),
                                   f["score"], f["bitrate"], f["size"]),
                    reverse=True)
         isrcs = {f["isrc"] for f in files}
@@ -2498,7 +2504,7 @@ def _dup_result(groups: list[dict]) -> dict:
     return {"groups": [{
         "match": g["match"], "keep": g["keep"],
         "files": [{k: f[k] for k in ("rel", "title", "artist", "album", "ext",
-                                     "size", "bitrate", "dur", "lossless", "score")}
+                                     "size", "bitrate", "dur", "lossless", "bits", "rate", "score")}
                   for f in g["files"]],
     } for g in groups]}
 
@@ -2846,7 +2852,7 @@ def _find_mistagged_groups(rel_paths: list[str], root: str, progress=None, cance
             stem = re.sub(r"\W+", " ", os.path.splitext(os.path.basename(f["rel"]))[0].casefold())
             files.append({
                 **{k: f[k] for k in ("rel", "title", "artist", "album", "ext", "size",
-                                     "bitrate", "dur", "lossless")},
+                                     "bitrate", "dur", "lossless", "bits", "rate")},
                 "name_ok": _dup_title_key(f["title"])[0] in stem,
             })
         groups.append({"kind": "audio" if r in audio_root else "length", "sim": round(sims.get(r, 0.0), 3),

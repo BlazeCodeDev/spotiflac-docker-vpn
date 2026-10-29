@@ -1620,6 +1620,8 @@ def _run(job_id: str) -> None:
             # 0 = leave Mornye's own default (120s) alone; see settings.py.
             if "timeout_s" in _do_fields and cfg.get("download_timeout_s"):
                 _enrich_kwargs["timeout_s"] = cfg["download_timeout_s"]
+            if cfg.get("flac_only") and quality == "high":
+                quality = "lossless"   # High is Mornye's lossy tier: it would only fetch files to discard
             opts = DownloadOptions(
                 output_dir          = output_dir,
                 services            = download_services(services),

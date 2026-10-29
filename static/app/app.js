@@ -693,7 +693,8 @@ function viewDownload() {
       <button class="ib" data-act="clearq" aria-label="Clear" ${S.q ? '' : 'hidden'}>${ic('close')}</button>
       <button class="ib" data-act="pasteq" aria-label="Paste from clipboard">${ic('content_paste')}</button></label>
     <div class="seg" role="radiogroup" aria-label="Quality">
-      ${[['high', 'High'], ['lossless', 'Lossless'], ['hires', 'Hi-Res']].map(([k, l]) => `<button role="radio" aria-checked="${S.quality === k}" data-act="quality" data-k="${k}">${S.quality === k ? ic('check') : ''}${l}</button>`).join('')}
+      ${[['high', 'High'], ['lossless', 'Lossless'], ['hires', 'Hi-Res']].map(([k, l]) => { const off = S.flacOnly && k === 'high';   // High is a lossy tier
+        return `<button role="radio" aria-checked="${S.quality === k}" data-act="quality" data-k="${k}" ${off ? 'disabled title="High is lossy (AAC/MP3); turn off FLAC only to use it"' : ''}>${S.quality === k ? ic('check') : ''}${l}</button>`; }).join('')}
     </div>
     <button class="chip ${S.flacOnly ? 'on' : ''}" aria-pressed="${S.flacOnly}" data-act="flaconly" title="Discard MP3 and M4A downloads: a song with no FLAC source fails instead">${S.flacOnly ? ic('check') : ''}FLAC only</button>
   </header>
@@ -801,9 +802,11 @@ async function enqueue(r) {
 // ═════════════════════════════════════════════════════════════════════════
 // Library
 // ═════════════════════════════════════════════════════════════════════════
-const CHIPS = [['lossless', 'Lossless only'], ['missing', 'Missing tags'], ['mbid', 'No MusicBrainz ID'], ['cover', 'No cover art'], ['new', 'Added this week']];
+const CHIPS = [['lossless', 'Lossless only'], ['hires', 'Hi-Res'], ['lossy', 'Lossy'], ['missing', 'Missing tags'], ['mbid', 'No MusicBrainz ID'], ['cover', 'No cover art'], ['new', 'Added this week']];
 const TAG_ICONS = [['genre', 'sell', 'genre'], ['mbid', 'fingerprint', 'MusicBrainz ID'], ['bpm', 'speed', 'BPM'], ['cover', 'image', 'cover']];
 
+// "24-bit / 96 kHz" for a lossless file, as far as it is known ('' when neither is).
+const resLabel = (bits, rate) => [bits ? `${bits}-bit` : '', rate ? `${+(rate / 1000).toFixed(1)} kHz` : ''].filter(Boolean).join(' / ');
 const qualityTag = (t) => (t.lossless ? '<span class="tag tertiary">Lossless</span>' : t.kbps ? `<span class="tag neutral">${t.kbps} kbps</span>` : '');
 
 // ── Library columns ──────────────────────────────────────────────────────
@@ -818,7 +821,7 @@ const COLS = [
   { id: 'year', label: 'Year', w: '56px', cell: (t) => (t.year ? `<span class="mono l-m">${t.year}</span>` : dash) },
   { id: 'genre', label: 'Genre', w: '104px', cell: (t) => (t.genre ? `<span class="b-m ell">${t.genreName}</span>` : dash) },
   { id: 'format', label: 'Format', w: '150px', def: true, cell: (t) => `<span class="row" style="gap:8px"><span class="mono l-m">${t.fmt.toUpperCase()}</span>${qualityTag(t)}</span>` },
-  { id: 'quality', label: 'Quality', w: '120px', cell: (t) => (t.lossless ? `<span class="tag tertiary">${t.bits ? t.bits + '-bit' : 'Lossless'}</span>` : t.kbps ? `<span class="tag neutral">${t.kbps} kbps</span>` : dash) },
+  { id: 'quality', label: 'Quality', w: '150px', cell: (t) => (t.lossless ? `<span class="tag tertiary">${resLabel(t.bits, t.rate) || 'Lossless'}</span>` : t.kbps ? `<span class="tag neutral">${t.kbps} kbps</span>` : dash) },
   { id: 'bpm', label: 'BPM', w: '56px', right: true, cell: (t) => (t.bpm ? `<span class="mono l-m">${t.bpmVal}</span>` : dash) },
   { id: 'tags', label: 'Tags', w: '110px', def: true, cell: (t) => { const m = missingOf(t); return `<span class="tags4" role="img" aria-label="${m.length ? 'Missing ' + m.join(', ') : 'All tags present'}">${TAG_ICONS.map(([k, i]) => `<span class="ms ${t[k] ? 'on' : 'off'}" aria-hidden="true">${i}</span>`).join('')}</span>`; } },
   { id: 'size', label: 'Size', w: '80px', right: true, cell: (t) => `<span class="mono l-m v">${fmtMB(t.size)}</span>` },
@@ -882,7 +885,7 @@ function detailHTML(t, compact = false) {
   return `${head}
     ${waveHTML(t)}
     <div class="props">
-      ${prop('graphic_eq', 'Format', t.lossless ? `${t.bits ? `${t.bits}-bit ` : ''}${t.fmt.toUpperCase()} · lossless` : `${t.fmt.toUpperCase()} · ${t.kbps} kbps`)}
+      ${prop('graphic_eq', 'Format', t.lossless ? `${t.bits ? `${t.bits}-bit ` : ''}${t.fmt.toUpperCase()}${t.rate ? ` · ${+(t.rate / 1000).toFixed(1)} kHz` : ''} · lossless` : `${t.fmt.toUpperCase()} · ${t.kbps} kbps`)}
       ${prop('sell', 'Genre', t.genre ? t.genreName : bad('Missing'))}
       ${prop('speed', 'BPM', t.bpm ? t.bpmVal : bad('Missing'))}
       ${prop('tag', 'ISRC', t.isrc ? `<span class="mono" style="font-size:12px">${esc(t.isrc)}</span>` : bad('Missing'))}
@@ -1084,7 +1087,7 @@ function renderLib({ aside = false } = {}) {
 // Library health
 // ═════════════════════════════════════════════════════════════════════════
 const KIND = { id: ['tag', 'Same ID'], tags: ['sell', 'Same tags'] };
-const qLabel = (f) => (f.lossless ? 'Lossless' : `${Math.round((f.bitrate || 0) / 1000)} kbps`);
+const qLabel = (f) => (f.lossless ? resLabel(f.bits, f.rate) || 'Lossless' : `${Math.round((f.bitrate || 0) / 1000)} kbps`);
 const MB = 1048576;
 
 // A group's id comes from its files, so a choice made in the list survives the list being refreshed.
@@ -1677,7 +1680,11 @@ A.pasteq = () => { navigator.clipboard?.readText().then((t) => { const tr = past
 A.clearlq = () => { const i = $('#lq'); if (i) { i.value = ''; i.focus(); INPUT.lq(i); } };
 A.clearq = () => { S.q = ''; scheduleSearch(); render(); $('#q')?.focus(); };
 A.type = (el) => { S.type = el.dataset.k; renderResults(); };
-A.flaconly = () => { S.flacOnly = !S.flacOnly; store.set('flacOnly', S.flacOnly); render(); saved(); };
+A.flaconly = () => {
+  S.flacOnly = !S.flacOnly; store.set('flacOnly', S.flacOnly);
+  if (S.flacOnly && S.quality === 'high') { S.quality = 'lossless'; store.set('quality', S.quality); }
+  render(); saved();
+};
 A.quality = (el) => { S.quality = el.dataset.k; store.set('quality', S.quality); render(); saved(); };
 A.dl = (el) => {
   const r = S.results[+el.dataset.i];
@@ -2123,7 +2130,7 @@ A.vpn = async () => {
 function adaptTrack(r) {
   return {
     id: r.path, path: r.path, dir: r.dir, file: r.file, title: r.title, artist: r.artist, album: r.album,
-    year: r.year || '', no: r.no != null ? String(r.no).padStart(2, '0') : '', fmt: r.fmt, kbps: r.kbps, lossless: r.lossless, bits: r.bits || 0, len: r.len,
+    year: r.year || '', no: r.no != null ? String(r.no).padStart(2, '0') : '', fmt: r.fmt, kbps: r.kbps, lossless: r.lossless, bits: r.bits || 0, rate: r.rate || 0, len: r.len,
     size: r.size / MB, genre: !!r.genre, genreName: r.genre, mbid: !!r.mbid, bpm: !!r.bpm, bpmVal: r.bpm, cover: r.cover,
     isrc: r.isrc, unreadable: !!r.unreadable, bytes: r.size, mtime: Math.round(r.mtime || 0), addedDays: Math.max(0, Math.floor((Date.now() / 1000 - r.mtime) / 86400)), expected: r.expected,
     csrc: r.cpath ? { path: r.cpath, mtime: Math.round(r.cmtime || 0) } : null,   // the album's cover file (paged rows)
