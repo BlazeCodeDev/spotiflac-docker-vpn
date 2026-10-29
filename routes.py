@@ -3876,6 +3876,9 @@ def api_settings_patch():
         else:
             errors["quality"] = "must be 'high', 'lossless', or 'hires'"
 
+    if "flac_only" in body:
+        updates["flac_only"] = bool(body["flac_only"])
+
     if "log_categories" in body:
         raw = body["log_categories"]
         if not isinstance(raw, list):

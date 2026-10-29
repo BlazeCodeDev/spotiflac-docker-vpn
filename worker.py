@@ -722,6 +722,24 @@ def _apply_upgrade(r: dict, olds: list[str]) -> dict:
             "error": "No lossless source found · kept the existing file"}
 
 
+def _require_flac(r: dict) -> dict:
+    """FLAC-only mode: a freshly downloaded non-FLAC file (MP3, M4A, …) is deleted again and the
+    track reported as failed. A copy that was already on disk is left alone."""
+    new = r.get("file_path") or ""
+    if (not r.get("success") or r.get("status") != "done" or not new
+            or os.path.splitext(new)[1].lower() == ".flac"):
+        return r
+    try:
+        os.remove(new)
+        lib_index.trigger_rescan()
+    except OSError as exc:
+        log.warning("FLAC only: could not remove %s: %s", new, exc)
+    ext = os.path.splitext(new)[1].lstrip(".").upper() or "non-FLAC"
+    applog.event("downloads", f"Rejected     {_who(r.get('artists'), r.get('title'))} · only {ext} available", logging.WARNING)
+    return {**r, "success": False, "status": "failed", "file_path": None, "no_lossless": True,
+            "error": f"No FLAC source found · {ext} discarded (FLAC only)"}
+
+
 def _jobname(job_id: str) -> str:
     with _lock:
         j = _jobs.get(job_id) or {}
@@ -1635,7 +1653,11 @@ def _run(job_id: str) -> None:
                 track_results.append(r)
                 _update(job_id, track_results=list(track_results))
 
+            flac_only = bool(cfg.get("flac_only"))
+
             def _on_track_result(r):
+                if flac_only:
+                    r = _require_flac(r)
                 if upgrade:
                     with _lock:   # read now: copies can join the job until it starts
                         olds = list((_jobs.get(job_id) or {}).get("upgrade_from") or ())
@@ -1759,7 +1781,7 @@ def _run(job_id: str) -> None:
         interval_min = cfg["retry_interval_min"]
         max_retries  = cfg["retry_max_count"]
 
-        # An upgrade whose sources only had a lossy copy would download (and discard) it again.
+        # An upgrade (or FLAC-only job) whose sources only had a lossy copy would download (and discard) it again.
         no_lossless = bool(track_results) and all(r.get("success") or r.get("no_lossless") for r in track_results)
         if not interval_min or no_lossless:
             _drop_cancel(job_id, ev)

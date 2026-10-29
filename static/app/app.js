@@ -182,7 +182,7 @@ function toServer() {
     extension_registries: s.registry.split(/[\s,]+/).filter(Boolean),
     enrich_metadata: s.meta.on, enrich_providers: ['deezer', 'apple', 'tidal', 'qobuz'].filter((k) => s.meta[k]), enrich_musicbrainz: s.meta.mb,
     listenbrainz_enabled: s.lb.on, listenbrainz_username: s.lb.user, listenbrainz_days: s.lb.days, listenbrainz_time: s.lb.time, log_categories: s.log,
-    quality: S.quality,
+    quality: S.quality, flac_only: S.flacOnly,
   };
 }
 const S = {
@@ -192,6 +192,7 @@ const S = {
   // exact artist matches above the results: their discography, open state and per-artist selection, all keyed by URL
   artists: [], art: { open: new Set(), rel: {}, albOpen: new Set(), trk: {}, sel: {} },
   quality: store.get('quality', 'lossless'),
+  flacOnly: store.get('flacOnly', false),   // reject MP3/M4A downloads (settings.flac_only)
   jobs: [], jobsLoaded: false, doneAll: false, qsel: null, // qsel: Set of picked job ids while selecting, else null
   vpn: { known: false, on: false, since: null, ip: null },
   tasks: [],
@@ -694,6 +695,7 @@ function viewDownload() {
     <div class="seg" role="radiogroup" aria-label="Quality">
       ${[['high', 'High'], ['lossless', 'Lossless'], ['hires', 'Hi-Res']].map(([k, l]) => `<button role="radio" aria-checked="${S.quality === k}" data-act="quality" data-k="${k}">${S.quality === k ? ic('check') : ''}${l}</button>`).join('')}
     </div>
+    <button class="chip ${S.flacOnly ? 'on' : ''}" aria-pressed="${S.flacOnly}" data-act="flaconly" title="Discard MP3 and M4A downloads: a song with no FLAC source fails instead">${S.flacOnly ? ic('check') : ''}FLAC only</button>
   </header>
   <div class="split">
     <section class="pane res-pane ${S.q.trim() ? '' : 'idle'}" id="res-pane" aria-labelledby="h-res" style="padding:20px 12px;display:flex;flex-direction:column;gap:12px">${resPaneHTML()}</section>
@@ -1675,6 +1677,7 @@ A.pasteq = () => { navigator.clipboard?.readText().then((t) => { const tr = past
 A.clearlq = () => { const i = $('#lq'); if (i) { i.value = ''; i.focus(); INPUT.lq(i); } };
 A.clearq = () => { S.q = ''; scheduleSearch(); render(); $('#q')?.focus(); };
 A.type = (el) => { S.type = el.dataset.k; renderResults(); };
+A.flaconly = () => { S.flacOnly = !S.flacOnly; store.set('flacOnly', S.flacOnly); render(); saved(); };
 A.quality = (el) => { S.quality = el.dataset.k; store.set('quality', S.quality); render(); saved(); };
 A.dl = (el) => {
   const r = S.results[+el.dataset.i];
@@ -2196,6 +2199,7 @@ async function loadSettings() {
     const cfg = await api('/api/settings');
     S.set = fromServer(cfg); S.setLoaded = true; S.setError = '';
     if (cfg.quality) { S.quality = cfg.quality; store.set('quality', S.quality); }
+    S.flacOnly = !!cfg.flac_only; store.set('flacOnly', S.flacOnly);
     render();
   } catch (e) { S.setError = e.message; snack(`Couldn’t load settings: ${e.message}`); }
 }

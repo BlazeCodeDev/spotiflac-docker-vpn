@@ -25,6 +25,9 @@ def _defaults() -> dict:
         # Last-selected quality tier in the download-bar picker ("high",
         # "lossless", "hires") — persisted so it survives a page reload.
         "quality": os.environ.get("DEFAULT_QUALITY", "lossless"),
+        # Keep only FLAC downloads: an MP3/M4A a source hands back is deleted and the track
+        # reported as failed (applies to every download, ListenBrainz and upgrades included).
+        "flac_only": os.environ.get("FLAC_ONLY", "0") == "1",
         # M3U playlist file generation for playlist downloads: "always", "ask" (prompt
         # per download), or "never".
         "m3u_mode": os.environ.get("M3U_MODE", "ask"),
