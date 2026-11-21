@@ -1015,6 +1015,21 @@ def _fingerprint_async(path: str) -> None:
     threading.Thread(target=run, daemon=True, name="fingerprint").start()
 
 
+# Called with each freshly-downloaded file once Mornye has tagged it. Set by
+# routes.py (its post-download tag check); None until then.
+on_downloaded = None
+
+
+def _downloaded(path: str) -> None:
+    hook = on_downloaded
+    if hook is None:
+        return
+    try:
+        hook(path)
+    except Exception as exc:
+        log.warning("Post-download hook failed for %s: %s", path, exc)
+
+
 def _find_existing_track(
     index: dict[str, tuple[str, int]], out_dir: str, base_out: str, fname: str,
 ):
@@ -1198,6 +1213,7 @@ class _TrackingWorker(DownloadWorker):
                     if result.file_path:
                         lib_index.add_track(track.first_artist, track.title, result.file_path)
                         _fingerprint_async(result.file_path)
+                        _downloaded(result.file_path)
                     if self._on_track_result:
                         self._on_track_result({
                             "track_id": track.id,
@@ -1359,6 +1375,7 @@ class _TrackingWorker(DownloadWorker):
                     if result.file_path:
                         lib_index.add_track(track.first_artist, track.title, result.file_path)
                         _fingerprint_async(result.file_path)
+                        _downloaded(result.file_path)
                     if self._on_track_result:
                         self._on_track_result({
                             "track_id": track.id,

@@ -3222,7 +3222,7 @@ def _enrich_setup(use_mb: bool):
 
 
 def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
-                     enrich_fn, mb_lookup, mb_to_tags, upgrade_cover=True):
+                     enrich_fn, mb_lookup, mb_to_tags, upgrade_cover=True, organize=True):
     """Enrich one audio file, reporting every step.
 
     Generator: yields {"type":"step", "id":str, "text":str, "pending":bool}
@@ -3357,7 +3357,7 @@ def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
                        "pending": False}
             audio2 = audio
 
-        if audio2:
+        if audio2 and organize:
             ext = os.path.splitext(abs_path)[1]
             new_rel = _org_target(audio2, fmt, ext)
             cur_rel = os.path.relpath(abs_path, root).replace(os.sep, "/")
@@ -3559,6 +3559,79 @@ def api_library_enrich():
 def api_library_enrich_cancel():
     _enrich_cancel.set()
     return jsonify(ok=True)
+
+
+# ── Post-download tag check ───────────────────────────────────────────────────
+# Mornye tags every download itself, but its MusicBrainz lookup and cover fetch
+# fail quietly (logged at debug level; one refused MusicBrainz request pauses
+# every lookup for 30 s), leaving a file with no MBID or no cover. Run the
+# Enrich steps on exactly those files, one at a time, as each one lands —
+# without Enrich's organize step: the job's results, its M3U and Mornye's own
+# folder naming all point at where the file is now.
+_post_dl_paths: list[str] = []
+_post_dl_lock = threading.Lock()
+_post_dl_running = False
+
+
+def _queue_post_download_check(abs_path: str) -> None:
+    global _post_dl_running
+    if not _settings.load().get("enrich_metadata", True):
+        return
+    with _post_dl_lock:
+        _post_dl_paths.append(abs_path)
+        if _post_dl_running:
+            return
+        _post_dl_running = True
+    threading.Thread(target=_post_download_loop, daemon=True, name="post-dl-enrich").start()
+
+
+def _post_download_loop() -> None:
+    global _post_dl_running
+    while True:
+        with _post_dl_lock:
+            if not _post_dl_paths:
+                _post_dl_running = False
+                return
+            abs_path = _post_dl_paths.pop(0)
+        try:
+            _post_download_check(abs_path)
+        except Exception as exc:
+            log.warning("Post-download tag check failed for %s: %s", abs_path, exc)
+
+
+def _post_download_check(abs_path: str) -> None:
+    if not os.path.isfile(abs_path):
+        return
+    cfg    = _settings.load()
+    use_mb = cfg.get("enrich_musicbrainz", True)
+    if (_has_mbid(abs_path) or not use_mb) and _existing_cover_bytes(abs_path):
+        return
+    root = _lib_root()
+    rel  = os.path.relpath(os.path.realpath(abs_path), root).replace(os.sep, "/")
+    if rel.startswith("../"):
+        return
+    enrich_fn, mb_lookup, mb_to_tags = _enrich_setup(use_mb)
+    if enrich_fn is None:
+        return
+    try:
+        # Don't spend the lookup inside the pause that likely caused the gap.
+        from mornye.core.musicbrainz import mb_skip_remaining
+        time.sleep(min(mb_skip_remaining(), 60.0))
+    except ImportError:
+        pass
+    res = {}
+    for ev in _enrich_one_file(abs_path, rel, root, cfg.get("enrich_providers", ["deezer", "apple"]),
+                               use_mb, cfg.get("filename_fmt", "{artist}/{album}/{track} {title}"),
+                               enrich_fn, mb_lookup, mb_to_tags, organize=False):
+        if ev.get("type") == "result":
+            res = ev
+    if res.get("error"):
+        applog.event("enrich", f"Failed       {_enrich_name(rel)}: {res['error']}", logging.WARNING)
+    elif res.get("enriched"):
+        applog.event("enrich", f"Completed    {_enrich_name(rel)} · tags missing after download")
+
+
+worker.on_downloaded = _queue_post_download_check
 
 
 @bp.get("/api/library/enrich-one")
