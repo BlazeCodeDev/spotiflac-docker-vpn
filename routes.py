@@ -73,6 +73,9 @@ _VALID_SERVICES   = {"tidal", "qobuz", "amazon", "deezer", "youtube"}
 _VALID_QUALITIES  = {"high", "lossless", "hires"}
 
 # Module-level client so the OAuth token is cached and reused across requests.
+# Mornye >= 1.1.0 supplies it from the registry-installed "utilities"
+# extension, which a fresh container only installs after this import (see
+# worker._prime_extensions) — _search_client() keeps retrying until it can.
 try:
     from mornye.core.spotify_metadata import SpotifyMetadataClient as _SpotifyClient
     _spotify = _SpotifyClient(timeout_s=15)
@@ -555,11 +558,26 @@ def _name_key(s: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", s or "").casefold().split())
 
 
+_spotify_rest = None
+
+
 def _search_client():
+    global _spotify, _spotify_rest
     if _spotify is not None:
         return _spotify
-    from mornye.core.spotify_metadata import SpotifyMetadataClient
-    return _patch_spotify_client(SpotifyMetadataClient(timeout_s=15))
+    try:
+        from mornye.core.spotify_metadata import SpotifyMetadataClient
+        _spotify = _patch_spotify_client(SpotifyMetadataClient(timeout_s=15))
+        return _spotify
+    except Exception as exc:
+        # Utilities extension not installed (yet). The Web API calls (_get) need
+        # nothing from Mornye, so search/discover/repair keep working; get_url
+        # and the GraphQL discography fallback need the real client and fail.
+        log.debug("Spotify metadata client unavailable, using Web API only: %s", exc)
+        if _spotify_rest is None:
+            import types
+            _spotify_rest = _patch_spotify_client(types.SimpleNamespace())
+        return _spotify_rest
 
 
 def _track_in_lib(title: str, artists: str) -> bool:
@@ -707,8 +725,13 @@ def api_search_expand():
     url = request.args.get("url", "").strip()
     if not url:
         return jsonify(error="No URL provided"), 400
+    client = _search_client()
+    if not hasattr(client, "get_url"):
+        # The fallback client (see _search_client) can search but not expand.
+        return jsonify(error="Spotify links need the “utilities” extension. Add a registry that "
+                             "provides it in Settings → Extensions, then install."), 502
     try:
-        name, tracks, *_ = _search_client().get_url(url)
+        name, tracks, *_ = client.get_url(url)
         rows = [{
             "title":        t.title,
             "artists":      t.artists,
@@ -2885,10 +2908,7 @@ def _resolve_track_url(title: str, artist: str, isrc: str) -> str:
     """Find the Spotify track for a file with no embedded link. ISRC first (exact);
     otherwise the first search hit whose title and first artist both match. Never
     guesses — returns "" when nothing matches cleanly."""
-    client = _spotify
-    if client is None:
-        from mornye.core.spotify_metadata import SpotifyMetadataClient
-        client = _patch_spotify_client(SpotifyMetadataClient(timeout_s=15))
+    client = _search_client()
     queries = []
     if isrc:
         queries.append((f"isrc:{isrc}", True))

@@ -6,16 +6,9 @@ desist), so the porting history below still applies. Every patch is a guarded,
 idempotent string replacement: if the anchor text isn't found (e.g. a version
 bump reformatted it) the patch reports and skips rather than corrupting a file.
 
-Two infrastructure fixes for the extension/Turnstile download path — nothing
-about MusicBrainz tagging any more (see the history note below):
-
-  F. core/signed_session_mono.py — the Amazon "amz.geeked.wtf" bypass's
-     module-level browser-session singleton guards itself with an
-     `asyncio.Lock`, which breaks across event loops: core/solver.py's
-     Turnstile solve wraps its work in a fresh `asyncio.run()` per call, and
-     the JS-extension runtime can drive this from more than one OS thread at
-     once. Swap it for a threading.Lock wrapped in a minimal poll-based async
-     context manager (`_CrossLoopLock`).
+One infrastructure fix for the extension/Turnstile download path and one
+tagging fix — nothing about MusicBrainz lookups any more (see the history
+note below):
 
   G. extensions/_bridge.js — the synchronous JS<->Python bridge call has a
      60 s ceiling (`BRIDGE_TIMEOUT_MS`), but `session.signedFetch` — the call
@@ -37,8 +30,17 @@ NOTE for version bumps / rollbacks:
 * Also as of 4.0, `core/signed_session_mobile.py` fixes the cross-loop auth
   lock itself (`_AUTH_LOCKS: dict[str, threading.Lock]`, `_AUTH_LOCKS_GUARD`,
   `_AsyncThreadLock` — same shape as _CrossLoopLock, plus a creation-race
-  guard we never had). So the old Patch E is gone too. `signed_session_mono`
-  was NOT given the same treatment upstream, hence Patch F still exists.
+  guard we never had). So the old Patch E is gone too.
+
+* Mornye 1.1.0 stopped bundling the Spotify/Tidal metadata, Turnstile solver
+  and signed-session modules (`core/spotify_metadata.py`, `core/solver.py`,
+  `core/signed_session_*.py`, ...). They now ship in the registry-installed
+  `utilities` extension (see worker._EXTRA_EXT_IDS); `mornye.core.<name>`
+  stays importable as a lazy proxy that raises on first use until it is
+  installed. That retired Patch F (signed_session_mono's cross-loop lock):
+  its file is no longer in the package, and 2.x added a shared
+  `core/cross_loop_lock.CrossLoopLock` of the same threading.Lock shape.
+  Rolling back below 1.1.0 needs Patch F restored from git.
 
 * Rolling the pin back below 4.0 needs the pre-4.x version of THIS file
   restored from git (it carried Patches A/B/E, which 3.x genuinely needed),
@@ -48,7 +50,8 @@ NOTE for version bumps / rollbacks:
   operator-installed extensions), 3.0.5->3.8.0, 3.8.0->4.1.0 (A/B/E retired), 4.1.2->5.0.1 (Patch F anchor), 5.0.1->5.0.3 (no patch changes), 5.0.3->5.0.6 (no patch changes), SpotiFLAC 5.0.6->Mornye 1.0.0 (package
   rename; F/G anchors identical, H's SOURCE_TAG URL changed), 1.0.0->1.0.3
   (repo moved to mornyeapp, so H's SOURCE_TAG URL changed again),
-  1.0.3->1.0.4 (no patch changes), 1.0.4->1.0.5 (no patch changes).
+  1.0.3->1.0.4 (no patch changes), 1.0.4->1.0.5 (no patch changes),
+  1.0.5->2.2.1 (F retired, G/H anchors unchanged).
 """
 import importlib.util
 import pathlib
@@ -78,80 +81,6 @@ def _apply(rel_path, old, new, note, *, already_marker=None):
     fpath.write_text(text.replace(old, new, 1))
     print(f"[patch] {rel_path}: {note}")
 
-
-# ---------------------------------------------------------------------------
-# Patch F: core/signed_session_mono.py — cross-event-loop/cross-thread lock
-# ---------------------------------------------------------------------------
-# `_MonochromeBrowserSession` (Amazon's amz.geeked.wtf bypass) is a
-# module-level singleton whose `self._lock` is an asyncio.Lock. That lock is
-# bound to whichever event loop first awaited it — but core/solver.py's
-# Turnstile solve()/solve_with_callback() each run their work under a fresh
-# asyncio.run(), and the JS-extension runtime pool can call in from more than
-# one OS thread for parallel downloads. Result: "<Lock ...> is bound to a
-# different event loop" crashes, or — with the naive "recreate the lock if
-# lock._loop isn't the running loop" fix — silent loss of mutual exclusion
-# (asyncio.Lock's uncontended acquire never touches _loop) and, on a genuinely
-# contended cross-thread acquire, a permanent hang (Future.set_result isn't
-# thread-safe cross-loop).
-#
-# Fix: a threading.Lock (belongs to no loop) wrapped in a minimal async
-# context manager that polls it non-blockingly — the same shape SpotiFLAC's
-# own core/signed_session_mobile.py adopted natively in 4.0 (_AsyncThreadLock).
-# Verified against a real repro: two OS threads, each its own asyncio.run(),
-# contending on the shared singleton lock with blocking work inside the
-# critical section — old code hangs, this doesn't.
-_CROSS_LOOP_LOCK_CLASS = '''class _CrossLoopLock:
-    """threading.Lock-backed async context manager — unlike asyncio.Lock,
-    this genuinely serializes access across different event loops/threads.
-    asyncio.Lock is unsafe here: its uncontended fast path never binds
-    `_loop`, so a later cross-thread contended acquire can silently adopt the
-    wrong loop and deadlock on release (Future.set_result isn't thread-safe
-    cross-loop). See patch_mornye.py Patch F."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-
-    async def __aenter__(self) -> "_CrossLoopLock":
-        while not self._lock.acquire(blocking=False):
-            await asyncio.sleep(0.02)
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        self._lock.release()
-
-
-'''
-
-_apply(
-    "core/signed_session_mono.py",
-    "import os\nimport time\n",
-    "import os\nimport threading\nimport time\n",
-    "added threading import",
-)
-
-# NOTE: _CrossLoopLock must be inserted as its own top-level class BEFORE
-# class _MonochromeBrowserSession, not spliced into its body — an unindented
-# `class` statement dropped mid-body would (correctly) dedent Python out of
-# the enclosing class, silently reparenting the rest of it as methods of
-# _CrossLoopLock instead. Two separate, narrowly-anchored patches avoid that.
-_apply(
-    "core/signed_session_mono.py",
-    "class _MonochromeBrowserSession:\n",
-    _CROSS_LOOP_LOCK_CLASS + "class _MonochromeBrowserSession:\n",
-    "added _CrossLoopLock helper class",
-    already_marker="class _CrossLoopLock:",
-)
-
-_apply(
-    "core/signed_session_mono.py",
-    # Single-line anchor: 5.0 added type annotations to the neighbouring
-    # lines (`self._tab: Any = None`), which broke the old 3-line anchor and
-    # left the (now unused) _CrossLoopLock class inserted with the lock
-    # still an asyncio.Lock. This line is unique in the file.
-    "        self._lock = asyncio.Lock()\n",
-    "        self._lock = _CrossLoopLock()\n",
-    "browser-session lock is now a threading.Lock-backed cross-loop/cross-thread-safe lock instead of asyncio.Lock",
-)
 
 # ---------------------------------------------------------------------------
 # Patch G: extensions/_bridge.js — synchronous bridge-call ceiling

@@ -1524,7 +1524,7 @@ const SETTINGS = {
       <button class="sw" role="switch" aria-checked="${s.on}" aria-label="Use ${s.name}" data-act="srcon" data-id="${s.id}"><span class="th">${s.on ? ic('check') : ''}</span></button></div>`; }).join('')}</div>
     ${field('Qobuz token', 'qobuz', { type: 'password', help: 'Only needed for the Qobuz source' })}</section>`,
   extensions: () => `<section class="section" aria-labelledby="h-set"><h2 id="h-set" class="t-l">Extensions</h2>
-    <p class="b-m v">SpotiFLAC ships no download providers of its own. Paste a registry URL you trust (one per line), save, then install. Nothing is fetched automatically.</p>
+    <p class="b-m v">SpotiFLAC ships no download providers of its own. Paste a registry URL you trust (one per line), save, then install. Nothing is fetched automatically. Spotify links also need the “utilities” package, which only Python registries list (for Mornye’s own catalog, use registry-unified.json rather than registry.json).</p>
     ${area('Registry URLs', 'registry', { help: 'https://…/registry.json' })}
     <div class="row wrap"><button class="btn filled" data-act="extrefresh">${ic('download')}Install / refresh extensions</button></div>
     <h3 class="t-m" style="margin-top:8px">Provider health</h3>

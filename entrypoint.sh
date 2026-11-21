@@ -17,9 +17,11 @@ LOG_LEVEL="${LOG_LEVEL:-info}"
 # anchors carried over. Like SpotiFLAC >= 1.8.0 it bundles no download
 # providers — Tidal/Qobuz/Amazon/Deezer/etc. are installed at runtime as
 # operator-supplied "extensions" from a registry URL configured in
-# Settings → System (see worker.refresh_extensions). Earlier porting history
-# (SpotiFLAC 1.x -> 5.0.6) is in patch_mornye.py's module docstring.
-MORNYE_PINNED="1.0.5"
+# Settings → System (see worker.refresh_extensions). Since 1.1.0 the same goes
+# for Spotify metadata and the Turnstile/signed-session code (the "utilities"
+# extension). Earlier porting history (SpotiFLAC 1.x -> 5.0.6) is in
+# patch_mornye.py's module docstring.
+MORNYE_PINNED="2.2.1"
 
 # Log lines share the app's layout (see applog.py):
 #   21:35:09  INFO   VPN       Connecting · OpenVPN

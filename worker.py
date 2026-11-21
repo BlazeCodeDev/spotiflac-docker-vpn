@@ -26,11 +26,20 @@ from mornye.core.progress import DownloadManager
 
 # Cached Spotify client — reuses OAuth token across jobs instead of re-fetching
 # on every _fetch_metadata call. SpotifyMetadataClient handles token refresh.
-try:
-    from mornye.core.spotify_metadata import SpotifyMetadataClient as _SpotifyClient
-    _spotify_client = _SpotifyClient(timeout_s=15)
-except Exception:
-    _spotify_client = None
+# Created on first use, not at import: since Mornye 1.1.0 the class comes from
+# the registry-installed "utilities" extension (see _EXTRA_EXT_IDS), which is
+# usually not installed yet when this module loads — an import-time attempt
+# left this None for the life of the process, and touching it at all can
+# block on a registry fetch before gunicorn's worker has even booted.
+_spotify_client = None
+
+
+def _get_spotify_client():
+    global _spotify_client
+    if _spotify_client is None:
+        from mornye.core.spotify_metadata import SpotifyMetadataClient
+        _spotify_client = SpotifyMetadataClient(timeout_s=15)
+    return _spotify_client
 
 # ── Persistent event loop ────────────────────────────────────────────────────
 # Mornye's asyncio.Queue (progress.py) binds to the first event loop it is
@@ -177,7 +186,11 @@ def refresh_tidal_api_list(force: bool = False) -> list:
 # Mornye's catalog aliases "youtube" to "ytmusic-mornye", but the registries
 # (including Mornye's own) still publish it as "ytmusic-spotiflac", so either
 # is accepted. apple-music (added separately below) backs the "apple"
-# enrich_provider only, not a download service.
+# enrich_provider only, not a download service. utilities supplies the
+# Spotify metadata client and the Turnstile/signed-session code that Mornye
+# >= 1.1.0 no longer bundles (mornye.core.spotify_metadata etc. are lazy
+# proxies that raise until it is installed) — without it every Spotify link
+# fails.
 _SERVICE_EXT_IDS = {
     "tidal":   ("tidal-web",),
     "qobuz":   ("qobuz-web",),
@@ -185,7 +198,7 @@ _SERVICE_EXT_IDS = {
     "deezer":  ("deezer",),
     "youtube": ("ytmusic-mornye", "ytmusic-spotiflac"),
 }
-_EXTRA_EXT_IDS = {"apple": ("apple-music",)}
+_EXTRA_EXT_IDS = {"apple": ("apple-music",), "utilities": ("utilities",)}
 
 
 def _installed_ext_id(mgr, service: str) -> str | None:
@@ -246,8 +259,9 @@ def extensions_status() -> dict:
 
 def refresh_extensions(force: bool = False) -> dict:
     """Installs/refreshes the extensions this app relies on for downloading
-    (see _SERVICE_EXT_IDS) and for metadata enrichment (apple-music), from
-    every registry URL configured in Settings.
+    (see _SERVICE_EXT_IDS), for metadata enrichment (apple-music) and for
+    Spotify metadata (utilities), from every registry URL configured in
+    Settings.
 
     Mornye (like SpotiFLAC >= 1.8.0 before it) bundles no download providers
     at all — see patch_mornye.py's module docstring. Returns {ext_id: True} on success,
@@ -800,13 +814,13 @@ def _update(job_id: str, **kwargs) -> None:
 
 def _fetch_metadata(url: str) -> tuple[str | None, str | None, str | None]:
     try:
-        from mornye.core.spotify_metadata import SpotifyMetadataClient, parse_spotify_url
+        from mornye.core.spotify_metadata import parse_spotify_url
         info   = parse_spotify_url(url)
         kind   = info["type"]
         sid    = info["id"]
         if kind not in ("track", "album", "playlist"):
             return None, None, None
-        client = _spotify_client or SpotifyMetadataClient(timeout_s=15)
+        client = _get_spotify_client()
         if not hasattr(client, '_get'):
             import base64, json, types, urllib.parse, urllib.request
             _CID  = base64.b64decode("ODNlNDQzMGI0NzAwNDM0YmFhMjEyMjhhOWM3ZDExYzU=").decode()
@@ -1474,7 +1488,8 @@ class _TrackingDownloader(MornyeDownloader):
             super().run(url)
 
     async def _run_worker_async(self, tracks, collection_name, info,
-                                is_album, is_playlist, opts=None, existing_paths=None):
+                                is_album, is_playlist, opts=None, existing_paths=None,
+                                **_ignored):
         """Override for SpotiFLAC 1.2.9+: swap DownloadWorker for _TrackingWorker.
 
         existing_paths (SpotiFLAC 3.8.0+): the base class now does its own
@@ -1487,6 +1502,11 @@ class _TrackingDownloader(MornyeDownloader):
         library-wide artist+title fallback via lib_index for the same song
         landing under a different album-derived path (see _index_existing_files
         / lib_index.find_by_artist_title) — which existing_paths doesn't cover.
+
+        **_ignored: Mornye 2.x passes playlist_file / playlist_tracks /
+        playlist_existing_paths (its own M3U writing, which this app doesn't
+        use) the same way, and broke every job the same way. Swallow any
+        future keyword additions too rather than fail outright again.
         """
         self.is_playlist     = is_playlist
         self.collection_name = collection_name
@@ -1620,6 +1640,10 @@ def _run(job_id: str) -> None:
             # 0 = leave Mornye's own default (120s) alone; see settings.py.
             if "timeout_s" in _do_fields and cfg.get("download_timeout_s"):
                 _enrich_kwargs["timeout_s"] = cfg["download_timeout_s"]
+            # Mornye >= 2.0: cancel/remove also aborts the track mid-download
+            # instead of letting it finish before the between-tracks check.
+            if "stop_event" in _do_fields:
+                _enrich_kwargs["stop_event"] = ev
             if cfg.get("flac_only") and quality == "high":
                 quality = "lossless"   # High is Mornye's lossy tier: it would only fetch files to discard
             opts = DownloadOptions(
