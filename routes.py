@@ -2185,9 +2185,10 @@ def _upgrade_cover(abs_path: str, cover_url: str, has_cover: bool) -> tuple[bool
     cover with a smaller/equal one. Returns (changed, status_message)."""
     if not cover_url:
         return False, ("Cover art already present" if has_cover else "No cover art found")
-    fetched = _fetch_cover(cover_url)
+    _errs: list[str] = []
+    fetched = _fetch_cover(cover_url, _errs)
     if not fetched:
-        return False, "Cover art unavailable"
+        return False, "Cover art unavailable" + (f" — {_errs[0][:160]}" if _errs else "")
     new_data, mime = fetched
     new_dim = _img_dimensions(new_data)
     if has_cover:
@@ -2206,17 +2207,23 @@ def _upgrade_cover(abs_path: str, cover_url: str, has_cover: bool) -> tuple[bool
     return False, "Cover art unavailable"
 
 
-def _fetch_cover(url: str) -> tuple[bytes, str] | None:
-    """Download cover image; returns (bytes, mime_type) or None on failure."""
+def _fetch_cover(url: str, errors: list | None = None) -> tuple[bytes, str] | None:
+    """Download cover image; returns (bytes, mime_type) or None on failure.
+    The reason for a failure is appended to `errors` when one is given."""
     try:
         import urllib.request
-        with urllib.request.urlopen(url, timeout=10) as r:
+        # Image CDNs (Akamai for Deezer) refuse Python's default user agent
+        # from some IPs, VPN exits especially.
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
             data = r.read()
         ctype = r.headers.get_content_type() or ""
         mime = "image/png" if "png" in ctype else "image/jpeg"
         return data, mime
     except Exception as exc:
         log.debug("Cover fetch failed for %s: %s", url, exc)
+        if errors is not None:
+            errors.append(f"{urllib.parse.urlsplit(url).hostname}: {exc}")
     return None
 
 
@@ -3218,7 +3225,60 @@ def _enrich_setup(use_mb: bool):
                     mb_lookup = lambda isrc, title, artist: fetch_mb_metadata(isrc)
         except ImportError:
             pass
+    if mb_lookup is not None:
+        mb_lookup = _MBLookup(mb_lookup)
     return enrich_fn, mb_lookup, mb_to_tags
+
+
+class _MBLookup:
+    """mb_lookup that forgets Mornye's remembered failures first and keeps
+    what Mornye said about the lookup in .note.
+
+    Mornye keeps a failed lookup (and an empty one) in its in-process cache,
+    so after a single refused request — MusicBrainz rate-limits shared VPN
+    exit IPs hard — every later lookup of that track answers "nothing" until
+    a restart, without asking MusicBrainz again. Successes are left cached.
+    """
+
+    def __init__(self, fn):
+        self._fn = fn
+        self.note = ""
+
+    def __call__(self, isrc, title, artist):
+        _mb_forget_failures()
+        logger = logging.getLogger("mornye.core.musicbrainz")
+        notes: list[str] = []
+
+        class _Grab(logging.Handler):
+            def emit(self, record):
+                notes.append(record.getMessage())
+
+        grab = _Grab(logging.INFO)
+        old_level = logger.level
+        if logger.getEffectiveLevel() > logging.INFO:
+            logger.setLevel(logging.INFO)
+        logger.addHandler(grab)
+        try:
+            return self._fn(isrc, title, artist)
+        finally:
+            logger.removeHandler(grab)
+            logger.setLevel(old_level)
+            self.note = next((n for n in reversed(notes)
+                              if "failed" in n or "paused" in n or "no match" in n), "")
+
+
+def _mb_forget_failures() -> None:
+    try:
+        import mornye.core.musicbrainz as _mb
+    except ImportError:
+        return
+    cache  = getattr(_mb, "_mb_cache", None)
+    failed = getattr(_mb, "_LOOKUP_FAILED", None)
+    if not isinstance(cache, dict):
+        return
+    for key, val in list(cache.items()):
+        if val is failed or (isinstance(val, dict) and not any(val.values())):
+            cache.pop(key, None)
 
 
 def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
@@ -3312,10 +3372,16 @@ def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
                     _mbid = mb_tags.get("MUSICBRAINZ_TRACKID") or mb_tags.get("musicbrainz_trackid")
                 except Exception as exc:
                     log.debug("MusicBrainz lookup failed for %s: %s", rel, exc)
-                yield {"type": "step", "id": "mb",
-                       "text": (f"MusicBrainz: matched {str(_mbid)[:8]}…" if _mbid
-                                else "MusicBrainz: no match"),
-                       "pending": False}
+                _note = getattr(mb_lookup, "note", "")
+                if _mbid:
+                    _txt = f"MusicBrainz: matched {str(_mbid)[:8]}…"
+                elif "failed" in _note or "paused" in _note:
+                    # Mornye's own words: the request was refused or timed out,
+                    # which is not the same as the song not being on MusicBrainz.
+                    _txt = "MusicBrainz didn’t answer — " + _note.removeprefix("[musicbrainz] ")
+                else:
+                    _txt = "MusicBrainz: no match"
+                yield {"type": "step", "id": "mb", "text": _txt, "pending": False}
 
             did_save = _write_enriched_tags(abs_path, tags)
             yield {"type": "step", "id": "write",
