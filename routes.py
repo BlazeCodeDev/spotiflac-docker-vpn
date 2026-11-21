@@ -3245,6 +3245,21 @@ class _MBLookup:
         self.note = ""
 
     def __call__(self, isrc, title, artist):
+        res = self._lookup(isrc, title, artist)
+        if not res and "failed" in self.note:
+            # Usually a 503: MusicBrainz's rate limit, which a single retry a
+            # moment later gets past. Mornye would instead pause every lookup
+            # for 30 s, so lift that pause for the retry.
+            time.sleep(2.0)
+            try:
+                from mornye.core.musicbrainz import set_mb_status
+                set_mb_status(True)
+            except ImportError:
+                pass
+            res = self._lookup(isrc, title, artist)
+        return res
+
+    def _lookup(self, isrc, title, artist):
         _mb_forget_failures()
         logger = logging.getLogger("mornye.core.musicbrainz")
         notes: list[str] = []
@@ -3376,9 +3391,12 @@ def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
                 if _mbid:
                     _txt = f"MusicBrainz: matched {str(_mbid)[:8]}…"
                 elif "failed" in _note or "paused" in _note:
-                    # Mornye's own words: the request was refused or timed out,
-                    # which is not the same as the song not being on MusicBrainz.
-                    _txt = "MusicBrainz didn’t answer — " + _note.removeprefix("[musicbrainz] ")
+                    # The request was refused or timed out, which is not the
+                    # same as the song not being on MusicBrainz.
+                    log.info("MusicBrainz lookup for %s: %s", rel, _note)
+                    _txt = ("MusicBrainz is busy right now — try again later"
+                            if "503" in _note or "paused" in _note
+                            else "MusicBrainz couldn’t be reached — try again later")
                 else:
                     _txt = "MusicBrainz: no match"
                 yield {"type": "step", "id": "mb", "text": _txt, "pending": False}
