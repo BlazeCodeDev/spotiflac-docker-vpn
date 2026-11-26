@@ -736,22 +736,47 @@ def _apply_upgrade(r: dict, olds: list[str]) -> dict:
             "error": "No lossless source found · kept the existing file"}
 
 
-def _require_flac(r: dict) -> dict:
-    """FLAC-only mode: a freshly downloaded non-FLAC file (MP3, M4A, …) is deleted again and the
-    track reported as failed. A copy that was already on disk is left alone."""
+def quality_violation(path: str, flac_only: bool, hires_only: bool) -> str | None:
+    """Why a downloaded file breaks the FLAC-only / Hi-Res-only rules ("MP3", "16-bit/44.1 kHz"),
+    or None when it passes. A file whose stream info can't be read is never rejected on a guess."""
+    ext = os.path.splitext(path)[1].lower()
+    if flac_only and ext != ".flac":
+        return ext.lstrip(".").upper() or "non-FLAC"
+    if hires_only:
+        try:
+            from mutagen import File as MFile
+            info = getattr(MFile(path), "info", None)
+        except Exception:
+            info = None
+        if info is None:
+            return None
+        bits = int(getattr(info, "bits_per_sample", 0) or 0)
+        rate = int(getattr(info, "sample_rate", 0) or 0)
+        if not _is_lossless_file(path):
+            return f"lossy {ext.lstrip('.').upper()}"
+        if rate and not (bits > 16 or rate > 48000):
+            return f"{bits}-bit/{rate / 1000:g} kHz" if bits else f"{rate / 1000:g} kHz"
+    return None
+
+
+def _enforce_quality_rules(r: dict, flac_only: bool, hires_only: bool) -> dict:
+    """FLAC only / Hi-Res only: a freshly downloaded file that breaks the rule is deleted again
+    and the track reported as failed. A copy that was already on disk is left alone."""
     new = r.get("file_path") or ""
-    if (not r.get("success") or r.get("status") != "done" or not new
-            or os.path.splitext(new)[1].lower() == ".flac"):
+    if not r.get("success") or r.get("status") != "done" or not new:
+        return r
+    why = quality_violation(new, flac_only, hires_only)
+    if why is None:
         return r
     try:
         os.remove(new)
         lib_index.trigger_rescan()
     except OSError as exc:
-        log.warning("FLAC only: could not remove %s: %s", new, exc)
-    ext = os.path.splitext(new)[1].lstrip(".").upper() or "non-FLAC"
-    applog.event("downloads", f"Rejected     {_who(r.get('artists'), r.get('title'))} · only {ext} available", logging.WARNING)
+        log.warning("Quality rule: could not remove %s: %s", new, exc)
+    want = "FLAC" if flac_only and not new.lower().endswith(".flac") else "Hi-Res"
+    applog.event("downloads", f"Rejected     {_who(r.get('artists'), r.get('title'))} · only {why} available", logging.WARNING)
     return {**r, "success": False, "status": "failed", "file_path": None, "no_lossless": True,
-            "error": f"No FLAC source found · {ext} discarded (FLAC only)"}
+            "error": f"No {want} source found · {why} discarded ({want} only)"}
 
 
 def _jobname(job_id: str) -> str:
@@ -1024,6 +1049,10 @@ def _downloaded(path: str) -> None:
     hook = on_downloaded
     if hook is None:
         return
+    import settings as _settings
+    cfg = _settings.load()
+    if quality_violation(path, bool(cfg.get("flac_only")), bool(cfg.get("hires_only"))):
+        return   # about to be deleted by _enforce_quality_rules; nothing to tag
     try:
         hook(path)
     except Exception as exc:
@@ -1661,7 +1690,13 @@ def _run(job_id: str) -> None:
             # instead of letting it finish before the between-tracks check.
             if "stop_event" in _do_fields:
                 _enrich_kwargs["stop_event"] = ev
-            if cfg.get("flac_only") and quality == "high":
+            if cfg.get("hires_only"):
+                # Hi-Res with Mornye's fallback off: a service that only has 16-bit is skipped and
+                # the next one asked, instead of the first 16-bit file winning.
+                quality = "hires"
+                if "allow_fallback" in _do_fields:
+                    _enrich_kwargs["allow_fallback"] = False
+            elif cfg.get("flac_only") and quality == "high":
                 quality = "lossless"   # High is Mornye's lossy tier: it would only fetch files to discard
             opts = DownloadOptions(
                 output_dir          = output_dir,
@@ -1696,11 +1731,12 @@ def _run(job_id: str) -> None:
                 track_results.append(r)
                 _update(job_id, track_results=list(track_results))
 
-            flac_only = bool(cfg.get("flac_only"))
+            flac_only  = bool(cfg.get("flac_only"))
+            hires_only = bool(cfg.get("hires_only"))
 
             def _on_track_result(r):
-                if flac_only:
-                    r = _require_flac(r)
+                if flac_only or hires_only:
+                    r = _enforce_quality_rules(r, flac_only, hires_only)
                 if upgrade:
                     with _lock:   # read now: copies can join the job until it starts
                         olds = list((_jobs.get(job_id) or {}).get("upgrade_from") or ())

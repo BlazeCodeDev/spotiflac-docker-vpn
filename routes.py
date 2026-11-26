@@ -15,6 +15,7 @@ import json
 from flask import Blueprint, Response, jsonify, render_template, request, send_file, stream_with_context, url_for
 
 import settings as _settings
+import loudness
 import worker
 import vpn
 import lib_index
@@ -1139,7 +1140,7 @@ def _track_row(rel: str, rec: dict, name_fmt: str) -> dict:
         "len": round(rec.get("dur") or 0), "size": rec["size"], "mtime": rec["mtime"],
         "genre": rec.get("genre", ""), "bpm": int(bpm.group()) if bpm else None,
         "mbid": rec.get("musicbrainz_trackid", ""), "isrc": rec.get("isrc", ""),
-        "cover": bool(rec.get("cover")), "expected": expected,
+        "cover": bool(rec.get("cover")), "rg": bool(rec.get("rg")), "expected": expected,
         "unreadable": "dur" not in rec,   # the tag reader couldn't open the file at all
     }
 
@@ -1688,6 +1689,25 @@ def api_tasks():
             "cancellable":    us["running"] and not us["stopping"],
             "progress_done":  us["done"] if us["running"] else 0,
             "progress_total": us["total"] if us["running"] else 0,
+        })
+
+    with _rg_lock:
+        rs = dict(_rg_state)
+    if rs["running"] or rs["elapsed"] is not None:
+        if rs["running"]:
+            detail = "Stopping…" if rs["stopping"] else f"Measuring {rs['done']}/{rs['total']} · {rs['written']} tagged"
+        else:
+            detail = f"{plural_n(rs['written'], 'file')} tagged"
+            if rs["errors"]:
+                detail += f" · {len(rs['errors'])} failed"
+        tasks.append({
+            "id":             "lib-loudness",
+            "label":          "ReplayGain",
+            "running":        rs["running"],
+            "detail":         detail,
+            "cancellable":    rs["running"] and not rs["stopping"],
+            "progress_done":  rs["done"] if rs["running"] else 0,
+            "progress_total": rs["total"] if rs["running"] else 0,
         })
 
     import listenbrainz as _lb
@@ -3088,6 +3108,102 @@ def api_upgrade_start():
     return jsonify(started=True, total=len(rels))
 
 
+# ── Loudness (ReplayGain) ────────────────────────────────────────────────────
+# Health > Loudness: measure files without ReplayGain tags and add them (see loudness.py — tags
+# only, the audio is never rewritten). Each file is a full decode, so a few run side by side.
+_rg_lock   = threading.Lock()
+_rg_cancel = threading.Event()
+_rg_state: dict = {"running": False, "done": 0, "total": 0, "written": 0, "present": 0,
+                   "errors": [], "started_at": None, "elapsed": None, "stopping": False}
+
+
+def _rg_one(rel: str) -> tuple[str, str]:
+    try:
+        abs_path = _safe_lib_path(rel)
+    except ValueError:
+        return "failed", "path is outside the library"
+    if not os.path.isfile(abs_path):
+        return "failed", "file not found"
+    return loudness.apply(abs_path)
+
+
+def _run_rg_bg(rels: list[str]) -> None:
+    from concurrent.futures import ThreadPoolExecutor, FIRST_COMPLETED, wait
+    written = present = done = 0
+    errors: list[dict] = []
+    applog.event("library", f"Started      ReplayGain · {plural_n(len(rels), 'file')}")
+    try:
+        n = max(1, min(4, os.cpu_count() or 1))
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            todo = iter(rels)
+            running: dict = {}
+            while True:
+                while not _rg_cancel.is_set() and len(running) < n:
+                    rel = next(todo, None)
+                    if rel is None:
+                        break
+                    running[pool.submit(_rg_one, rel)] = rel
+                if not running:
+                    break
+                finished, _ = wait(running, return_when=FIRST_COMPLETED)
+                for fut in finished:
+                    rel = running.pop(fut)
+                    try:
+                        st, txt = fut.result()
+                    except Exception as exc:
+                        st, txt = "failed", str(exc)[:200]
+                    done += 1
+                    if st == "written":
+                        written += 1
+                    elif st == "present":
+                        present += 1
+                    else:
+                        errors.append({"path": rel, "error": txt})
+                with _rg_lock:
+                    _rg_state.update(done=done, written=written, present=present, errors=errors[-200:])
+    finally:
+        with _rg_lock:
+            _rg_state.update(running=False, stopping=False, done=done, written=written, present=present,
+                             errors=errors[-200:], elapsed=round(time.monotonic() - _rg_state["started_at"], 1))
+        if written:
+            lib_index.trigger_rescan()
+        applog.event("library", f"{'Stopped' if _rg_cancel.is_set() else 'Finished'}     ReplayGain · {written} tagged"
+                     + (f" · {len(errors)} failed" if errors else ""),
+                     logging.WARNING if errors else logging.INFO)
+
+
+@bp.get("/api/library/loudness")
+def api_loudness_status():
+    with _rg_lock:
+        return jsonify(**_rg_state)
+
+
+@bp.post("/api/library/loudness")
+def api_loudness_start():
+    """Add ReplayGain tags to the named files (library-relative paths)."""
+    rels = [str(r) for r in (request.get_json(silent=True) or {}).get("files") or [] if r]
+    if not rels:
+        return jsonify(error="No files given"), 400
+    with _rg_lock:
+        if _rg_state["running"]:
+            return jsonify(started=False)
+        _rg_cancel.clear()
+        _rg_state.update(running=True, done=0, total=len(rels), written=0, present=0, errors=[],
+                         started_at=time.monotonic(), elapsed=None, stopping=False)
+    threading.Thread(target=_run_rg_bg, args=(rels,), daemon=True, name="lib-loudness").start()
+    return jsonify(started=True, total=len(rels))
+
+
+@bp.delete("/api/library/loudness")
+def api_loudness_cancel():
+    with _rg_lock:
+        if not _rg_state["running"]:
+            return jsonify(ok=False)
+        _rg_state["stopping"] = True
+    _rg_cancel.set()
+    return jsonify(ok=True)
+
+
 @bp.delete("/api/library/upgrade")
 def api_upgrade_cancel():
     with _upgrade_lock:
@@ -3297,7 +3413,8 @@ def _mb_forget_failures() -> None:
 
 
 def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
-                     enrich_fn, mb_lookup, mb_to_tags, upgrade_cover=True, organize=True):
+                     enrich_fn, mb_lookup, mb_to_tags, upgrade_cover=True, organize=True,
+                     replaygain=None):
     """Enrich one audio file, reporting every step.
 
     Generator: yields {"type":"step", "id":str, "text":str, "pending":bool}
@@ -3310,6 +3427,8 @@ def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
     Mirrors the per-file logic the batch path used inline before.
     """
     from mutagen import File as MFile
+    if replaygain is None:
+        replaygain = bool(_settings.load().get("replaygain", True))
     _t0 = time.monotonic()
     enriched = False
     moved = None
@@ -3440,6 +3559,15 @@ def _enrich_one_file(abs_path, rel, root, providers, use_mb, fmt,
                        "text": "Genre, BPM, MusicBrainz ID and cover art all already present",
                        "pending": False}
             audio2 = audio
+
+        if replaygain and loudness.supported(abs_path):
+            yield {"type": "step", "id": "replaygain", "text": "Measuring loudness for ReplayGain…", "pending": True}
+            _st, _txt = loudness.apply(abs_path)
+            yield {"type": "step", "id": "replaygain", "text": _txt, "pending": False}
+            if _st == "written":
+                enriched = True
+            elif _st == "failed":
+                applog.event("enrich", f"ReplayGain   {_enrich_name(rel)} · {_txt}", logging.WARNING)
 
         if audio2 and organize:
             ext = os.path.splitext(abs_path)[1]
@@ -3659,7 +3787,8 @@ _post_dl_running = False
 
 def _queue_post_download_check(abs_path: str) -> None:
     global _post_dl_running
-    if not _settings.load().get("enrich_metadata", True):
+    cfg = _settings.load()
+    if not (cfg.get("enrich_metadata", True) or cfg.get("replaygain", True)):
         return
     with _post_dl_lock:
         _post_dl_paths.append(abs_path)
@@ -3688,14 +3817,22 @@ def _post_download_check(abs_path: str) -> None:
         return
     cfg    = _settings.load()
     use_mb = cfg.get("enrich_musicbrainz", True)
-    if (_has_mbid(abs_path) or not use_mb) and _existing_cover_bytes(abs_path):
-        return
     root = _lib_root()
     rel  = os.path.relpath(os.path.realpath(abs_path), root).replace(os.sep, "/")
     if rel.startswith("../"):
         return
-    enrich_fn, mb_lookup, mb_to_tags = _enrich_setup(use_mb)
+    want_rg = bool(cfg.get("replaygain", True)) and loudness.supported(abs_path)
+    enrich_fn = None
+    if cfg.get("enrich_metadata", True) and not ((_has_mbid(abs_path) or not use_mb) and _existing_cover_bytes(abs_path)):
+        enrich_fn, mb_lookup, mb_to_tags = _enrich_setup(use_mb)
     if enrich_fn is None:
+        # Tags are complete (or Enrich is off): only the loudness is left to do.
+        if want_rg:
+            _st, _txt = loudness.apply(abs_path)
+            if _st == "written":
+                applog.event("enrich", f"ReplayGain   {_enrich_name(rel)} · {_txt}")
+            elif _st == "failed":
+                applog.event("enrich", f"ReplayGain   {_enrich_name(rel)} · {_txt}", logging.WARNING)
         return
     try:
         # Don't spend the lookup inside the pause that likely caused the gap.
@@ -3706,7 +3843,7 @@ def _post_download_check(abs_path: str) -> None:
     res = {}
     for ev in _enrich_one_file(abs_path, rel, root, cfg.get("enrich_providers", ["deezer", "apple"]),
                                use_mb, cfg.get("filename_fmt", "{artist}/{album}/{track} {title}"),
-                               enrich_fn, mb_lookup, mb_to_tags, organize=False):
+                               enrich_fn, mb_lookup, mb_to_tags, organize=False, replaygain=want_rg):
         if ev.get("type") == "result":
             res = ev
     if res.get("error"):
@@ -4061,6 +4198,12 @@ def api_settings_patch():
 
     if "flac_only" in body:
         updates["flac_only"] = bool(body["flac_only"])
+
+    if "hires_only" in body:
+        updates["hires_only"] = bool(body["hires_only"])
+
+    if "replaygain" in body:
+        updates["replaygain"] = bool(body["replaygain"])
 
     if "log_categories" in body:
         raw = body["log_categories"]

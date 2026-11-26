@@ -24,7 +24,8 @@ _FIELDS = ("title", "artist", "albumartist", "album", "isrc", "genre", "bpm",
 # 2: added tracknumber/date and the "cover" flag for the library table; old entries are re-read once.
 # 3: added "bits" (bit depth of lossless files) for the song details.
 # 4: added "rate" (sample rate in Hz).
-_VERSION = 4
+# 5: added the "rg" flag (file carries ReplayGain tags).
+_VERSION = 5
 
 _lock = threading.Lock()
 _mem: dict | None = None     # {path: [stamp, record]}
@@ -95,29 +96,36 @@ def _parse(path: str) -> dict:
     # FLAC (most of a lossless library) lists its pictures on the easy object too, which saves
     # opening and parsing the file a second time; that open is a network round trip on a NAS.
     from mutagen.flac import FLAC
-    rec["cover"] = bool(audio.pictures) if isinstance(audio, FLAC) else _has_cover(path)
+    if isinstance(audio, FLAC):
+        import loudness
+        rec["cover"] = bool(audio.pictures)
+        rec["rg"] = loudness.has_replaygain_tags(audio.tags)
+    else:
+        rec["cover"], rec["rg"] = _raw_flags(path)
     return rec
 
 
-def _has_cover(path: str) -> bool:
-    """True when the file carries an embedded picture. Cheap: tags only, no audio decoding."""
+def _raw_flags(path: str) -> tuple[bool, bool]:
+    """(has an embedded picture, has ReplayGain tags), from one non-easy open of the file."""
     from mutagen import File as MFile
+    import loudness
     try:
         raw = MFile(path)
         if raw is None:
-            return False
-        if getattr(raw, "pictures", None):               # FLAC, and Ogg/Opus via mutagen's FLAC-style block
-            return True
+            return False, False
         tags = getattr(raw, "tags", None)
+        rg = loudness.has_replaygain_tags(tags)
+        if getattr(raw, "pictures", None):               # FLAC, and Ogg/Opus via mutagen's FLAC-style block
+            return True, rg
         if tags is None:
-            return False
+            return False, rg
         if hasattr(tags, "getall"):                      # ID3 (mp3, wav)
-            return bool(tags.getall("APIC"))
+            return bool(tags.getall("APIC")), rg
         if "covr" in tags:                               # MP4/M4A
-            return bool(tags.get("covr"))
-        return "metadata_block_picture" in tags          # Ogg Vorbis/Opus
+            return bool(tags.get("covr")), rg
+        return "metadata_block_picture" in tags, rg      # Ogg Vorbis/Opus
     except Exception:
-        return False
+        return False, False
 
 
 def _store(p: str, stamp: str, rec: dict) -> None:

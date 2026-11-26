@@ -155,7 +155,7 @@ const DEFAULT_SET = {
   parallel: 3, delay: 4, retryEvery: 5, maxRetries: 3, timeout: 300, reconnect: 3,
   fmt: '{artist}/{album}/{track} {title}', m3u: 'ask',
   sources: ALL_SERVICES.map(([id, name]) => ({ id, name, on: false })), qobuz: '', registry: '',
-  meta: { on: true, deezer: true, apple: true, qobuz: false, tidal: false, mb: true },
+  meta: { on: true, deezer: true, apple: true, qobuz: false, tidal: false, mb: true }, rg: true,
   lb: { on: false, user: '', days: [0, 1, 2, 3, 4, 5, 6], time: '06:00' },
   log: ['vpn', 'downloads', 'enrich', 'system'],
 };
@@ -168,7 +168,7 @@ function fromServer(c) {
     timeout: c.download_timeout_s, reconnect: c.reconnect_threshold, fmt: c.filename_fmt, m3u: c.m3u_mode,
     sources: order.map((id) => ({ id, name: serviceName(id), on: on.includes(id) })),
     qobuz: c.qobuz_token || '', registry: (c.extension_registries || []).join('\n'),
-    meta: { on: !!c.enrich_metadata, deezer: prov.includes('deezer'), apple: prov.includes('apple'), qobuz: prov.includes('qobuz'), tidal: prov.includes('tidal'), mb: !!c.enrich_musicbrainz },
+    meta: { on: !!c.enrich_metadata, deezer: prov.includes('deezer'), apple: prov.includes('apple'), qobuz: prov.includes('qobuz'), tidal: prov.includes('tidal'), mb: !!c.enrich_musicbrainz }, rg: c.replaygain !== false,
     lb: { on: !!c.listenbrainz_enabled, user: c.listenbrainz_username || '', days: c.listenbrainz_days || [], time: c.listenbrainz_time || '06:00' },
     log: c.log_categories || DEFAULT_SET.log,
   };
@@ -180,9 +180,9 @@ function toServer() {
     download_timeout_s: s.timeout, reconnect_threshold: s.reconnect, filename_fmt: s.fmt, m3u_mode: s.m3u,
     services: s.sources.filter((x) => x.on).map((x) => x.id), qobuz_token: s.qobuz,
     extension_registries: s.registry.split(/[\s,]+/).filter(Boolean),
-    enrich_metadata: s.meta.on, enrich_providers: ['deezer', 'apple', 'tidal', 'qobuz'].filter((k) => s.meta[k]), enrich_musicbrainz: s.meta.mb,
+    enrich_metadata: s.meta.on, enrich_providers: ['deezer', 'apple', 'tidal', 'qobuz'].filter((k) => s.meta[k]), enrich_musicbrainz: s.meta.mb, replaygain: s.rg,
     listenbrainz_enabled: s.lb.on, listenbrainz_username: s.lb.user, listenbrainz_days: s.lb.days, listenbrainz_time: s.lb.time, log_categories: s.log,
-    quality: S.quality, flac_only: S.flacOnly,
+    quality: S.quality, flac_only: S.flacOnly, hires_only: S.hiresOnly,
   };
 }
 const S = {
@@ -193,6 +193,7 @@ const S = {
   artists: [], art: { open: new Set(), rel: {}, albOpen: new Set(), trk: {}, sel: {} },
   quality: store.get('quality', 'lossless'),
   flacOnly: store.get('flacOnly', false),   // reject MP3/M4A downloads (settings.flac_only)
+  hiresOnly: store.get('hiresOnly', false), // Hi-Res with no fallback to 16-bit (settings.hires_only)
   jobs: [], jobsLoaded: false, doneAll: false, qsel: null, // qsel: Set of picked job ids while selecting, else null
   vpn: { known: false, on: false, since: null, ip: null },
   tasks: [],
@@ -203,8 +204,9 @@ const S = {
   h: {
     tab: 'dups', filters: new Set(['id', 'tags']),
     dups: null, dupsInfo: null, keep: {}, mis: null, misInfo: null,
-    sel: { mis: new Set(), name: new Set(), miss: new Set(), bad: new Set(), up: new Set() },
+    sel: { mis: new Set(), name: new Set(), miss: new Set(), bad: new Set(), up: new Set(), rg: new Set() },
     up: null,   // /api/library/upgrade: songs being looked up or queued, and the ones not found
+    rg: null,   // /api/library/loudness: the ReplayGain run's progress and failures
     org: { fmt: '{artist}/{album}/{track} {title}', phase: 'idle', done: 0, total: 0, moved: 0, errors: 0, ops: [], msg: '' },
   },
   disc: { data: null, error: '', basis: new Set(['artists', 'genres', 'similar']), recent: false, hiddenOpen: false, flavour: '', label: '', busy: false, more: false, relShown: 10 },
@@ -228,6 +230,9 @@ const dupFor = (t) => dupGroups().find((g) => g.files.some((f) => f.path === t.p
 const lossyAll = () => S.lib.tracks.filter((t) => !t.lossless && !brokenWhy(t));
 const hasLosslessCopy = (t) => { const g = dupFor(t); return !!g && g.files.some((f) => f.lossless); };
 const upgradeList = () => lossyAll().filter((t) => !hasLosslessCopy(t));
+// Songs without ReplayGain tags, in the formats loudness.py writes them for (not Opus, WAV, AIFF).
+const RG_FMTS = ['flac', 'ogg', 'oga', 'mp3', 'm4a', 'mp4'];
+const loudnessList = () => S.lib.tracks.filter((t) => !t.rg && RG_FMTS.includes(t.fmt) && !brokenWhy(t));
 const queueJobs = () => {
   const rank = { running: 0, queued: 1, error: 2, cancelled: 3 };
   return S.jobs.filter((j) => j.status in rank).slice().reverse().sort((a, b) => rank[a.status] - rank[b.status]);
@@ -693,10 +698,11 @@ function viewDownload() {
       <button class="ib" data-act="clearq" aria-label="Clear" ${S.q ? '' : 'hidden'}>${ic('close')}</button>
       <button class="ib" data-act="pasteq" aria-label="Paste from clipboard">${ic('content_paste')}</button></label>
     <div class="seg" role="radiogroup" aria-label="Quality">
-      ${[['high', 'High'], ['lossless', 'Lossless'], ['hires', 'Hi-Res']].map(([k, l]) => { const off = S.flacOnly && k === 'high';   // High is a lossy tier
-        return `<button role="radio" aria-checked="${S.quality === k}" data-act="quality" data-k="${k}" ${off ? 'disabled title="High is lossy (AAC/MP3); turn off FLAC only to use it"' : ''}>${S.quality === k ? ic('check') : ''}${l}</button>`; }).join('')}
+      ${[['high', 'High'], ['lossless', 'Lossless'], ['hires', 'Hi-Res']].map(([k, l]) => { const off = S.hiresOnly ? k !== 'hires' && 'Turn off Hi-Res only to pick another quality' : S.flacOnly && k === 'high' && 'High is lossy (AAC/MP3); turn off FLAC only to use it';
+        return `<button role="radio" aria-checked="${S.quality === k}" data-act="quality" data-k="${k}" ${off ? `disabled title="${off}"` : ''}>${S.quality === k ? ic('check') : ''}${l}</button>`; }).join('')}
     </div>
     <button class="chip ${S.flacOnly ? 'on' : ''}" aria-pressed="${S.flacOnly}" data-act="flaconly" title="Discard MP3 and M4A downloads: a song with no FLAC source fails instead">${S.flacOnly ? ic('check') : ''}FLAC only</button>
+    <button class="chip ${S.hiresOnly ? 'on' : ''}" aria-pressed="${S.hiresOnly}" data-act="hiresonly" title="Download in Hi-Res only: a service with just 16-bit is skipped for the next one, and a song no service has in Hi-Res fails instead">${S.hiresOnly ? ic('check') : ''}Hi-Res only</button>
   </header>
   <div class="split">
     <section class="pane res-pane ${S.q.trim() ? '' : 'idle'}" id="res-pane" aria-labelledby="h-res" style="padding:20px 12px;display:flex;flex-direction:column;gap:12px">${resPaneHTML()}</section>
@@ -777,8 +783,10 @@ async function refreshTasks() {
     else if (t.id === 'scan-mistag') loadScan('mistag');
     else if (t.id === 'lib-index' || t.id === 'lib-enrich') loadTracks(true);
     else if (t.id === 'lib-upgrade') loadUpgrade();
+    else if (t.id === 'lib-loudness') { loadLoudness(); loadTracks(true); }
   }
   // Follow a running upgrade, and drop "Queued" marks once its downloads have replaced the files.
+  if (S.route === 'health' && S.h.tab === 'rg' && (S.h.rg?.running || tasks.some((t) => t.id === 'lib-loudness' && t.running))) loadLoudness();
   if (S.route === 'health' && S.h.tab === 'up' && (S.h.up?.running || S.h.up?.pending?.length || tasks.some((t) => t.id === 'lib-upgrade' && t.running))) loadUpgrade();
   const tb = $('#tasks-body');
   if (tb) tb.innerHTML = tasksBody();
@@ -1134,6 +1142,13 @@ async function loadScan(kind) {
   } catch { /* leave what we have */ }
 }
 function refreshScans() { loadDups(true); if (S.h.mis !== null) loadScan('mistag'); }
+async function loadLoudness() {
+  try {
+    const d = await api('/api/library/loudness');
+    if (JSON.stringify(d) === JSON.stringify(S.h.rg)) return;
+    S.h.rg = d; if (S.route === 'health' && S.h.tab === 'rg') render();
+  } catch { /* keep what we have */ }
+}
 async function loadUpgrade() {
   try {
     const d = await api('/api/library/upgrade');
@@ -1266,6 +1281,25 @@ function healthUpgrade() {
       : emptyState('task_alt', 'Everything is lossless', covered ? 'The remaining lossy files have lossless duplicates.' : 'No MP3 or other lossy files in your library.')}
     ${list.length ? `<div class="dock"><span class="b-l grow">${sel.size ? plural(sel.size, 'file') + ' selected' : `${plural(list.length, 'lossy file')}<span class="v"> · ${fmtMB(mb)}</span>`}</span>
       <button class="btn filled" data-act="upgrade" ${up.running ? 'disabled' : ''}>${ic('high_quality')}${sel.size ? 'Upgrade selected' : 'Upgrade all'}</button></div>` : ''}`;
+  });
+}
+
+// Loudness: ReplayGain tags for songs that don't have them yet (tags only; the audio is untouched)
+const RG_SHOWN = 300;   // the list is the whole library before the first run; only this many rows are drawn
+function healthLoudness() {
+  return libGate(() => {
+    const list = loudnessList(); const sel = S.h.sel.rg; const rg = S.h.rg || {};
+    const failed = (rg.errors || []).filter((e) => e.path);
+    return `<span class="b-m v">Songs without ReplayGain tags. ReplayGain measures how loud a song is and writes a volume correction into its tags, so players like Plexamp or foobar2000 play every song at the same level. Only tags are added: the audio isn’t changed, and songs that already have ReplayGain are left alone. Measuring takes a few seconds per song.</span>
+    ${rg.running ? `<div class="row b-m" style="gap:12px;background:var(--md-secondary-container);color:var(--md-on-secondary-container);border-radius:16px;padding:10px 16px"><span class="ms spin" aria-hidden="true">progress_activity</span><span class="grow">Measuring loudness · ${rg.done} of ${rg.total} · ${plural(rg.written, 'song')} tagged</span></div>` : ''}
+    ${!rg.running && failed.length ? `<details class="b-m" style="background:var(--md-error-container);color:var(--md-on-error-container);border-radius:16px;padding:10px 16px"><summary>${plural(failed.length, 'song')} couldn’t be measured</summary>
+      <div class="col" style="gap:2px;margin-top:8px">${failed.slice(0, 50).map((e) => `<span class="ell"><span class="mono" style="font-size:12px">${esc(e.path)}</span> · ${esc(e.error)}</span>`).join('')}</div></details>` : ''}
+    ${list.length ? listRows('rg', list.slice(0, RG_SHOWN), (t) => `<span class="col grow" style="min-width:0"><span class="b-l ell">${esc(t.title)}</span><span class="b-m v ell">${esc(t.artist || 'No artist tag')} · ${esc(t.album)}</span></span>
+      <span class="mono l-m hide-sm">${esc((t.fmt || '').toUpperCase())}</span>`)
+      + (list.length > RG_SHOWN ? `<span class="b-m v">…and ${plural(list.length - RG_SHOWN, 'more song')}. “Tag all” covers them too.</span>` : '')
+      : emptyState('task_alt', 'Every song has ReplayGain', 'All FLAC, MP3, M4A and Ogg files in your library carry loudness tags.')}
+    ${list.length ? `<div class="dock"><span class="b-l grow">${sel.size ? plural(sel.size, 'song') + ' selected' : plural(list.length, 'song') + ' without ReplayGain'}</span>
+      <button class="btn filled" data-act="loudness" ${rg.running ? 'disabled' : ''}>${ic('volume_up')}${sel.size ? 'Tag selected' : 'Tag all'}</button></div>` : ''}`;
   });
 }
 
@@ -1420,8 +1454,9 @@ function viewHealth() {
   const tabs = [['dups', 'content_copy', 'Duplicates', S.h.dups ? S.h.dups.length : '–'], ['mis', 'graphic_eq', 'Mistagged', S.h.mis ? S.h.mis.length : '–'],
     ['name', 'text_fields', 'Misnamed', S.lib.loaded && S.lib.ready ? misnamed().length : '–'], ['miss', 'label_off', 'Missing tags', S.lib.loaded && S.lib.ready ? missingList().length : '–'],
     ['bad', 'broken_image', 'Broken', S.lib.loaded && S.lib.ready ? brokenList().length : '–'], ['up', 'high_quality', 'Upgrade', S.lib.loaded && S.lib.ready ? upgradeList().length : '–'],
+    ['rg', 'volume_up', 'Loudness', S.lib.loaded && S.lib.ready ? loudnessList().length : '–'],
     ['org', 'folder_managed', 'Folders', '']];
-  const body = { dups: healthDups, mis: healthMis, name: healthNames, miss: healthMissing, bad: healthBroken, up: healthUpgrade, org: healthOrganize }[S.h.tab]();
+  const body = { dups: healthDups, mis: healthMis, name: healthNames, miss: healthMissing, bad: healthBroken, up: healthUpgrade, rg: healthLoudness, org: healthOrganize }[S.h.tab]();
   const b = scanInfo();
   const busy = !!b;
   return `<section class="pane" style="padding:24px 28px 20px;display:flex;flex-direction:column;gap:16px" aria-labelledby="h-health">
@@ -1534,6 +1569,7 @@ const SETTINGS = {
   metadata: () => `<section class="section" aria-labelledby="h-set"><h2 id="h-set" class="t-l">Metadata</h2>
     ${switchRow('meta.on', 'Fetch extra tags after download', 'Genre, label, BPM and UPC. Providers are queried in parallel and the first answer per field wins.')}
     <div class="col" style="${S.set.meta.on ? '' : 'opacity:.5;pointer-events:none'}">${[['deezer', 'Deezer', 'Free'], ['apple', 'Apple Music', 'Free'], ['qobuz', 'Qobuz', ''], ['tidal', 'Tidal', ''], ['mb', 'MusicBrainz genre fallback', 'Rate-limited to 1 request per second']].map(([k, l, h]) => switchRow('meta.' + k, l, h)).join('')}</div>
+    ${switchRow('rg', 'Write ReplayGain tags', 'Measures each song’s loudness after download and during Enrich, so players can even out the volume. Only adds tags; the audio isn’t changed, and songs that already have ReplayGain are left alone. Takes a few seconds per song.')}
     <h3 class="t-m" style="margin-top:8px">Library index</h3>
     <div class="li" style="background:var(--md-sc-low);border-radius:20px">${ic('database', 'v')}<span class="grow col"><span class="b-l">${esc(taskDetail('lib-index') || 'Index status loading…')}</span><span class="b-m v">Used for “In library” badges in search results</span></span><button class="btn tonal" data-act="reindex">${ic('refresh')}Rescan</button></div></section>`,
   lb: () => `<section class="section" aria-labelledby="h-set"><h2 id="h-set" class="t-l">ListenBrainz</h2>
@@ -1683,6 +1719,11 @@ A.type = (el) => { S.type = el.dataset.k; renderResults(); };
 A.flaconly = () => {
   S.flacOnly = !S.flacOnly; store.set('flacOnly', S.flacOnly);
   if (S.flacOnly && S.quality === 'high') { S.quality = 'lossless'; store.set('quality', S.quality); }
+  render(); saved();
+};
+A.hiresonly = () => {
+  S.hiresOnly = !S.hiresOnly; store.set('hiresOnly', S.hiresOnly);
+  if (S.hiresOnly) { S.quality = 'hires'; store.set('quality', S.quality); }
   render(); saved();
 };
 A.quality = (el) => { S.quality = el.dataset.k; store.set('quality', S.quality); render(); saved(); };
@@ -1946,7 +1987,7 @@ A.delsel = async () => {
 };
 
 // Health
-A.htab = (el) => { S.h.tab = el.dataset.k; if (S.h.tab === 'up') loadUpgrade(); render(); };
+A.htab = (el) => { S.h.tab = el.dataset.k; if (S.h.tab === 'up') loadUpgrade(); if (S.h.tab === 'rg') loadLoudness(); render(); };
 A.hfilter = (el) => { const f = S.h.filters; f.has(el.dataset.k) ? f.delete(el.dataset.k) : f.add(el.dataset.k); render(); };
 A.keep = (el) => { S.h.keep[el.dataset.g] = +el.dataset.i; render(); };
 A.keepall = (el) => { const g = el.dataset.g; if (S.h.keep[g] === 'all') delete S.h.keep[g]; else S.h.keep[g] = 'all'; render(); };
@@ -1970,7 +2011,7 @@ A.scan = async () => {
 };
 A.hsel = (el) => { const s = S.h.sel[el.dataset.set]; const id = el.dataset.id; el.checked ? s.add(id) : s.delete(id); render(); };
 A.hselall = (el) => {
-  const set = el.dataset.set; const list = { name: misnamed, miss: missingList, bad: brokenList, up: upgradeList }[set]();
+  const set = el.dataset.set; const list = { name: misnamed, miss: missingList, bad: brokenList, up: upgradeList, rg: loudnessList }[set]();
   list.forEach((t) => (el.checked ? S.h.sel[set].add(t.id) : S.h.sel[set].delete(t.id))); render();
 };
 A.repair = async () => {
@@ -1991,6 +2032,17 @@ A.upgrade = async () => {
     snack(`Looking up ${plural(files.length, 'song')} for lossless downloads…`, { label: 'View queue', fn: () => go('download') });
     sel.clear(); loadUpgrade(); refreshTasks(); refreshJobs();
   } catch (e) { oops('Couldn’t start the upgrade')(e); }
+};
+A.loudness = async () => {
+  const sel = S.h.sel.rg; const files = sel.size ? [...sel] : loudnessList().map((t) => t.path);
+  if (!files.length) return;
+  if (!sel.size && files.length > 1 && !(await confirmDlg(`Add ReplayGain to ${plural(files.length, 'song')}?`, 'Each song is measured (a few seconds each) and gets ReplayGain tags. The audio isn’t changed.', 'Tag all', false))) return;
+  try {
+    const d = await api('/api/library/loudness', { method: 'POST', body: { files } });
+    if (d.started === false) { snack('ReplayGain is already running'); return; }
+    snack(`Measuring ${plural(files.length, 'song')}…`);
+    sel.clear(); loadLoudness(); refreshTasks();
+  } catch (e) { oops('Couldn’t start ReplayGain')(e); }
 };
 A.hdelete = async () => {
   const files = [...S.h.sel.mis];
@@ -2081,7 +2133,7 @@ A.lbsync = async (el) => {
   try { await api('/api/listenbrainz/sync', { method: 'POST', body: force ? { force: true } : undefined }); snack(force ? 'Force-resyncing ListenBrainz playlists…' : 'Syncing ListenBrainz recommendations…'); refreshTasks(); } catch (e) { oops('Couldn’t sync')(e); }
 };
 // Background tasks: everything /api/tasks reports, live while the dialog is open.
-const STOPPABLE = { 'scan-library': ['/api/library/scan/library', 'Scan'], 'scan-dups': ['/api/library/scan/dups', 'Scan'], 'scan-mistag': ['/api/library/scan/mistag', 'Scan'], 'lib-enrich': ['/api/library/enrich', 'Enrichment'], 'lib-upgrade': ['/api/library/upgrade', 'Upgrade'] };
+const STOPPABLE = { 'scan-library': ['/api/library/scan/library', 'Scan'], 'scan-dups': ['/api/library/scan/dups', 'Scan'], 'scan-mistag': ['/api/library/scan/mistag', 'Scan'], 'lib-enrich': ['/api/library/enrich', 'Enrichment'], 'lib-upgrade': ['/api/library/upgrade', 'Upgrade'], 'lib-loudness': ['/api/library/loudness', 'ReplayGain'] };
 function tasksBody() {
   const list = S.tasks.slice().sort((x, y) => Number(y.running) - Number(x.running));
   if (!list.length) return emptyState('task_alt', 'No background tasks');
@@ -2131,7 +2183,7 @@ function adaptTrack(r) {
   return {
     id: r.path, path: r.path, dir: r.dir, file: r.file, title: r.title, artist: r.artist, album: r.album,
     year: r.year || '', no: r.no != null ? String(r.no).padStart(2, '0') : '', fmt: r.fmt, kbps: r.kbps, lossless: r.lossless, bits: r.bits || 0, rate: r.rate || 0, len: r.len,
-    size: r.size / MB, genre: !!r.genre, genreName: r.genre, mbid: !!r.mbid, bpm: !!r.bpm, bpmVal: r.bpm, cover: r.cover,
+    size: r.size / MB, genre: !!r.genre, genreName: r.genre, mbid: !!r.mbid, bpm: !!r.bpm, rg: !!r.rg, bpmVal: r.bpm, cover: r.cover,
     isrc: r.isrc, unreadable: !!r.unreadable, bytes: r.size, mtime: Math.round(r.mtime || 0), addedDays: Math.max(0, Math.floor((Date.now() / 1000 - r.mtime) / 86400)), expected: r.expected,
     csrc: r.cpath ? { path: r.cpath, mtime: Math.round(r.cmtime || 0) } : null,   // the album's cover file (paged rows)
   };
@@ -2207,6 +2259,8 @@ async function loadSettings() {
     S.set = fromServer(cfg); S.setLoaded = true; S.setError = '';
     if (cfg.quality) { S.quality = cfg.quality; store.set('quality', S.quality); }
     S.flacOnly = !!cfg.flac_only; store.set('flacOnly', S.flacOnly);
+    S.hiresOnly = !!cfg.hires_only; store.set('hiresOnly', S.hiresOnly);
+    if (S.hiresOnly && S.quality !== 'hires') { S.quality = 'hires'; store.set('quality', S.quality); }
     render();
   } catch (e) { S.setError = e.message; snack(`Couldn’t load settings: ${e.message}`); }
 }

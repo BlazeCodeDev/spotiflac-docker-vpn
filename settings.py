@@ -28,6 +28,12 @@ def _defaults() -> dict:
         # Keep only FLAC downloads: an MP3/M4A a source hands back is deleted and the track
         # reported as failed (applies to every download, ListenBrainz and upgrades included).
         "flac_only": os.environ.get("FLAC_ONLY", "0") == "1",
+        # Hi-Res only: every download asks for Hi-Res with Mornye's quality fallback off, and a file
+        # at CD quality or below (16-bit and at most 48 kHz) is deleted and the track reported as failed.
+        "hires_only": os.environ.get("HIRES_ONLY", "0") == "1",
+        # Measure loudness and write ReplayGain tags: after each download, during Enrich, and from
+        # Health > Loudness. Only adds tags; files that already have ReplayGain are left alone.
+        "replaygain": os.environ.get("REPLAYGAIN", "1") == "1",
         # M3U playlist file generation for playlist downloads: "always", "ask" (prompt
         # per download), or "never".
         "m3u_mode": os.environ.get("M3U_MODE", "ask"),
