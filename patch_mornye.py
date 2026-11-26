@@ -51,7 +51,8 @@ NOTE for version bumps / rollbacks:
   rename; F/G anchors identical, H's SOURCE_TAG URL changed), 1.0.0->1.0.3
   (repo moved to mornyeapp, so H's SOURCE_TAG URL changed again),
   1.0.3->1.0.4 (no patch changes), 1.0.4->1.0.5 (no patch changes),
-  1.0.5->2.2.1 (F retired, G/H anchors unchanged).
+  1.0.5->2.2.1 (F retired, G/H anchors unchanged), 2.2.1->2.2.3 (no patch
+  changes).
 """
 import importlib.util
 import pathlib

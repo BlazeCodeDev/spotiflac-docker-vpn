@@ -21,7 +21,7 @@ LOG_LEVEL="${LOG_LEVEL:-info}"
 # for Spotify metadata and the Turnstile/signed-session code (the "utilities"
 # extension). Earlier porting history (SpotiFLAC 1.x -> 5.0.6) is in
 # patch_mornye.py's module docstring.
-MORNYE_PINNED="2.2.1"
+MORNYE_PINNED="2.2.3"
 
 # Log lines share the app's layout (see applog.py):
 #   21:35:09  INFO   VPN       Connecting · OpenVPN
